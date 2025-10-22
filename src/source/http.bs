@@ -1,0 +1,437 @@
+function create_new_request()
+    return { state: 0
+        headers: {}
+        method: ""
+        body_size: 0
+        search: {}
+        read_data: read_http
+        pathBytes: createobject("roByteArray")
+        buffer: createobject("roByteArray")
+        body: createobject("roByteArray")
+    }
+end function
+
+function read_http(request as object, connection as object)
+    length = connection.getCountRcvBuf()
+    'print "Processing message on socket: " ; connection.getID() ; " of length " ; length
+    if request.state < 6 or request.body_handler <> invalid then
+        request.buffer[length - 1] = 0
+        ' request.buffer[length - 1] = invalid
+        r = connection.receive(request.buffer, 0, length)
+    else
+        request.body[request.content_length - 1] = 0
+        ' request.body[request.content_length - 1] = invalid
+        r = connection.receive(request.body, request.body_size, length)
+        request.body_size = request.body_size + length
+    end if
+
+    ' Great. No switch statements
+    if request.state = 0 then
+        parse_http_method(connection, request)
+    else if request.state = 1 then
+        parse_http_path(connection, request)
+    else if request.state = 2 then
+        parse_http_search(connection, request)
+    else if request.state = 3 then
+        parse_http_version(connection, request)
+    else if request.state = 4 then
+        parse_http_headers(connection, request)
+    else if request.state = 5 then
+        parse_http_headers(connection, request)
+    else if request.state = 6 then
+        parse_http_body(connection, request)
+    end if
+    'print "Final state is " ; request.state
+    return request.state = 7
+end function
+
+
+function parse_http_body(connection as object, request as object)
+    if request.body_handler <> invalid then
+        return request.body_handler(request, connection)
+    end if
+    while request.buffer.Count() > 0
+        request.body.Push(request.buffer.Shift())
+        request.body_size = request.body_size + 1
+    end while
+    if request.body_size >= request.content_length then
+        request.state = 7
+    end if
+end function
+
+function parse_http_headers(connection as object, request as object)
+    while request.buffer.Count() > 0 and request.state < 5
+        if request.state = 4 then
+            ' From 4, either go to 5 or 6
+            parse_http_header_name(connection, request)
+        end if
+        if request.state = 5 then
+            ' From 5 always go to 4
+            parse_http_header_value(connection, request)
+        end if
+    end while
+end function
+
+function parse_http_header_name(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 13 then
+            ' Do nothing
+        else if code = 10 then
+            ' Must be end of headers
+            request.state = 6
+            if request.headers["content-length"] <> invalid then
+                request.content_length = val(request.headers["content-length"])
+            else
+                request.content_length = 0
+            end if
+            parse_http_body(connection, request)
+            exit while
+        else if code = 58 then
+            ' End of header name
+            request.headerValue = createobject("roByteArray")
+            ' trim header name
+            while request.headerName[0] = 32
+                request.headerName.Shift()
+            end while
+            while request.headerName.Peek() = 32
+                request.headerName.Pop()
+            end while
+            request.state = 5
+            exit while
+        else
+            request.headerName.Push(code)
+        end if
+    end while
+end function
+
+function parse_http_header_value(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 13 then
+            ' Do nothing
+        else if code = 10 then
+            ' End of header value
+            header_name = Lcase(request.headerName.toAsciiString())
+            while request.headerValue[0] = 32
+                request.headerValue.Shift()
+            end while
+
+            header_value = request.headerValue.toAsciiString()
+            request.headers[header_name] = header_value
+            ' Reset header name
+            request.headerName = createobject("roByteArray")
+            request.state = 4
+            exit while
+        else
+            request.headerValue.Push(code)
+        end if
+    end while
+end function
+
+
+function parse_http_version(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 10 then
+            request.state = 4
+            request.headerName = createobject("roByteArray")
+            parse_http_headers(connection, request)
+            exit while
+        end if
+    end while
+end function
+
+function parse_http_path(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 63 then
+            request.path = request.pathBytes.toAsciiString()
+            request.state = 2
+            request.search_bytes = createobject("roByteArray")
+            parse_http_search(connection, request)
+            exit while
+        else if code = 32 then
+            request.path = request.pathBytes.toAsciiString()
+            request.state = 3
+            parse_http_version(connection, request)
+            exit while
+        end if
+        request.pathBytes.Push(code)
+    end while
+end function
+
+function parse_http_method(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 32 then
+            request.state = 1
+            parse_http_path(connection, request)
+            exit while
+        end if
+        request.method = request.method + Lcase(chr(code))
+    end while
+end function
+
+function parse_http_search(connection as object, request as object)
+    while request.buffer.Count() > 0
+        code = request.buffer.Shift()
+        if code = 32 then
+            munge_search(request)
+            request.state = 3
+            parse_http_version(connection, request)
+            exit while
+        end if
+        request.search_bytes.push(code)
+    end while
+end function
+
+sub munge_search(request as object)
+    name_bytes = createobject("roByteArray")
+    name = invalid
+    For each code in request.search_bytes
+        if code = 61 then '=
+            name = name_bytes.toAsciiString()
+            name_bytes = createobject("roByteArray")
+        else if code = 38 then '&
+            if name = invalid then
+                request.search[name_bytes.toAsciiString()] = ""
+            else
+                request.search[name] = name_bytes.toAsciiString()
+            end if
+            name_bytes = createobject("roByteArray")
+        else
+            name_bytes.Push(code)
+        end if
+    end for
+    if name_bytes.count() > 0 then
+        if name = invalid then
+            request.search[name_bytes.toAsciiString()] = ""
+        else
+            request.search[name] = name_bytes.toAsciiString()
+        end if
+    end if
+end sub
+
+function parse_url(s as string)
+    url = { path: "/"
+        hostname: ""
+        port: 0
+    protocol: "" }
+    bytes = createobject("roByteArray")
+    bytes.fromAsciiString(s)
+    state = 0
+    For each byte in bytes
+        if state = 0 then
+            if byte = 58 then
+                state = 1
+            else
+                url.protocol = url.protocol + chr(byte)
+            end if
+        else if state = 1 then '/
+            state = 2
+        else if state = 2 then '/
+            state = 3
+        else if state = 3 then
+            if byte = 47 then
+                url.port = 80
+                state = 5
+            else if byte = 58 then
+                state = 4
+            else
+                url.hostname = url.hostname + chr(byte)
+            end if
+        else if state = 4 then
+            if byte = 47 then
+                state = 5
+            else
+                url.port = 10 * url.port + val(chr(byte))
+            end if
+        else if state = 5 then
+            url.path = url.path + chr(byte)
+        end if
+    end for
+    return url
+end function
+
+'We have a central loop that JUST read http requests
+'We have a list of (socket,request) pairs. Only once a request has been fully read do we actually dispatch it
+'Until then, each time a socket is ready for reading, tell the request-parser to read some more data from the socket
+'The request-parser then has to remember exactly what state is was in. There are only a few states:
+'0) Method
+'1) Path
+'2) Search
+'3) HTTP version
+'4) Header name
+'5) Header value
+'6) Data
+
+' function list_concat_with_newlines(chunks as object)
+'     output = ""
+'     For Each chunk in chunks
+'         output = output + chunk + chr(10)
+'     end for
+'     return output
+' end function
+
+' ***************************************************
+' Handle building responses Below here
+' ***************************************************
+
+function pad_integer(source as integer)
+    if source < 10 then
+        return "0" + right(str(source), 1)
+    else
+        return right(str(source), 2)
+    end if
+end function
+
+function send_http_reply(connection as object, response_code as string, content_type as string, textData = "" as string, b64Data = "" as string)
+    loggers = logger()
+    reply = createobject("roByteArray")
+    data = createobject("roByteArray")
+    if textData <> "" then
+        data.FromAsciiString(textData)
+    else if b64Data <> "" then
+        ' If we have base64 data, decode it
+        data.FromBase64String(b64Data)
+    end if
+    date = createobject("roDateTime")
+    months = ["placeholder"
+        "Jan"
+        "Feb"
+        "Mar"
+        "Apr"
+        "May"
+        "Jun"
+        "Jul"
+        "Aug"
+        "Sep"
+        "Oct"
+        "Nov"
+    "Dec"]
+    month_name = months[date.getMonth()]
+    ' WHY does str(6) return " 6" ?!
+    rfc822 = Left(date.GetWeekday(), 3) + ", " + pad_integer(date.GetDayOfMonth()) + " " + month_name + " " + right(str(date.getYear()), 4) + " " + pad_integer(date.getHours()) + ":" + pad_integer(date.getMinutes()) + ":" + pad_integer(date.getSeconds()) + " GMT"
+    packet = "HTTP/1.1 " + response_code + " OK" + chr(13) + chr(10)
+    packet = packet + "Date: " + rfc822 + chr(13) + chr(10)
+    packet = packet + "Content-Type: " + content_type + chr(13) + chr(10)
+    packet = packet + "Content-Length: " + str(data.Count()) + chr(13) + chr(10)
+    loggers.printl(log_level_Type.VERBOSE, "Preparing to HTTP reply with:" + chr(13) + chr(10) + packet + chr(13) + chr(10) + b64Data.left(100))
+    reply.fromAsciiString(packet + chr(13) + chr(10))
+    reply.append(data)
+    loggers.printl(log_level_Type.VERBOSE, "Entire response size: " + str(reply.count()))
+    status = connection.send(reply, 0, reply.Count())
+    loggers.printl(log_level_Type.VERBOSE, "sent status: " + str(status))
+    return status
+end function
+
+function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid)
+    loggers = logger()
+    reply = createobject("roByteArray")
+    ' date = createobject("roDateTime")
+    ' months = ["placeholder", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    ' month_name = months[date.getMonth()]
+    ' ' WHY does str(6) return " 6" ?!
+    ' rfc822 = Left(date.GetWeekday(), 3) + ", " + pad_integer(date.GetDayOfMonth()) + " " + month_name + " " + right(str(date.getYear()), 4) + " " + pad_integer(date.getHours()) + ":" + pad_integer(date.getMinutes()) + ":" + pad_integer(date.getSeconds()) + " GMT"
+    ' if response_code = 206 then response_code = 200
+    resStatus = ""
+    if response_code = 200
+        resStatus = "OK"
+    else if response_code = 206
+        resStatus = "Partial Content"
+    else if response_code = 404
+        resStatus = "Not Found"
+    else
+        resStatus = "Unknown"
+    end if
+
+    packet = `HTTP/1.1 ${response_code} ${resStatus}${chr(13)}${chr(10)}`
+    ' packet = `${packet}Date: ${rfc822}${chr(13)}${chr(10)}`
+    for each key in headers.keys()
+        ' if findIndex(["accept-ranges"], lCase(key)) = -1
+        packet = `${packet}${key}: ${headers[key]}${chr(13)}${chr(10)}`
+        ' end if
+    next
+    loggers.printl(log_level_Type.INFO, `Preparing to HTTP reply with:${chr(13)}${chr(10)}${packet}${chr(13)}${chr(10)}Raw data length: ${str(data.Count())}`)
+    reply.fromAsciiString(packet + chr(13) + chr(10))
+    reply.append(data)
+    ' loggers.printl(log_level_Type.INFO, "Entire response size: " + str(reply.count()))
+
+    offset = 0
+    bytes_to_send = reply.Count()
+    ' FRAME_SIZE = 4024
+    ' BUFFER_SOCKET_SIZE = 8192 
+    ' BUFFER_SLEEP = 10
+    ' BUFFER_LOOP_LIMIT = 1000 / BUFFER_SLEEP ' max waiting time till try to push another value into buffer, _BUFFER_SLEEP * _BUFFER_LOOP_LIMIT
+
+    ' if isValid(port) then connection.NotifyWritable(true) ' Enable writable events
+
+    ' while bytes_to_send > 0
+    sent = connection.send(reply, offset, bytes_to_send)
+    ' sent = connection.send(reply, offset, not isValid(port) or bytes_to_send < FRAME_SIZE ? bytes_to_send : FRAME_SIZE)
+    if sent <= 0 then
+        loggers.printl(log_level_Type.FATAL, "Send failed with status: " + str(sent))
+        return sent ' Or handle error as needed
+    end if
+    status = connection.Status()
+    if status <> 0 then
+        loggers.printl(log_level_Type.FATAL, "Connection status error: " + str(status))
+        return status
+    end if
+    ' offset = offset + sent
+    ' bytes_to_send = bytes_to_send - sent
+    ' loggers.printl(log_level_Type.INFO, "Sent chunk: " + str(sent) + " bytes, remaining: " + str(bytes_to_send) + ` - bytes in send buffer: ` + str(connection.GetCountSendBuf()))
+    ' if isValid(port)
+    '     loop_wait = 0
+    '     while not connection.IsWritable() or connection.GetCountSendBuf() > 0
+    '         ' loggers.printl(log_level_Type.VERBOSE, `Connection: Waiting ${BUFFER_SLEEP.toStr()}ms to reduce buffer. Remaining: ${str(connection.GetCountSendBuf())} isWritable: ${connection.IsWritable()}`)
+    '         msg = wait(BUFFER_SLEEP, port) ' Use wait instead of sleep to process events
+    '         if msg <> invalid then
+    '             if type(msg) = "roSocketEvent" and msg.GetSocketID() = connection.GetID() then
+    '                 loggers.printl(log_level_Type.VERBOSE, `Processed socket event during wait: writable=${connection.IsWritable().toStr()} send buffer: ${str(connection.GetCountSendBuf())}`)
+    '             else
+    '                 ' Ignore or handle other messages if needed (e.g., new connections)
+    '             end if
+    '         end if
+    '         if loop_wait > BUFFER_LOOP_LIMIT then
+    '             exit while
+    '         end if
+    '         loop_wait++
+    '     end while
+    ' end if
+    ' end while
+    ' if isValid(port) then connection.NotifyWritable(false)
+    loggers.printl(log_level_Type.INFO, `sent status: ${reply.Count()} - ${connection.GetCountSendBuf()}`)
+    return reply.Count() - connection.GetCountSendBuf()
+end function
+
+' function send_http_redirect(connection as object, response_code_line as string, location as string)
+'     loggers = logger()
+'     reply = createobject("roByteArray")
+'     packet = "HTTP/1.1 " + response_code_line + chr(13) + chr(10)
+'     packet = packet + "Location: " + location + chr(13) + chr(10)
+'     loggers.printl(log_level_Type.INFO, "Preparing to HTTP reply with:" + chr(13) + chr(10) + packet)
+'     reply.fromAsciiString(packet + chr(13) + chr(10))
+'     loggers.printl(log_level_Type.INFO, "Entire response size: " + str(reply.count()))
+'     status = connection.send(reply, 0, reply.Count())
+'     loggers.printl(log_level_Type.INFO, "sent status: " + str(status))
+'     return status
+' end function
+
+' function send_http_post(connection as object, content_type as string, url as object, data as string)
+'     post = createobject("roByteArray")
+'     payload = createobject("roByteArray")
+'     packet = "POST " + url.path + " HTTP/1.1" + chr(13) + chr(10)
+'     packet = packet + "HOST " + url.hostname + chr(13) + chr(10) '  192.168.119.195:4012
+'     packet = packet + "Connection: keep-alive" + chr(13) + chr(10)
+'     packet = packet + "Content-Length: 2" + chr(13) + chr(10)
+'     packet = packet + "Content-Type: " + content_type + chr(13) + chr(10)
+'     packet = packet + "Accept: */*" + chr(13) + chr(10) + chr(13) + chr(10)
+'     print "preparing to send: "packet + data
+'     post.fromAsciiString(packet)
+'     payload.FromBase64String(data)
+'     post.append(payload)
+'     status = connection.send(post, 0, post.Count())
+'     return status
+' end function

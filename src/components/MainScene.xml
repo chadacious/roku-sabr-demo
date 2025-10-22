@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="MainScene" extends="Scene">
+    <interface>
+        <field id="ytsabrServerTaskVideo" type="node" />
+        <field id="ytsabrServerTaskAudio" type="node" />
+    </interface>
+    <children>
+        <VideoPlayer id="videoPlayer" />
+    </children>
+</component>

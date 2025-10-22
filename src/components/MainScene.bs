@@ -1,0 +1,201 @@
+import "pkg:/source/isItem.bs"
+import "pkg:/source/logger.bs"
+import "pkg:/source/utils.bs"
+
+const TAG = "MainScene"
+
+sub init()
+    m.logs = logger()
+    m.videoPlayer = m.top.findNode("videoPlayer")
+    m.logs.printl(log_level_Type.INFO, `[${TAG}] MainScene:init ready`)
+
+    m.utilsTask = CreateObject("roSGNode", "utilsTask")
+    m.utilsTask.id = "utilsTask"
+    m.utilsTask.control = "RUN"
+    m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
+
+    m.videoConfig = { title: "Sample Video", "playbackPositionMs": 0 }
+    ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
+    loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
+
+end sub
+
+sub loadManifest(manifestPath as string)
+    ' send to utilsTask to load the manifest content
+    m.utilsTask.LOAD_FILE_TO_STRING = manifestPath
+end sub
+
+function onKeyEvent(key as string, press as boolean, ctrl as boolean, shift as boolean) as boolean
+    if key = "back" and press then
+        return false
+    end if
+    return false
+end function
+
+sub onUtilsTaskMessage(msg)
+    m.logs.printl(log_level_Type.VERBOSE, `[${TAG}] onUtilsTaskMessage: ${msg.GetField()}`)
+    message = msg.getData()
+    if message.type = "FILE_LOADED_TO_STRING"
+        fileData = message.fileData
+        prepareManifest(fileData)
+    else if message.type = "CACHED_STRING_TO_FILE"
+        result = message.result
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] Cached string to file result: ${FormatJson(result)}`)
+        if result.uri = m.videoConfig.manifestPath
+            m.logs.printl(log_level_Type.INFO, `[${TAG}] Manifest stored to file: ${result.uri}`)
+            loadVideo()
+        end if
+    end if
+end sub
+
+sub prepareManifest(manifest as string)
+
+    manifestType = "DASH"
+    if manifest.Instr("#EXTM3U") > -1
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected HLS manifest`)
+        manifestType = "HLS"
+    else
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected DASH manifest`)
+    end if
+
+    manifest = extractPlaybackContext(m.top, m.videoPlayer, { manifest: manifest, manifestType: manifestType, mediaId: "sample-media-id", playbackPositionMs: 0 })
+
+    m.videoConfig["manifestPath"] = "tmp:/currentManifest.mpd"
+    m.videoConfig["manifestType"] = manifestType
+
+    ' store the manifest
+    m.utilsTask.CACHE_STRING_TO_FILE = { content: manifest, path: m.videoConfig.manifestPath }
+
+end sub
+
+sub loadVideo()
+    if m.videoPlayer <> invalid then
+        m.videoPlayer.visible = true
+        m.videoPlayer.setFocus(true)
+        m.videoPlayer.callFunc("setVideo", m.videoConfig)
+    end if
+end sub
+
+function extractPlaybackContext(scene as object, video as object, mediaSource as object)
+    playbackContext = invalid
+    manifest = mediaSource.manifest
+    manifestType = mediaSource.manifestType
+    mediaId = mediaSource.mediaId
+    playbackPositionMs = mediaSource.playbackPositionMs
+    ' check also for any SupplementalProperty at the root level of the MPD xml and if it's schemeIdUri includes ":urn:youtube:sabr" extract
+    ' it as base64, decode it and add it to the playbackContext of the ytsabrServerTask
+    if manifestType = "DASH"
+        try 
+            regexSupProp = CreateObject("roRegex", `<SupplementalProperty[^>]*schemeIdUri=["'][^"']*urn:youtube:sabr["'][^>]*?value=["']([^"']*)["'][^>]*?>`, "i")
+            match = regexSupProp.match(manifest)
+            if isValid(match) and match.count() > 0
+                ' create two ytsabrServerTask nodes if they don't exist yet so that audio and video can be requested in parallel
+                ' otherwise the video node will wait for the audio request to complete before starting the video request
+                ' or vice versa
+                if not isValid(scene.ytsabrServerTaskVideo)
+                    scene.ytsabrServerTaskVideo = CreateObject("roSGNode", "ytsabrServerTask")
+                    scene.ytsabrServerTaskVideo.control = "RUN"
+                    scene.ytsabrServerTaskVideo.contentType = "VIDEO"
+                    scene.ytsabrServerTaskVideo.videoNode = video
+                    scene.ytsabrServerTaskVideo.utilsTask = m.utilsTask
+                    if isValid(scene.debugUploadUrl) and scene.debugUploadUrl <> ""
+                        scene.ytsabrServerTaskVideo.debugUploadUrl = scene.debugUploadUrl
+                    end if
+                end if
+                if not isValid(scene.ytsabrServerTaskAudio)
+                    scene.ytsabrServerTaskAudio = CreateObject("roSGNode", "ytsabrServerTask")
+                    scene.ytsabrServerTaskAudio.control = "RUN"
+                    scene.ytsabrServerTaskAudio.contentType = "AUDIO"
+                    scene.ytsabrServerTaskAudio.videoNode = video
+                    scene.ytsabrServerTaskAudio.utilsTask = m.utilsTask
+                    if isValid(scene.debugUploadUrl) and scene.debugUploadUrl <> ""
+                        scene.ytsabrServerTaskAudio.debugUploadUrl = scene.debugUploadUrl
+                    end if
+                end if
+                ' 
+                ' schemeIdUri = match[0]
+                base64Payload = match[1]
+                ' m.logs.printl(log_level_Type.INFO, `SDUIPlayer: Found SupplementalProperty with schemeIdUri: ${schemeIdUri} and base64Payload: ${base64Payload}`)
+                jsonPayload = fromBase64(base64Payload)
+                m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Decoded SupplementalProperty: ${FormatJson(jsonPayload)}`)
+                if isValid(jsonPayload)
+                    ' we need to store the playbackContext to the tmp file system. create a folder from the hash of the mediaId
+                    ' where we will store the video context as json, and also the downloaded UMP segments
+                    if isValid(mediaId) and mediaId <> ""
+                        mediaIdHash = hashStringEVP(mediaId, "md5")
+                        ' replace any url occurrence of sabr:// with our local http server url
+                        ' we need to identify mimeType="video.*" or "audio.*" in the manifest to set the correct port
+                        ' So we'll use 7011 for video and 7012 for audio
+                        res = replaceSabrBaseUrlsByContentType(manifest, "video", `http://0.0.0.0:7011/sabr/${mediaIdHash}/`)
+                        manifest = res.manifest
+                        hasVideoParts = res.replaced
+                        res = replaceSabrBaseUrlsByContentType(manifest, "audio", `http://0.0.0.0:7012/sabr/${mediaIdHash}/`)
+                        manifest = res.manifest
+                        hasAudioParts = res.replaced
+                        playbackContext = {
+                            "requestNumber": "0",
+                            "requestSequence": 0,
+                            "lastRequestNumber": "",
+                            "lastPlayerTimeSecs": playbackPositionMs / 1000.0,
+                            "initializedFormats": {},
+                            "hasVideoParts": hasVideoParts,
+                            "hasAudioParts": hasAudioParts,
+                        }
+                        fileName = `tmp:/${mediaIdHash}/playbackContext.json`
+                        m.utilsTask.CACHE_STRING_TO_FILE = { content: playbackContext, path: fileName }
+                        fileName = `tmp:/${mediaIdHash}/sabrPayload.json`
+                        m.utilsTask.CACHE_STRING_TO_FILE = { content: jsonPayload, path: fileName }
+                        m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Stored playbackContext to file: ${fileName}`)
+                    else
+                        m.logs.printl(log_level_Type.WARN, `[${TAG}] SDUIPlayer: Cannot store playbackContext as video mediaId is missing or invalid`)
+                    end if
+                end if
+                ' remove the SupplementalProperty from the manifest so the video node doesn't choke on it
+                manifest = regexSupProp.replace(manifest, "")
+            end if
+        catch e
+            m.logs.printl(log_level_Type.WARN, `[${TAG}] SDUIPlayer: Error parsing SupplementalProperty from MPD manifest: ${e.message}`)
+        end try
+    end if
+    m.logs.printl(log_level_Type.DEBUG, `[${TAG}] SDUIPlayer manifest: ${manifest}`)
+    return manifest
+end function
+
+function replaceSabrBaseUrlsByContentType(manifest as string, contentType as string, replacementUrl as string) as object
+    if not isValid(manifest) then return manifest
+    if Len(manifest) = 0 then return manifest
+
+    regexSabr = CreateObject("roRegex", "sabr://", "i")
+    lowerContentType = LCase(contentType)
+    searchIndex = 0
+    closingTag = "</AdaptationSet>"
+    closingTagLength = Len(closingTag)
+
+    while true
+        startIndex = Instr(searchIndex, manifest, "<AdaptationSet")
+        if startIndex = 0 then exit while
+
+        endIndex = Instr(startIndex, manifest, closingTag)
+        if endIndex = 0 then exit while
+
+        blockEnd = endIndex + closingTagLength
+        blockLength = blockEnd - startIndex
+        adaptationBlock = Mid(manifest, startIndex, blockLength)
+        blockLower = LCase(adaptationBlock)
+
+        hasContentTypeAttribute = Instr(blockLower, `contenttype="${lowerContentType}"`) > 0 or Instr(blockLower, `contenttype='${lowerContentType}'`) > 0
+        hasMimeTypeAttribute = Instr(blockLower, `mimetype="${lowerContentType}`) > 0 or Instr(blockLower, `mimetype='${lowerContentType}`) > 0
+
+        if (hasContentTypeAttribute or hasMimeTypeAttribute) and regexSabr.isMatch(adaptationBlock)
+            prefix = Left(manifest, startIndex - 1)
+            suffix = Mid(manifest, blockEnd)
+            updatedBlock = regexSabr.replaceAll(adaptationBlock, replacementUrl)
+            manifest = prefix + updatedBlock + suffix
+            searchIndex = startIndex + Len(updatedBlock)
+        else
+            searchIndex = blockEnd
+        end if
+    end while
+
+    return { manifest: manifest, replaced: searchIndex > 0 }
+end function

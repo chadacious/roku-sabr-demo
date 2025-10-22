@@ -1,0 +1,13 @@
+title=Roku SABR Demo
+subtitle=BrightScript playground
+mm_icon_focus_hd=pkg:/assets/images/icon_focus_hd.png
+mm_icon_focus_sd=pkg:/assets/images/icon_focus_sd.png
+mm_icon_side_hd=pkg:/assets/images/icon_side_hd.png
+mm_icon_side_sd=pkg:/assets/images/icon_side_sd.png
+splash_screen_hd=pkg:/assets/images/splash_screen_hd.png
+splash_screen_sd=pkg:/assets/images/splash_screen_sd.png
+major_version=1
+minor_version=0
+build_version=0
+requires_a_dev_id=false
+bs_lib_version=1.0.0

@@ -1,0 +1,25 @@
+sub main()
+    screen = CreateObject("roSGScreen")
+    port = CreateObject("roMessagePort")
+    screen.SetMessagePort(port)
+
+    print "App:main starting"
+
+    scene = screen.CreateScene("MainScene")
+    screen.Show() ' vscode_rdb_on_device_component_entry
+
+    httpServer = CreateObject("roSGNode", "httpServerTask")
+    httpServer.id = "httpServerTask"
+    httpServer.control = "RUN"
+
+    if scene <> invalid then
+        scene.labelText = "Name your video and press Play"
+    end if
+
+    while true
+        msg = wait(0, port)
+        if type(msg) = "roSGScreenEvent" and msg.isScreenClosed() then
+            exit while
+        end if
+    end while
+end sub

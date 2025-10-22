@@ -1,0 +1,96 @@
+import "pkg:/source/logger.bs"
+import "pkg:/source/taskUtils.bs"
+
+sub init()
+    m.top.functionName = "messageHandlers"
+    m.port = CreateObject("roMessagePort")
+    m.top.ObserveField("LOAD_FILE_TO_STRING", m.port)
+    m.top.ObserveField("CACHE_STRING_TO_FILE", m.port)
+    m.nextRequestId = {}
+    m.logs = logger()
+end sub
+
+sub messageHandlers()
+    timespan = m.logs.mark()
+    while true
+        msg = wait(0, m.port)
+        if type(msg) = "roSGNodeEvent"
+            field = msg.GetField()
+            if field = "LOAD_FILE_TO_STRING"
+                loadFileToString(msg)
+            else if field = "CACHE_STRING_TO_FILE"
+                cacheStringToFile(msg)
+            end if
+        end if
+    end while
+end sub
+
+function getNextId(group as string) as integer
+    if not m.nextRequestId.DoesExist(group)
+        m.nextRequestId[group] = 0
+    end if
+    m.nextRequestId[group] = m.nextRequestId[group] + 1
+    return m.nextRequestId[group]
+end function
+
+sub sendUIMessage(message as object)
+    m.top.uiMessage = message
+end sub
+
+sub loadFileToString(msg as object)
+    path = msg.getData()
+    
+    m.logs.printl(log_level_Type.INFO, `[LOAD_FILE_TO_STRING] Starting string cache write: ${path}`)
+
+    fileSystem = CreateObject("roFileSystem")
+
+    byteArray = CreateObject("roByteArray")
+    byteArray.readFile(path)
+    result = byteArray.ToAsciiString()
+
+    m.logs.printl(log_level_Type.INFO, `[LOAD_FILE_TO_STRING] String cache write result: ${result.len()} bytes`)
+
+    sendUIMessage({ type: "FILE_LOADED_TO_STRING", fileData: result })
+
+end sub
+
+sub cacheStringToFile(msg as object)
+    params = msg.getData()
+    content = params.content
+    path = params.path
+    result = { status: "error", message: "", uri: invalid }
+
+    m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] Starting string cache write: ${path}`)
+
+    fileSystem = CreateObject("roFileSystem")
+
+    ' handle if the the path includes a directory that doesn't yet exist
+    dirPath = path
+    lastSlash = 0
+    searchPos = 1
+    while true
+        slashPos = Instr(searchPos, dirPath, "/")
+        if slashPos = 0 then exit while
+        lastSlash = slashPos
+        searchPos = slashPos + 1
+    end while
+
+    if lastSlash > 0
+        dirPath = Left(dirPath, lastSlash - 1)
+        if not fileSystem.Exists(dirPath)
+            fileSystem.CreateDirectory(dirPath)
+        end if
+    end if
+
+    if writeFile(path, content)
+        result.status = "ok"
+        result.uri = path
+    else
+        result.message = `[cacheStringToFile] Failed to write string file: ${path}`
+    end if
+
+    m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] String cache write result: ${FormatJson(result)}`)
+
+    sendUIMessage({ type: "CACHED_STRING_TO_FILE", result: result })
+
+end sub

@@ -1,0 +1,47 @@
+import "pkg:/source/logger.bs"
+import "pkg:/source/utils.bs"
+
+const TAG = "VideoPlayer"
+
+sub init()
+    m.logs = logger()
+    m.videoNode = m.top.findNode("videoNode")
+    m.titleBackground = m.top.findNode("titleBackground")
+    m.titleLabel = m.top.findNode("titleLabel")
+end sub
+
+sub setVideo(data as object)
+    title = data.title
+    manifestPath = data.manifestPath
+    manifestType = data.manifestType
+    playbackPositionMs = data.playbackPositionMs ?? 0
+
+    showTitleOverlay(title)
+
+    if m.videoNode = invalid then return
+
+    m.logs.printl(log_level_Type.INFO, `[${TAG}] setVideo title='${title}' manifestPath='${manifestPath}'`)
+
+    ' base64 the manifest path to create a mediaId
+    mediaId = toBase64(manifestPath)
+
+    content = createObject("roSGNode", "ContentNode")
+    content.title = title
+    content.url = `http://0.0.0.0:7010/manifest/${mediaId}`
+    content.streamFormat = manifestType = "DASH" ? "dash" : "hls"
+    content.playStart = playbackPositionMs / 1000
+
+    m.videoNode.content = content
+    m.videoNode.control = "play"
+
+end sub
+
+sub showTitleOverlay(title as string)
+    if m.titleLabel <> invalid then
+        m.titleLabel.text = title
+        m.titleLabel.visible = title <> ""
+    end if
+    if m.titleBackground <> invalid then
+        m.titleBackground.visible = title <> ""
+    end if
+end sub

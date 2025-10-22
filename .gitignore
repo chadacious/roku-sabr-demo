@@ -1,0 +1,13 @@
+out
+.vscode/launch.json
+*.zip
+.vscode/settings.json
+.VSCodeCounter
+**/.DS_Store
+src/manifest.in
+dump.rdb
+
+dist/**
+package-lock.json
+node_modules/**
+src/images/.DS_Store

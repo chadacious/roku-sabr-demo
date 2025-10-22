@@ -1,0 +1,15 @@
+{
+  "projectName": "roku-sabr-demo",
+  "rootDir": "src",
+  "stagingDir": "dist",
+  "retainStagingDir": true,
+  "createPackage": false,
+  "sourceMap": true,
+  "autoImportComponentScript": true,
+  "files": [
+    "manifest",
+    "source/**/*.*",
+    "components/**/*.*",
+    "assets/**/*.*"
+  ]
+}

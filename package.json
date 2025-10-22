@@ -1,0 +1,18 @@
+{
+  "name": "roku-sabr-demo",
+  "version": "1.0.0",
+  "description": "BrighterScript Roku application scaffold",
+  "scripts": {
+    "build": "bsc --project bsconfig.json --createPackage false",
+    "package": "bsc --project bsconfig.json",
+    "watch": "bsc --project bsconfig.json --watch",
+    "deploy": "bsc --project bsconfig.json --createPackage --deploy",
+    "test:e2e": "node scripts/e2e-smoke.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "brighterscript": "^0.70.2"
+  }
+}

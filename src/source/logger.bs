@@ -1,0 +1,197 @@
+import "isItem.bs"
+' Logger.bs
+' Copyright (C) 2018 Rolando Islas
+' Released under the MIT license
+'
+'converted to BrighterScript
+' Internal logging utility
+
+'NOTE: When adding log levels, please be sure to update the log_options below in the same sequence
+enum log_level_Type
+    UNKNOWN 'NOTE: don't use UNKNOWN in log statements, it's just to catch potential errors.
+    FATAL
+    WARN
+    TRACE
+    TRACE2
+    INFO
+    DEBUG
+    EXTRA
+    VERBOSE
+    VERBOSE2
+    ALL 'NOTE: don't use ALL in log statements, just for setting log_level
+end enum
+
+enum colorCodes
+    black = 30
+    red = 31
+    green = 32
+    yellow = 33
+    blue = 34
+    purple = 35
+    cyan = 36
+    white = 37
+    brightBlack = 90
+    brightRed = 91
+    brightGreen = 92
+    brightYellow = 93
+    brightBlue = 94
+    brightMagenta = 95
+    brightCyan = 96
+    brightWhite = 97
+end enum
+
+class Logger
+    log_level = log_level_Type.INFO
+    log_options = []
+
+    sub new()
+        m.log_options[log_level_Type.UNKNOWN] = { "string": "UNKNOWN", "color": colorCodes.brightMagenta }
+        m.log_options[log_level_Type.FATAL] = { "string": "FATAL", "color": colorCodes.red }
+        m.log_options[log_level_Type.WARN] = { "string": "WARN", "color": colorCodes.yellow }
+        m.log_options[log_level_Type.TRACE] = { "string": "TRACE", "color": colorCodes.white }
+        m.log_options[log_level_Type.TRACE2] = { "string": "TRACE2", "color": colorCodes.brightCyan }
+        m.log_options[log_level_Type.INFO] = { "string": "INFO", "color": colorCodes.green }
+        m.log_options[log_level_Type.DEBUG] = { "string": "DEBUG", "color": colorCodes.blue }
+        m.log_options[log_level_Type.EXTRA] = { "string": "EXTRA", "color": colorCodes.purple }
+        m.log_options[log_level_Type.VERBOSE] = { "string": "VERBOSE", "color": colorCodes.cyan }
+        m.log_options[log_level_Type.VERBOSE2] = { "string": "VERBOSE2", "color": colorCodes.cyan }
+        m.log_options[log_level_Type.ALL] = { "string": "ALL", "color": colorCodes.cyan }
+
+        m.appInfo = CreateObject("roAppInfo")
+        m.log_level = m._parse_level(m.appInfo.getValue("log_level"))
+        if m.log_level = log_level_Type.UNKNOWN
+            m.log_level = log_level_Type.ALL
+            m.printl(99, "Logger: Missing/Unknown log_level param in manifest, showing ALL")
+        end if
+    end sub
+
+    function set_log_level(level as string) as void
+        m.log_level = m._parse_level(level)
+    end function
+
+    function printl(level as integer, msg as object) as void
+
+        if m.appInfo.isDev()
+            dateTime = CreateObject("roDateTime")
+            dateTime.toLocalTime()
+            if (m.log_options[level] = invalid)
+                level = log_level_Type.UNKNOWN
+            end if
+            if level > m.log_level
+                return
+            end if
+            option = m.log_options[level]
+            ' build ISO string with .mmm
+            ms  = Right(`00${dateTime.GetMilliseconds()}`, 3)
+            iso = dateTime.ToISOString()                     ' e.g., 2025-08-28T11:22:33Z
+            isoWithMs = `${Left(iso, Len(iso)-1)}.${ms}Z`
+            print chr(27) + `[${option.color}m[${option.string}] ${isoWithMs} ${msg}` + chr(27) + "[0m"
+        end if
+    end function
+
+    function mark() as object
+        timespan = CreateObject("roTimespan")
+        timespan.mark()
+        return timespan
+    end function
+
+    function markMs()
+        dt = CreateObject("roDateTime")
+        ms = dt.AsSeconds() * 1000 + dt.GetMilliseconds()
+        return ms
+    end function
+
+    
+    sub printTime(level as integer, msg as object, timespan as object, thresholdMs = -1 as integer, noRemark = false as boolean)
+        if IsNumber(timespan)
+            endMark = m.markMs()
+            durationMs = (endMark - timespan)
+        else
+            durationMs = timespan.TotalMilliseconds()
+            if noRemark <> true then timespan.mark()
+        end if
+        if durationMs > thresholdMs
+            if m.appInfo.isDev()
+                dateTime = CreateObject("roDateTime")
+                dateTime.toLocalTime()
+                if (m.log_options[level] = invalid)
+                    level = log_level_Type.UNKNOWN
+                end if
+                if level > m.log_level
+                    return
+                end if
+                option = m.log_options[level]
+                ' build ISO string with .mmm
+                ms  = Right(`00${dateTime.GetMilliseconds()}`, 3)
+                iso = dateTime.ToISOString()                     ' e.g., 2025-08-28T11:22:33Z
+                isoWithMs = `${Left(iso, Len(iso)-1)}.${ms}Z`
+
+                ' print `[${option.string}] ${dateTime.toISOString()} ${msg} (${durationMs.ToStr()}ms)`
+                print chr(27) + `[${option.color}m[${option.string}] ${isoWithMs} ${msg} (${durationMs.ToStr()}ms)` + chr(27) + "[0m"
+            end if
+        end if
+    end sub
+
+    ' Print a pink, indented call stack using backtrace info
+    sub printStack(level as integer, msg = "" as string, maxFrames = 5 as integer, e = invalid as dynamic, showFullPath = false as boolean)
+        ' respect dev mode / log level if present
+        if m.appInfo <> invalid and m.appInfo.isDev() <> true then return
+        if m.log_options <> invalid and m.log_options[level] = invalid then level = log_level_Type.UNKNOWN
+        if m.log_level <> invalid and level > m.log_level then return
+
+        ' obtain backtrace
+        bt = invalid
+        if e <> invalid and e.backtrace <> invalid
+            bt = e.backtrace
+        else
+            try
+                throw "StackProbe"
+            catch probe
+                bt = probe.backtrace
+            end try
+        end if
+        if bt = invalid then return
+
+        option = m.log_options[level]
+        dateTime = CreateObject("roDateTime")
+        dateTime.toLocalTime()
+        ' build ISO string with .mmm
+        ms  = Right(`00${dateTime.GetMilliseconds()}`, 3)
+        iso = dateTime.ToISOString()                     ' e.g., 2025-08-28T11:22:33Z
+        isoWithMs = `${Left(iso, Len(iso)-1)}.${ms}Z`
+        indent = "    "
+
+        print `${Chr(27)}[${option.color}m[${option.string}] ${isoWithMs} ${msg}${Chr(27)}[0m`
+        print `${Chr(27)}[${colorCodes.brightMagenta}m${indent}↳ stack:${Chr(27)}[0m`
+
+        shown = 0
+        for each frame in bt
+
+            file = frame.filename
+            if not showFullPath
+                ' skip logger frames
+                if InStr(frame.filename, "logger.brs") > 0 then continue for
+                ' strip pkg:/ and only show the basename
+                parts = file.split("/")
+                file = parts[parts.count()-1]
+            end if
+
+            line = `${file}:${frame.line_number.ToStr()} → ${frame.function}`
+            print `${Chr(27)}[${colorCodes.brightMagenta}m${indent}• ${line}${Chr(27)}[0m`
+
+            shown = shown + 1
+            if shown >= maxFrames then exit for
+        end for
+    end sub
+
+    private function _parse_level(level as string) as integer
+        for o = 0 to m.log_options.count() - 1
+            option = m.log_options[o]
+            if option <> invalid and level = option.string
+                return o
+            end if
+        next
+        return log_level_Type.UNKNOWN
+    end function
+
+end class

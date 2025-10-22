@@ -1,0 +1,11 @@
+[scrpt.ctx.cmpl.time] Compiled 'Roku SABR Demo', id 'dev' in 565 milliseconds (BCVer:0)
+10-21 19:45:27.383 [scrpt.proc.mkup.time] Processed markup dev 'Roku SABR Demo' in 0 milliseconds
+10-21 19:45:27.384 [beacon.signal] |AppCompileComplete --------> Duration(599 ms)
+
+------ Running dev 'Roku SABR Demo' main ------
+10-21 19:45:27.423 [scrpt.ctx.run.enter] UI: Entering 'Roku SABR Demo', id 'dev'
+App:main starting
+MainScene:init ready
+VideoPlayer:setVideo title='Sample Video'
+10-21 19:45:29.548 [beacon.signal] |LiveStartInitiate ---------> TimeBase(866 ms)
+10-21 19:45:29.549 [beacon.signal] |LiveStartComplete ---------> Duration(1881 ms)

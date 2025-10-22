@@ -1,0 +1,22 @@
+
+function writeFile(path as string, payload as dynamic)
+    if IsAssociativeArray(payload) or IsArray(payload)
+        payload = FormatJson(payload)
+    end if
+    byteArray = CreateObject("roByteArray")
+    byteArray.FromAsciiString(payload)
+    return byteArray.WriteFile(path)
+end function
+
+function getFile(path as string) as dynamic
+    fileSystem = CreateObject("roFileSystem")
+    fileName = path
+    baFile = CreateObject("roByteArray")
+    res = baFile.readFile(fileName)
+    if res = true
+        fileText = baFile.ToAsciiString()
+        return fileText
+    else
+        return invalid
+    end if
+end function

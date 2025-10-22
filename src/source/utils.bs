@@ -1,0 +1,34 @@
+
+function toBase64(rawData)
+    b64Text = CreateObject("roByteArray")
+    b64Text.FromAsciiString(rawData)
+    return b64Text.ToBase64String()
+end function
+
+function fromBase64(b64)
+    ba = CreateObject("roByteArray")
+    ba.fromBase64String(b64)
+    tokenData = ba.toAsciiString()
+    return tokenData
+end function
+
+' Returns lowercase hex digest; algo one of: "md5","sha1","sha256","sha512"
+function hashStringEVP(s as string, algo = "sha256" as string) as string
+    d = createObject("roEVPDigest")
+    if isValid(d) and d.setup(algo) = 0
+        ba = createObject("roByteArray")
+        ba.fromAsciiString(s)
+        d.update(ba)
+        return d.final() ' hex string digest
+    end if
+    return "" ' or fall back to non-crypto below
+end function
+
+function generateHexString(length as integer) as string
+    hexString = ""
+    hexChars = "0123456789abcdef"
+    for i = 1 to length
+        hexString = hexString + hexChars.Mid(Rnd(length / 2) - 1, 1)
+    end for
+    return hexString
+end function

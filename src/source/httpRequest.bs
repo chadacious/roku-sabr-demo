@@ -1,0 +1,113 @@
+import "utils.bs"
+
+function GetHeadersWithSetCookies(msg as Object) as Object
+    headersAssocArray = {}
+    headersArray = msg.GetResponseHeadersArray()
+    for each header in headersArray
+        for each key in header.keys()
+            if key = "Set-Cookie"
+                if headersAssocArray["Set-Cookie"] = invalid
+                    headersAssocArray["Set-Cookie"] = []
+                end if
+                headersAssocArray["Set-Cookie"].push(header[key])
+            else
+                headersAssocArray[key] = header[key]
+            end if
+        next
+    next
+
+    return headersAssocArray
+end function
+
+function makeRequest(params as object)
+    logs = logger()
+
+    timespan = logs.mark()
+
+    requestType = params.requestType
+    
+    url = params.url
+    options = params.options
+    headers = options?.headers ?? {}
+    headers["accept-encoding"] = "gzip"
+    ' headers["content-encoding"] = "deflate"
+    payload = options?.body ?? {}
+    passThroughPayload = params.passThroughPayload
+    timeout = params.timeout
+    retries = params.retries ?? 1
+    
+    output = {}
+
+    for retry = 1 to retries
+        ut = createObject("roUrlTransfer")
+        port1 = CreateObject("roMessagePort")
+        ut.RetainBodyOnError(true)
+        ut.EnableEncodings(true) ' allows for deflating of response bodies... but doesn't compress post bodies
+        ut.SetCertificatesFile("common:/certs/ca-bundle.crt")
+        ut.initClientCertificates()
+        ut.setMessagePort(port1)
+        method = options?.method ?? "GET"
+            
+        if requestType = "proxy"
+            ut.setHeaders(headers)
+            ut.EnablePeerVerification(false) ' Must disable this for some of the netflix api calls
+            ut.SetUrl(url)
+            ' logs.printl(log_level_Type.TRACE, `[HTTPRequest] Requesting ${method} - ${url}`)
+            if method = "POST"
+                ut.setRequest(method)
+                jsonBody = options?.body ?? ""
+                requestSent = ut.asyncPostFromString(jsonBody)
+            else if method = "POST_FILE_TO_FILE"
+                timeSpan = logs.mark()
+                ut.EnableEncodings(false) ' we'll be passing this response body directly to the server so no need to deflate it
+                destFile = `${options.body}-res`
+                ut.setRequest("POST")
+                requestSent = ut.asyncPostFromFileToFile(options.body, destFile)
+                logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
+                ' removeFile("tmp", options.body)
+            else if method = "POST_FILE_TO_FILE_WITH_DECODINGS"
+                timeSpan = logs.mark()
+                destFile = `${options.body}-res`
+                ut.setRequest("POST")
+                requestSent = ut.asyncPostFromFileToFile(options.body, destFile)
+                logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
+                ' removeFile("tmp", options.body)
+            else if method = "GET_TO_FILE"
+                timeSpan = logs.mark()
+                ut.EnableEncodings(false)
+                destFile = `tmp:/${generateHexString(16)}.dat-res`
+                ut.setRequest("GET")
+                requestSent = ut.asyncGetToFile(destFile)
+                logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying GET_TO_FILE ${destFile}`, timeSpan, -1)
+            else if method = "GET"
+                ut.setRequest(method)
+                requestSent = ut.asyncGetToString()
+            end if
+            if (requestSent)
+                msg = wait(timeout ?? 20000, port1)
+                if (type(msg) = "roUrlEvent")
+                    statusCode = msg.GetResponseCode()
+                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_WITH_DECODINGS" or method = "GET_TO_FILE"
+                        body = destFile
+                        logs.printl(log_level_Type.TRACE, `[HTTPRequest] Proxying response to file: ${destFile}`)' ` from ${url}`)
+                    else
+                        body = msg.GetString()
+                    end if
+                    headers = GetHeadersWithSetCookies(msg)
+                    ok = statusCode >= 200 and statusCode <= 206 ? true : false
+                    output = { "body": body, "ok": ok, "status": statusCode, "headers": headers }
+                    if not ok
+                        logs.printl(log_level_Type.WARN, `[HTTPRequest] Request failed: ${FormatJson(output)}`) 
+                    end if
+                else
+                    output = { "error": `Unexpected roUrlEvent: ${type(msg)}` }
+                end if
+            else
+                output = { "error": "Request not sent" }
+            end if
+        else
+            output = { "error": "Unknown request type" }
+        end if
+    next
+    return output
+end function

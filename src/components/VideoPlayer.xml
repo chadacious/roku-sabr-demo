@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="VideoPlayer" extends="Group">
+    <interface>
+        <function name="setVideo" />
+    </interface>
+    <children>
+        <Video
+            id="videoNode"
+            translation="[0, 0]"
+            width="1280"
+            height="720"
+            focusable="false"
+        />
+        <Rectangle
+            id="titleBackground"
+            translation="[0, 640]"
+            width="1280"
+            height="80"
+            color="0x000000B0"
+            visible="false"
+        />
+        <Label
+            id="titleLabel"
+            translation="[40, 680]"
+            horizAlign="left"
+            vertAlign="center"
+            text=""
+            color="0xFFFFFFFF"
+            wrap="true"
+            width="1200"
+            height="40"
+            visible="false"
+        />
+    </children>
+</component>
