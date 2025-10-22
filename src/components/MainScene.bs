@@ -14,7 +14,7 @@ sub init()
     m.utilsTask.control = "RUN"
     m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
 
-    m.videoConfig = { title: "Sample Video", "playbackPositionMs": 0 }
+    m.videoConfig = { title: "Sample YouTube SABR Video", "playbackPositionMs": 0 }
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
     loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
 

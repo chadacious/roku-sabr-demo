@@ -280,7 +280,9 @@ function sabr_ump_handlePart(ctx as object, part as object) as dynamic
         sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Stream Protection Status part received with size ${part.size}`)
         return sabr_ump_handleStreamProtectionStatus(ctx, part)
     else if part.type = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+        sabr_ump_log(ctx, log_level_Type.FATAL, `**************************************************************************`)
         sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Reload Player Response part received with size ${part.size}`)
+        sabr_ump_log(ctx, log_level_Type.FATAL, `**************************************************************************`)
         return sabr_ump_handleReloadPlayerResponse(ctx, part)
     else if part.type = UMP_PART_ID_MEDIA_HEADER
         sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Media Header part received with size ${part.size}`)
