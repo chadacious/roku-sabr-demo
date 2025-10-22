@@ -35,6 +35,7 @@ const LAUNCH_TIMEOUT_MS = 10000;
 const LOG_CONNECT_TIMEOUT_MS = 15000;
 const LOG_CONNECT_RETRY_DELAY_MS = 500;
 const ARTIFACTS_DIR = path.resolve("artifacts");
+const MAX_RECENT_LOG_CHARS = 200000;
 const VSCODE_LAUNCH_PATH = path.resolve(".vscode/launch.json");
 const DEFAULT_PROFILE_NAME = "Debug Ultra: Launch (with logs)";
 
@@ -86,7 +87,7 @@ async function main() {
         console.log(`[test] Waiting up to ${LAUNCH_TIMEOUT_MS}ms for MainScene to initialize ...`);
         await logStream.waitFor(/MainScene:init ready/, LAUNCH_TIMEOUT_MS);
         console.log("[test] Waiting for video playback log ...");
-        await logStream.waitFor(/VideoPlayer:setVideo/, 10000);
+        await logStream.waitFor(/VideoPlayer\] setVideo/, 10000);
         await pause(1500);
 
         const screenshotPath = await captureScreenshot({
@@ -225,7 +226,7 @@ function openLogStreamOnce({ host, port, filePath, mirrorFilePaths = [] }) {
                 if (trimmed !== logContents) {
                     logContents = trimmed;
                 }
-                buffer = logContents.slice(-20000);
+                buffer = logContents.slice(-MAX_RECENT_LOG_CHARS);
                 for (const watcher of watchers) {
                     tryResolveWatcher(watcher, buffer, watchers);
                 }
@@ -258,6 +259,15 @@ function waitForLog({ matcher, timeoutMs, watchers, getBuffer }) {
         }, timeoutMs);
 
         watchers.add(watcher);
+        const initialBuffer = getBuffer();
+    if (initialBuffer && initialBuffer.length > 0) {
+        if (matchBuffer(initialBuffer, matcher)) {
+            watchers.delete(watcher);
+            clearTimeout(watcher.timer);
+            resolve();
+            return;
+        }
+    }
         tryResolveWatcher(watcher, getBuffer(), watchers);
     });
 }

@@ -2111,6 +2111,10 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
 
     recordRepeatResult(playbackContext, requestMetadataEntry, response)
 
+    if GetInterface(response.headers, "ifAssociativeArray") <> invalid and not response.headers.DoesExist("Content-Range")
+        response.headers["X-Cache-Range"] = formatRequestedRangeForPath(requestByteRange)
+    end if
+
     ' write the playbackContext to the playbackContext.json file to preserve state
     m.logs.printl(log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
     m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
