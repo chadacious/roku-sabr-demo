@@ -2,6 +2,7 @@
 <component name="VideoPlayer" extends="Group">
     <interface>
         <function name="setVideo" />
+        <function name="getVideoNodeRef" />
     </interface>
     <children>
         <Video

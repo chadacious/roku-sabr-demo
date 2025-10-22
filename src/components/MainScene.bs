@@ -58,7 +58,7 @@ sub prepareManifest(manifest as string)
         m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected DASH manifest`)
     end if
 
-    manifest = extractPlaybackContext(m.top, m.videoPlayer, { manifest: manifest, manifestType: manifestType, mediaId: "sample-media-id", playbackPositionMs: 0 })
+    manifest = extractPlaybackContext(m.top, m.videoPlayer.callFunc("getVideoNodeRef"), { manifest: manifest, manifestType: manifestType, mediaId: "sample-media-id", playbackPositionMs: 0 })
 
     m.videoConfig["manifestPath"] = "tmp:/currentManifest.mpd"
     m.videoConfig["manifestType"] = manifestType

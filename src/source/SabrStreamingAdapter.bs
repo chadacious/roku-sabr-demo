@@ -874,19 +874,19 @@ function mediaHeaderToSegmentMetadata(mediaHeader as dynamic, coverage = invalid
     return metadata
 end function
 
-' function sabr_segmentStartMs(metadata as dynamic) as dynamic
-'     if not isValid(metadata) then return invalid
-'     startMs = sabr_toInt(metadata?.startTimeMs)
-'     if startMs = invalid then startMs = sabr_toInt(metadata?.startMs)
-'     if startMs = invalid
-'         startTicks = sabr_toInt(metadata?.timeRange?.startTicks)
-'         timescale = sabr_toInt(metadata?.timeRange?.timescale)
-'         if startTicks <> invalid and timescale <> invalid and timescale <> 0
-'             startMs = int((startTicks * 1000) / timescale)
-'         end if
-'     end if
-'     return startMs
-' end function
+function sabr_segmentStartMs(metadata as dynamic) as dynamic
+    if not isValid(metadata) then return invalid
+    startMs = toInt(metadata?.startTimeMs)
+    if startMs = invalid then startMs = toInt(metadata?.startMs)
+    if startMs = invalid
+        startTicks = toInt(metadata?.timeRange?.startTicks)
+        timescale = toInt(metadata?.timeRange?.timescale)
+        if startTicks <> invalid and timescale <> invalid and timescale <> 0
+            startMs = int((startTicks * 1000) / timescale)
+        end if
+    end if
+    return startMs
+end function
 
 function segmentDurationMs(metadata as dynamic) as dynamic
     if not isValid(metadata) then return invalid
@@ -953,36 +953,123 @@ end function
 '         if estimatedMs <> invalid then nextStart = estimatedMs
 '     end if
 
-'     if nextStart = invalid and isValid(videoNode)
-'         nextStart = int(videoNode.position * 1000)
-'     end if
+function sabr_lookupRecentMetadataBySequence(playbackContext as object, format as object, sequenceNumber as dynamic, contentType = "" as string) as dynamic
+    seqVal = toInt(sequenceNumber)
+    if seqVal = invalid then return invalid
 
-'     if nextStart = invalid or nextStart < 0 then nextStart = 0
-'     return nextStart
-' end function
+    formatKey = formatToKey(format)
+    initializedFormats = playbackContext?.initializedFormats
+    if formatKey <> "" and GetInterface(initializedFormats, "ifAssociativeArray") <> invalid and initializedFormats.DoesExist(formatKey)
+        formatState = initializedFormats.Lookup(formatKey)
+        candidate = formatState?.lastSegmentMetadata
+        if isValid(candidate) and toInt(candidate?.sequenceNumber) = seqVal
+            return candidate
+        end if
+        recent = formatState?.recentSegmentMetadata
+        if GetInterface(recent, "ifArray") <> invalid
+            for i = recent.count() - 1 to 0
+                meta = recent[i]
+                if isValid(meta) and toInt(meta?.sequenceNumber) = seqVal
+                    return meta
+                end if
+            end for
+        end if
+    end if
 
+    if isValid(contentType)
+        if contentType = "VIDEO"
+            fallback = playbackContext?.lastVideoSegmentMetadata
+        else if contentType = "AUDIO"
+            fallback = playbackContext?.lastAudioSegmentMetadata
+        else
+            fallback = invalid
+        end if
+        if isValid(fallback) and toInt(fallback?.sequenceNumber) = seqVal
+            return fallback
+        end if
+    end if
 
-' sub sabr_updateEstimatedPlayerTime(playbackContext as object, streamInfo as object) 
-'     if not isValid(playbackContext) then return
-'     header = streamInfo?.mediaHeader
-'     if not isValid(header) then return
+    return invalid
+end function
 
-'     startMs = sabr_toInt(header?.startMs)
-'     if startMs = invalid then startMs = sabr_toInt(header?.start)
-'     durationMs = sabr_toInt(header?.durationMs)
-'     if durationMs = invalid then durationMs = sabr_toInt(header?.timeRange?.durationTicks)
+function resolveSegmentStartTimeMs(playbackContext as object, contentType as string, format as object, requestByteRange as object, streamInfo as object, requestRef = invalid as dynamic) as dynamic
+    if not isValid(requestByteRange) then return invalid
 
-'     if durationMs = invalid then return
-'     if startMs = invalid then startMs = 0
+    logTag = sabr_utilLogTag(contentType, requestRef)
+    candidate = invalid
+    startVal = toInt(requestByteRange?.startRange)
+    if startVal = invalid then startVal = toInt(requestByteRange?.start)
+    if startVal <> invalid
+        metadata = lookupSegmentMetadata(playbackContext, contentType, format, startVal)
+        startCandidate = sabr_segmentStartMs(metadata)
+        if isValid(metadata)
+            m.logs.printl(log_level_Type.DEBUG, `${logTag} Metadata lookup for start=${startVal}: startTimeMs=${metadata?.startTimeMs} sequence=${metadata?.sequenceNumber} computed=${startCandidate}`)
+        end if
+        if startCandidate <> invalid
+            if candidate = invalid or startCandidate < candidate
+                candidate = startCandidate
+            end if
+        end if
+    end if
 
-'     newTimeMs = startMs + durationMs
-'     currentMs = sabr_toInt(playbackContext?.estimatedPlayerTimeMs)
-'     if currentMs = invalid then currentMs = 0
+    seqCandidate = toInt(requestByteRange?.sequenceNumber)
+    if seqCandidate = invalid and requestByteRange.DoesExist("segmentIndexInfo")
+        seqCandidate = toInt(requestByteRange.segmentIndexInfo?.sequenceNumber)
+    end if
+    if seqCandidate <> invalid
+        metadata = sabr_lookupRecentMetadataBySequence(playbackContext, format, seqCandidate, contentType)
+        startCandidate = sabr_segmentStartMs(metadata)
+        if isValid(metadata)
+            m.logs.printl(log_level_Type.DEBUG, `${logTag} Sequence lookup for seq=${seqCandidate}: startTimeMs=${metadata?.startTimeMs} rangeStart=${metadata?.rangeStart} computed=${startCandidate}`)
+        else
+            m.logs.printl(log_level_Type.DEBUG, `${logTag} Sequence lookup for seq=${seqCandidate} found no metadata`)
+        end if
+        if startCandidate <> invalid
+            if candidate = invalid or startCandidate < candidate
+                candidate = startCandidate
+            end if
+        end if
+    end if
 
-'     if newTimeMs > currentMs
-'         playbackContext["estimatedPlayerTimeMs"] = newTimeMs
-'     end if
-' end sub
+    if isValid(streamInfo?.mediaHeader)
+        tempCandidate = toInt(streamInfo.mediaHeader?.startMs)
+        if tempCandidate = invalid then tempCandidate = toInt(streamInfo.mediaHeader?.startTimeMs)
+        if tempCandidate = invalid
+            startTicks = toInt(streamInfo.mediaHeader?.timeRange?.startTicks)
+            timescale = toInt(streamInfo.mediaHeader?.timeRange?.timescale)
+            if startTicks <> invalid and timescale <> invalid and timescale <> 0
+                tempCandidate = int((startTicks * 1000) / timescale)
+            end if
+        end if
+        m.logs.printl(log_level_Type.DEBUG, `${logTag} StreamInfo fallback startMs=${streamInfo.mediaHeader?.startMs} startTimeMs=${streamInfo.mediaHeader?.startTimeMs} startTicks=${streamInfo.mediaHeader?.timeRange?.startTicks} timescale=${streamInfo.mediaHeader?.timeRange?.timescale} computed=${tempCandidate}`)
+        if tempCandidate <> invalid
+            if candidate = invalid or tempCandidate < candidate
+                candidate = tempCandidate
+            end if
+        end if
+    end if
+
+    if requestByteRange.DoesExist("segmentIndexInfo")
+        info = requestByteRange.segmentIndexInfo
+        m.logs.printl(log_level_Type.DEBUG, `${logTag} SegmentIndexInfo fallback: ${FormatJson(info)}`)
+    end if
+
+    formatKey = formatToKey(format)
+    if formatKey <> ""
+        totals = playbackContext?.deliveredDurationTotals
+        if GetInterface(totals, "ifAssociativeArray") <> invalid and totals.DoesExist(formatKey)
+            totalVal = toInt(totals.Lookup(formatKey))
+            if totalVal <> invalid and totalVal > 0
+                m.logs.printl(log_level_Type.DEBUG, `${logTag} Duration totals fallback for ${formatKey}: ${totalVal}`)
+                if candidate = invalid or candidate <= 0
+                    candidate = totalVal
+                end if
+            end if
+        end if
+    end if
+
+    return candidate
+end function
 
 function normalizeByteRange(cacheManager as dynamic, rawRange as object, context = invalid as dynamic) as object
     normalized = {
@@ -1444,9 +1531,24 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         "contentType": contentType
         "format": currentFormat
     })
-    ' overridePlayerTimeMs = sabr_resolvePlayerTimeMs(playbackContext, contentType, currentFormat, requestByteRange, videoNode)
+    streamInfoForFormat = fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
+    isInitSegmentRequest = isInit(contentType, currentFormat, requestByteRange, nextRequestId)
 
-    sabrRequestJson = createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, videoNode, nextRequestId) ', overridePlayerTimeMs)
+    formatKeyForLog = formatToKey(currentFormat)
+    totalsForLog = playbackContext?.deliveredDurationTotals
+    totalLogValue = invalid
+    if GetInterface(totalsForLog, "ifAssociativeArray") <> invalid and formatKeyForLog <> "" and totalsForLog.DoesExist(formatKeyForLog)
+        totalLogValue = totalsForLog.Lookup(formatKeyForLog)
+    end if
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolving segment start; init=${isInitSegmentRequest} formatKey=${formatKeyForLog} totals=${totalLogValue}`)
+
+    segmentStartOverride = resolveSegmentStartTimeMs(playbackContext, contentType, currentFormat, requestByteRange, streamInfoForFormat, nextRequestId)
+    if segmentStartOverride <> invalid
+        rangeLabelForLog = formatRequestedRangeForPath(requestByteRange)
+        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using segment start ${segmentStartOverride}ms for range ${rangeLabelForLog}`)
+    end if
+
+    sabrRequestJson = createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, segmentStartOverride, videoNode, nextRequestId)
 
      if isValid(currentFormat.height) 
         sabrRequestJson.clientAbrState.stickyResolution = currentFormat.height
@@ -1460,7 +1562,6 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         ' Sabr wants to send us both audio and video segments in the same response, but we only want one or the other
         sabrRequestJson.selectedFormatIds.push(formatToDiscard)
     end if
-    isInitSegmentRequest = isInit(contentType, currentFormat, requestByteRange, nextRequestId)
 
     cacheKey = buildSabrCacheKey(mediaIdHash, contentType, currentFormat, requestByteRange, isInitSegmentRequest)
 
@@ -1484,7 +1585,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         "contentType": contentType
         "mediaIdHash": mediaIdHash
         "cacheKey": cacheKey
-        "streamInfo": fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
+        "streamInfo": streamInfoForFormat
         "timestamp": sabrCurrentTimestampMs()
         "debugUploadUrl": debugUploadUrl
         "sabrKey": keyParam
@@ -1495,6 +1596,9 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     end if
     if requestByteRange.DoesExist("sequenceNumber")
         requestMetadataEntry["sequenceNumber"] = toInt(requestByteRange.sequenceNumber)
+    end if
+    if segmentStartOverride <> invalid
+        requestMetadataEntry["segmentStartMs"] = segmentStartOverride
     end if
     if isValid(cacheManager) and IsAssociativeArray(cacheManager) and cacheManager.DoesExist("computeIndexKey")
         indexKeyCandidate = cacheManager.computeIndexKey(cacheManager, {
@@ -1518,21 +1622,38 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     end if
 
     cacheHit = false
+    cacheLookupRange = formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+    cacheLookupLabel = `${cacheKey ?? ""}`
+    if cacheLookupLabel = "" then cacheLookupLabel = "none"
+    cacheHitSource = ""
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache lookup start isInit=${isInitSegmentRequest} key=${cacheLookupLabel} range=${cacheLookupRange}`)
     if isValid(cacheManager) and cacheKey <> ""
         cachedBytes = invalid
         if isInitSegmentRequest
             if hasCompleteByteRange(requestMetadataEntry.byteRange)
                 cachedBytes = cacheManager.getInitSegmentSlice(cacheManager, cacheKey, requestMetadataEntry.byteRange)
+                if isValid(cachedBytes) and cachedBytes.count() > 0
+                    cacheHitSource = "init-slice"
+                end if
             end if
             if not isValid(cachedBytes)
                 cachedBytes = cacheManager.getInitSegment(cacheManager, cacheKey)
+                if isValid(cachedBytes) and cachedBytes.count() > 0
+                    cacheHitSource = "init-full"
+                end if
             end if
         else
             if hasCompleteByteRange(requestMetadataEntry.byteRange)
                 cachedBytes = cacheManager.getSegmentSlice(cacheManager, cacheKey, requestMetadataEntry.byteRange)
+                if isValid(cachedBytes) and cachedBytes.count() > 0
+                    cacheHitSource = "segment-slice"
+                end if
             end if
             if not isValid(cachedBytes)
                 cachedBytes = cacheManager.getSegment(cacheManager, cacheKey)
+                if isValid(cachedBytes) and cachedBytes.count() > 0
+                    cacheHitSource = "segment-full"
+                end if
             end if
             if not isValid(cachedBytes)
                 segmentCacheKey = buildSegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
@@ -1540,9 +1661,15 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 if segmentCacheKey <> ""
                     if hasCompleteByteRange(requestMetadataEntry.byteRange)
                         cachedBytes = cacheManager.getSegmentSlice(cacheManager, segmentCacheKey, requestMetadataEntry.byteRange)
+                        if isValid(cachedBytes) and cachedBytes.count() > 0
+                            cacheHitSource = "segment-slice-alt"
+                        end if
                     end if
                     if not isValid(cachedBytes)
                         cachedBytes = cacheManager.getSegment(cacheManager, segmentCacheKey)
+                        if isValid(cachedBytes) and cachedBytes.count() > 0
+                            cacheHitSource = "segment-full-alt"
+                        end if
                     end if
                     if isValid(cachedBytes) and cachedBytes.count() > 0
                         cacheKey = segmentCacheKey
@@ -1601,8 +1728,11 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
             prefetchInfo = buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
             maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
             cacheHit = true
-            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache hit for SABR key: ${cacheKey}`)
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache hit (${cacheHitSource}) key=${cacheKey} range=${cacheLookupRange} bytes=${cachedBytes.count()}`)
         end if
+    end if
+    if cacheHit = false
+        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache miss key=${cacheLookupLabel} range=${cacheLookupRange}`)
     end if
     batchCounter =  m.top.utilsTask.callFunc("getNextId", "sabrBatchCounter")
     playbackContext["lastDumpIndex"] = batchCounter
@@ -1912,7 +2042,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     prefetchInfo = buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
                                     maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
 
-                                    applyStreamInfoUpdates(playbackContext, requestMetadata.streamInfo, contentType, deliveredSegment)
+                                    applyStreamInfoUpdates(playbackContext, requestMetadata.streamInfo, contentType, deliveredSegment, requestMetadataEntry)
                                     if deliveredSegment = true
                                         storeStreamInfoForFormat(playbackContext, contentType, currentFormat, requestMetadata.streamInfo)
                                         ' if isValid(requestMetadata.streamInfo)
@@ -2048,7 +2178,7 @@ function pickMeasuredBitrate(info as dynamic) as dynamic
     return invalid
 end function
 
-function createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, videoNode as object, requestRef = invalid as dynamic) as object ' , overridePlayerTimeMs = invalid as dynamic
+function createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic) as object
     ' Create the ABR request object
     logTag = sabr_utilLogTag(contentType, requestRef)
     if not isValid(sabr.ustreamerConfig)
@@ -2096,25 +2226,26 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
     AUDIO_ONLY = 1
     VIDEO_ONLY = 2
 
-    ' estimatedMs = toInt(playbackContext?.estimatedPlayerTimeMs)
     observedMs = int((videoNode.position ?? 0) * 1000)
     if observedMs < 0 then observedMs = 0
-    ' if estimatedMs = invalid or estimatedMs < 0 then estimatedMs = observedMs
 
-    ' playerTimeMs = estimatedMs
+    overrideMs = toInt(playerTimeOverride)
     playerTimeMs = observedMs
-    ' if overridePlayerTimeMs <> invalid
-    '     candidate = toInt(overridePlayerTimeMs)
-    '     if candidate <> invalid then playerTimeMs = candidate
-    ' end if
+    overrideUsed = false
+    if overrideMs <> invalid
+        if overrideMs < 0 then overrideMs = 0
+        playerTimeMs = overrideMs
+        overrideUsed = true
+    end if
     if playerTimeMs < 0 then playerTimeMs = 0
-    ' playbackContext["estimatedPlayerTimeMs"] = playerTimeMs
 
-    m.logs.printl(log_level_Type.INFO, `${logTag} Creating SABR ABR request with playerTimeMs=${playerTimeMs}, bandwidthEstimate=${bandwidthEstimate}`)
+    ' include the request byte range in the log
+    overrideNote = overrideUsed ? " (segment-start override)" : ""
+    m.logs.printl(log_level_Type.INFO, `${logTag} Creating SABR ABR request with playerTimeMs=${playerTimeMs}, byteRange=${FormatJson(request.search)}, bandwidthEstimate=${bandwidthEstimate}${overrideNote}`)
 
     req = {
         "clientAbrState": {
-            "playbackRate": videoNode.playbackSpeed,
+            "playbackRate": videoNode.playbackSpeed ?? 1.0,
             "playerTimeMs": playerTimeMs.toStr(),
             "clientViewportIsFlexible": false,
             "bandwidthEstimate": bandwidthEstimate.toStr(),
@@ -2811,7 +2942,7 @@ function buildErrorResponseForPlayer(status as integer, message as string) as ob
     }
 end function
 
-sub applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean)
+sub applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
     if not isValid(streamInfo) then return
 
     if isValid(streamInfo.nextRequestPolicy)
@@ -2880,6 +3011,10 @@ sub applyStreamInfoUpdates(playbackContext as object, streamInfo as object, cont
                         playbackContext["lastAudioSegmentMetadata"] = metadataFromHeader
                     end if
                 end if
+
+                if isValid(requestMetadataEntry?.format)
+                    updateDeliveredDurationTotals(playbackContext, contentType, requestMetadataEntry.format, metadataFromHeader)
+                end if
             end if
             recordSegmentMetadata(playbackContext, contentType, formatKey, metadataFromHeader)
         end if
@@ -2945,6 +3080,59 @@ sub recordSegmentMetadata(playbackContext as object, contentType as string, form
     if GetInterface(byRange, "ifAssociativeArray") = invalid then return
 
     byRange[startRangeVal.toStr()] = metadata
+end sub
+
+sub updateDeliveredDurationTotals(playbackContext as object, contentType as string, format as object, metadata as dynamic)
+    if not isValid(playbackContext) then return
+    if not isValid(format) then return
+    if not isValid(metadata) then return
+    if metadata?.isInitSeg = true then return
+
+    formatKey = formatToKey(format)
+    if formatKey = "" then return
+
+    durationVal = segmentDurationMs(metadata)
+    if durationVal = invalid or durationVal <= 0 then return
+
+    tracker = playbackContext?.deliveredSegmentTracking
+    if GetInterface(tracker, "ifAssociativeArray") = invalid
+        tracker = {}
+    end if
+
+    formatTracker = tracker.Lookup(formatKey)
+    if GetInterface(formatTracker, "ifAssociativeArray") = invalid
+        formatTracker = {}
+    end if
+
+    segmentId = ""
+    seqVal = toInt(metadata?.sequenceNumber)
+    if seqVal <> invalid and seqVal >= 0
+        segmentId = `seq:${seqVal}`
+    else
+        rangeLabel = sabr_valueToLabel(metadata?.rangeStart)
+        if rangeLabel <> "" then segmentId = `range:${rangeLabel}`
+    end if
+    if segmentId = "" then segmentId = `ts:${sabr_valueToLabel(metadata?.startTimeMs)}`
+    if segmentId = "" then segmentId = `id:${durationVal.toStr()}`
+
+    if formatTracker.DoesExist(segmentId) then return
+
+    formatTracker[segmentId] = durationVal
+    tracker[formatKey] = formatTracker
+    playbackContext["deliveredSegmentTracking"] = tracker
+
+    totals = playbackContext?.deliveredDurationTotals
+    if GetInterface(totals, "ifAssociativeArray") = invalid
+        totals = {}
+    end if
+
+    currentTotal = toInt(totals.Lookup(formatKey))
+    if currentTotal = invalid then currentTotal = 0
+    totals[formatKey] = currentTotal + durationVal
+    playbackContext["deliveredDurationTotals"] = totals
+
+    logTag = sabr_utilLogTag(contentType, playbackContext?.requestNumber)
+    m.logs.printl(log_level_Type.DEBUG, `${logTag} Recorded segment duration ${durationVal}ms for ${formatKey}; cumulative=${totals[formatKey]}`)
 end sub
 
 ' function sabr_lookupStartMsForRange(metadataByRange as object, requestedStart as integer) as dynamic

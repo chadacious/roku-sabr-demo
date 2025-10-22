@@ -10,6 +10,10 @@ sub init()
     m.titleLabel = m.top.findNode("titleLabel")
 end sub
 
+function getVideoNodeRef() as object
+    return m.videoNode
+end function
+
 sub setVideo(data as object)
     title = data.title
     manifestPath = data.manifestPath
