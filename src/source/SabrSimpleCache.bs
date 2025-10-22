@@ -1,0 +1,497 @@
+' Simple filesystem-based cache helpers for SABR segments.
+
+const SABR_CACHE_BASE_DIR = "tmp:/sabr-cache"
+const SABR_CACHE_LOG_SAMPLE = 8
+
+sub sabrCacheSetLogger(logs as dynamic)
+    m.sabrCacheLogger = logs
+end sub
+
+function sabrCacheLogger() as dynamic
+    return m?.sabrCacheLogger
+end function
+
+function sabrCacheEnsureBasePath() as string
+    fs = CreateObject("roFileSystem")
+    if not fs.Exists(SABR_CACHE_BASE_DIR)
+        success = fs.CreateDirectory(SABR_CACHE_BASE_DIR)
+        logObj = sabrCacheLogger()
+        if success <> true and GetInterface(logObj, "ifAssociativeArray") <> invalid
+            logObj.printl(log_level_Type.WARN, `[SabrCache] Failed to create cache directory ${SABR_CACHE_BASE_DIR}`)
+        end if
+    end if
+    return SABR_CACHE_BASE_DIR
+end function
+
+function sabrCacheSanitize(value as dynamic) as string
+    if not isValid(value) then return ""
+    str = ""
+    if IsString(value)
+        str = value
+    else
+        str = Str(value)
+    end if
+    str = str.trim()
+    if str = "" then return ""
+    result = ""
+    total = Len(str)
+    for i = 1 to total
+        ch = Mid(str, i, 1)
+        ascii = Asc(ch)
+        isAlphaNum = (ascii >= 48 and ascii <= 57) or (ascii >= 65 and ascii <= 90) or (ascii >= 97 and ascii <= 122)
+        if isAlphaNum
+            result = result + LCase(ch)
+        else if ch = "-" or ch = "_"
+            result = result + ch
+        else
+            result = result + "_"
+        end if
+    end for
+    return result
+end function
+
+function sabrCacheMetadataTable() as object
+    table = m?.sabrCacheMetadataTable
+    if GetInterface(table, "ifAssociativeArray") = invalid
+        table = {}
+        m.sabrCacheMetadataTable = table
+    end if
+    return table
+end function
+
+sub sabrCacheRememberMetadata(fileName as string, metadata as object)
+    if not IsString(fileName) then return
+    if fileName = "" then return
+    if GetInterface(metadata, "ifAssociativeArray") = invalid then return
+    meaningful = false
+    fields = [ "startSegmentIndex", "endSegmentIndex", "startTimeMs", "durationMs", "timescale", "startTicks", "durationTicks" ]
+    for each fieldName in fields
+        value = invalid
+        if metadata.DoesExist(fieldName)
+            value = metadata.Lookup(fieldName)
+        end if
+        if isValid(value)
+            meaningful = true
+            exit for
+        end if
+    end for
+    table = sabrCacheMetadataTable()
+    if not meaningful
+        if table.DoesExist(fileName)
+            table.Delete(fileName)
+        end if
+        return
+    end if
+    table = sabrCacheMetadataTable()
+    table[fileName] = metadata
+end sub
+
+function sabrCacheLookupMetadata(fileName as string) as dynamic
+    if not IsString(fileName) then return invalid
+    if fileName = "" then return invalid
+    table = sabrCacheMetadataTable()
+    if table.DoesExist(fileName)
+        return table.Lookup(fileName)
+    end if
+    return invalid
+end function
+
+sub sabrCachePruneMetadata(activeNames as object)
+    if GetInterface(activeNames, "ifArray") = invalid
+        m.sabrCacheMetadataTable = {}
+        return
+    end if
+
+    table = sabrCacheMetadataTable()
+    cleaned = {}
+    for each name in activeNames
+        if IsString(name) and name <> ""
+            if table.DoesExist(name)
+                cleaned[name] = table.Lookup(name)
+            end if
+        end if
+    end for
+    m.sabrCacheMetadataTable = cleaned
+end sub
+
+function sabrCacheExtractFileName(path as string) as string
+    if not IsString(path) then return ""
+    if path = "" then return ""
+    parts = path.Split("/")
+    if GetInterface(parts, "ifArray") = invalid or parts.count() = 0 then return path
+    return parts[parts.count() - 1]
+end function
+
+function sabrCacheBuildFilename(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string, isInitSegment = false as boolean, rangeStart = invalid as dynamic, rangeEnd = invalid as dynamic) as string
+    parts = []
+    parts.push(sabrCacheSanitize(mediaIdHash))
+    parts.push(sabrCacheSanitize(contentType))
+    parts.push(`itag${sabrCacheSanitize(itag)}`)
+    trackClean = sabrCacheSanitize(trackId)
+    if trackClean <> "" then parts.push(`track${trackClean}`)
+    if isInitSegment
+        parts.push("init")
+    else
+        parts.push("seg")
+        parts.push(sabrCacheSanitize(rangeStart))
+        parts.push(sabrCacheSanitize(rangeEnd))
+    end if
+    name = parts.Join("-") + ".bin"
+    base = sabrCacheEnsureBasePath()
+    return `${base}/${name}`
+end function
+
+function sabrCacheParseEntry(fileName as string) as object
+    if Right(fileName, 4) <> ".bin" then return invalid
+    core = Left(fileName, Len(fileName) - 4)
+    parts = core.Split("-")
+    if GetInterface(parts, "ifArray") = invalid then return invalid
+    count = parts.count()
+    if count < 4 then return invalid
+
+    idx = 0
+    entry = {}
+    entry.mediaIdHash = parts[idx]
+    idx = idx + 1
+    entry.contentType = parts[idx]
+    idx = idx + 1
+
+    if count <= idx then return invalid
+    itagPart = parts[idx]
+    idx = idx + 1
+    if itagPart.Left(4) <> "itag" then return invalid
+    entry.itag = itagPart.Mid(4)
+
+    entry.trackId = ""
+    if count > idx and Left(parts[idx], 5) = "track"
+        entry.trackId = parts[idx].Mid(5)
+        idx = idx + 1
+    end if
+
+    if count <= idx then return invalid
+    indicator = parts[idx]
+    idx = idx + 1
+    if indicator = "init"
+        entry.isInit = true
+        entry.rangeStart = invalid
+        entry.rangeEnd = invalid
+    else if indicator = "seg"
+        entry.isInit = false
+        if count <= idx then return invalid
+        startToken = parts[idx]
+        if startToken = ""
+            entry.rangeStart = invalid
+        else
+            entry.rangeStart = Val(startToken)
+        end if
+        idx = idx + 1
+        if count <= idx then return invalid
+        endToken = parts[idx]
+        if endToken = ""
+            entry.rangeEnd = invalid
+        else
+            entry.rangeEnd = Val(endToken)
+        end if
+    else
+        return invalid
+    end if
+
+    entry.fileName = fileName
+    entry.path = `${sabrCacheEnsureBasePath()}/${fileName}`
+
+    extra = sabrCacheLookupMetadata(fileName)
+    if GetInterface(extra, "ifAssociativeArray") <> invalid
+        if extra.DoesExist("startSegmentIndex") then entry.startSegmentIndex = extra.Lookup("startSegmentIndex")
+        if extra.DoesExist("endSegmentIndex") then entry.endSegmentIndex = extra.Lookup("endSegmentIndex")
+        if extra.DoesExist("startTimeMs") then entry.startTimeMs = extra.Lookup("startTimeMs")
+        if extra.DoesExist("durationMs") then entry.durationMs = extra.Lookup("durationMs")
+        if extra.DoesExist("timescale") then entry.timescale = extra.Lookup("timescale")
+        if extra.DoesExist("startTicks") then entry.startTicks = extra.Lookup("startTicks")
+        if extra.DoesExist("durationTicks") then entry.durationTicks = extra.Lookup("durationTicks")
+    end if
+    return entry
+end function
+
+function sabrCacheListEntries(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string) as object
+    base = sabrCacheEnsureBasePath()
+    fs = CreateObject("roFileSystem")
+    names = fs.GetDirectoryListing(base)
+    results = []
+    if GetInterface(names, "ifArray") = invalid then return results
+
+    sabrCachePruneMetadata(names)
+
+    targetMedia = sabrCacheSanitize(mediaIdHash)
+    targetType = sabrCacheSanitize(contentType)
+    targetItag = sabrCacheSanitize(itag)
+    targetTrack = sabrCacheSanitize(trackId)
+
+    for each name in names
+        entry = sabrCacheParseEntry(name)
+        if GetInterface(entry, "ifAssociativeArray") = invalid then continue for
+        entryMedia = sabrCacheSanitize(entry.mediaIdHash)
+        entryType = sabrCacheSanitize(entry.contentType)
+        entryItag = sabrCacheSanitize(entry.itag)
+        entryTrack = sabrCacheSanitize(entry.trackId)
+        if entryMedia <> targetMedia then continue for
+        if entryType <> targetType then continue for
+        if entryItag <> targetItag then continue for
+        if targetTrack <> "" and entryTrack <> targetTrack then continue for
+        if targetTrack = "" and entryTrack <> "" then continue for
+        results.push(entry)
+    end for
+    return results
+end function
+
+function sabrCacheStoreSegment(options as object) as object
+    if GetInterface(options, "ifAssociativeArray") = invalid then return invalid
+    bytes = options?.bytes
+    if GetInterface(bytes, "ifByteArray") = invalid then return invalid
+
+    path = sabrCacheBuildFilename(
+        options?.mediaIdHash,
+        options?.contentType,
+        options?.itag,
+        options?.trackId ?? "",
+        options?.isInit = true,
+        options?.rangeStart,
+        options?.rangeEnd
+    )
+
+    base = sabrCacheEnsureBasePath()
+    fs = CreateObject("roFileSystem")
+    if not fs.Exists(base)
+        fs.CreateDirectory(base)
+    end if
+
+    success = bytes.writeFile(path)
+    if success <> true then return invalid
+
+    fileName = sabrCacheExtractFileName(path)
+    extra = {}
+    if isValid(options?.startSegmentIndex)
+        extra.startSegmentIndex = options.startSegmentIndex
+    end if
+    if isValid(options?.endSegmentIndex)
+        extra.endSegmentIndex = options.endSegmentIndex
+    end if
+    if isValid(options?.startTimeMs)
+        extra.startTimeMs = options.startTimeMs
+    end if
+    if isValid(options?.durationMs)
+        extra.durationMs = options.durationMs
+    end if
+    if isValid(options?.timescale)
+        extra.timescale = options.timescale
+    end if
+    if isValid(options?.startTicks)
+        extra.startTicks = options.startTicks
+    end if
+    if isValid(options?.durationTicks)
+        extra.durationTicks = options.durationTicks
+    end if
+    sabrCacheRememberMetadata(fileName, extra)
+
+    sabrCacheLogSnapshot("store", path)
+    return {
+        path: path
+        rangeStart: options?.rangeStart
+        rangeEnd: options?.rangeEnd
+    }
+end function
+
+function sabrCacheLoadSegment(params as object) as object
+    if GetInterface(params, "ifAssociativeArray") = invalid then return invalid
+    entries = sabrCacheListEntries(params?.mediaIdHash, params?.contentType, params?.itag, params?.trackId ?? "")
+    if entries.count() = 0 then return invalid
+
+    requestedStart = Val(params?.requestedStart)
+    requestedEnd = Val(params?.requestedEnd)
+    hasStart = requestedStart <> invalid
+    hasEnd = requestedEnd <> invalid
+
+    best = invalid
+    for each entry in entries
+        if entry.isInit = true
+            if params?.isInit = true
+                best = entry
+                exit for
+            else
+                continue for
+            end if
+        end if
+
+        if params?.isInit = true then continue for
+
+        coverageStart = entry?.rangeStart
+        coverageEnd = entry?.rangeEnd
+        if coverageStart = invalid or coverageEnd = invalid then continue for
+
+        matches = true
+        if hasStart and requestedStart < coverageStart then matches = false
+        if matches and hasEnd and requestedEnd > coverageEnd then matches = false
+
+        if matches = false then
+            ' allow exact end match when end unknown
+            if hasStart and coverageStart = requestedStart and hasEnd = false
+                matches = true
+            end if
+        end if
+
+        if matches
+            if best = invalid
+                best = entry
+            else
+                ' prefer tighter coverage
+                bestSpan = (best.rangeEnd - best.rangeStart)
+                entrySpan = (coverageEnd - coverageStart)
+                if entrySpan < bestSpan
+                    best = entry
+                end if
+            end if
+        end if
+    end for
+
+    if params?.isInit = true and best = invalid
+        ' fallback: use first init if available
+        for each entry in entries
+            if entry.isInit = true
+                best = entry
+                exit for
+            end if
+        end for
+    end if
+
+    if best = invalid then return invalid
+
+    bytes = CreateObject("roByteArray")
+    if not bytes.readFile(best.path) then return invalid
+
+    coverageStart = best?.rangeStart
+    coverageEnd = best?.rangeEnd
+    if best.isInit = true
+        coverageStart = 0
+        coverageEnd = bytes.count() - 1
+    end if
+
+    sabrCacheLogSnapshot("load", best.path)
+
+    if params?.isInit = true
+        return {
+            data: bytes
+            rangeStart: coverageStart
+            rangeEnd: coverageEnd
+            path: best.path
+        }
+    end if
+
+    if hasStart and coverageStart <> invalid and requestedStart > coverageStart
+        offset = requestedStart - coverageStart
+    else
+        offset = 0
+    end if
+
+    if hasEnd and coverageEnd <> invalid
+        desiredLength = (requestedEnd - (coverageStart + offset)) + 1
+        if desiredLength < 0 then desiredLength = 0
+    else
+        desiredLength = bytes.count() - offset
+    end if
+
+    if offset <= 0 and desiredLength >= bytes.count()
+        sliced = bytes
+    else
+        sliced = CreateObject("roByteArray")
+        if desiredLength < 0 then desiredLength = 0
+        if desiredLength > bytes.count() - offset then desiredLength = bytes.count() - offset
+        if desiredLength < 0 then desiredLength = 0
+        if desiredLength = 0
+            ' return empty array
+        else
+            for i = 0 to desiredLength - 1
+                sliced[i] = bytes[offset + i]
+            end for
+        end if
+    end if
+
+    effectiveStart = coverageStart
+    if hasStart and requestedStart <> invalid
+        effectiveStart = requestedStart
+    end if
+    effectiveEnd = effectiveStart + sliced.count() - 1
+
+    return {
+        data: sliced
+        rangeStart: effectiveStart
+        rangeEnd: effectiveEnd
+        path: best.path
+    }
+end function
+
+sub sabrCacheLogSnapshot(reason as string, focusPath as string)
+    logs = sabrCacheLogger()
+    if GetInterface(logs, "ifAssociativeArray") = invalid then return
+
+    base = sabrCacheEnsureBasePath()
+    fs = CreateObject("roFileSystem")
+    entries = fs.GetDirectoryListing(base)
+    if GetInterface(entries, "ifArray") = invalid then return
+
+    limit = SABR_CACHE_LOG_SAMPLE
+    summary = ""
+    total = entries.count()
+    if total = 0 then return
+
+    ' simple lexicographic sort descending
+    for i = 0 to total - 2
+        for j = i + 1 to total - 1
+            if entries[j] > entries[i]
+                temp = entries[i]
+                entries[i] = entries[j]
+                entries[j] = temp
+            end if
+        end for
+    end for
+
+    for idx = 0 to total - 1
+        if idx >= limit then exit for
+        file = entries[idx]
+        path = `${base}/${file}`
+        bytes = CreateObject("roByteArray")
+        sizeLabel = "?"
+        if bytes.readFile(path)
+            sizeLabel = sabrCache_formatSize(bytes.count())
+        end if
+        label = `${file}(${sizeLabel})`
+        if summary = ""
+            summary = label
+        else
+            summary = `${summary}, ${label}`
+        end if
+    end for
+
+    focusLabel = focusPath
+    if focusLabel <> "" and focusLabel.InStr("/") >= 0
+        parts = focusLabel.Split("/")
+        focusLabel = parts[parts.count() - 1]
+    end if
+
+    logs.printl(log_level_Type.DEBUG, `[SabrCache] snapshot reason=${reason} focus=${focusLabel} -> ${summary}`)
+end sub
+
+function sabrCache_formatSize(sizeValue as dynamic) as string
+    sizeNum = 0
+    if IsInteger(sizeValue) or IsFloat(sizeValue) or IsDouble(sizeValue)
+        sizeNum = sizeValue
+    else if IsString(sizeValue)
+        sizeNum = Val(sizeValue)
+    else
+        sizeNum = 0
+    end if
+    if sizeNum = invalid or sizeNum < 0 then return "?"
+    if sizeNum < 1024 then return `${Int(sizeNum)}B`
+    kb = sizeNum / 1024.0
+    if kb < 1024 then return `${Int(kb + 0.5)}KB`
+    mb = kb / 1024.0
+    return `${Int(mb + 0.5)}MB`
+end function

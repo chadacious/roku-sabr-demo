@@ -6,7 +6,7 @@ const EXTERNAL_DUMP_DIRECTORIES = [
     EXTERNAL_DUMP_ROOT,
     path.join(EXTERNAL_DUMP_ROOT, "roku-player"),
 ];
-const EXTERNAL_TELNET_LOG_PATH = path.join(EXTERNAL_DUMP_ROOT, "telnet.log");
+const EXTERNAL_TELNET_LOG_PATH = path.join(EXTERNAL_DUMP_ROOT, "telnet.ansi");
 
 async function prepareExternalDumpDirectories() {
     for (const directory of EXTERNAL_DUMP_DIRECTORIES) {

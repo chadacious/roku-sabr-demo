@@ -35,13 +35,12 @@ const UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY = 59
 const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
 ' Usage: call from SabrStreamingAdapter once you receive sabrUmpResponse bytes.
-'   processor = createSabrUmpProcessor(requestMetadata, cacheManager, logs)
+'   processor = createSabrUmpProcessor(requestMetadata, logs)
 '   result = processor.processChunk(sabrUmpResponse)
 ' The processor keeps incremental state so you can feed additional chunks if needed.
-function createSabrUmpProcessor(requestMetadata as object, cacheManager = invalid, logs = invalid) as object
+function createSabrUmpProcessor(requestMetadata as object, logs = invalid) as object
     processor = {
         requestMetadata: requestMetadata
-        cacheManager: cacheManager
         logs: logs
 
         _pendingBytes: createObject("roByteArray")
@@ -614,38 +613,54 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
         seqVal = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
         if seqVal <> invalid then coverageRange["sequenceNumber"] = seqVal
 
-        if isValid(ctx.cacheManager)
-            cacheKey = createSegmentCacheKey(segment.mediaHeader, ctx.requestMetadata.format, coverageRange?.rangeStart, coverageRange?.rangeEnd)
-            if isValid(segmentData) and segmentData.count() > 0
-                try
-                    cacheObj = ctx.cacheManager
-                    if GetInterface(cacheObj, "ifAssociativeArray") <> invalid
-                        if cacheObj.DoesExist("setInitSegment")
-                            cacheObj.setInitSegment(cacheObj, cacheKey, segmentData, coverageRange)
-                        else if cacheObj.DoesExist("storeInitSegment")
-                            cacheObj.storeInitSegment(cacheObj, cacheKey, segmentData, coverageRange)
-                        end if
-                        if cacheObj.DoesExist("registerSegmentIndex") and cacheObj.DoesExist("computeIndexKey")
-                            indexMetadata = {
-                                mediaIdHash: coverageRange?.mediaIdHash
-                                contentType: coverageRange?.contentType
-                                itag: coverageRange?.itag
-                                xtags: coverageRange?.xtags
-                            }
-                            sidxInfo = sabr_ump_extractSidxIndex(segmentData)
-                            if isValid(sidxInfo)
-                                cacheObj.registerSegmentIndex(cacheObj, indexMetadata, sidxInfo)
-                                coverageRange["segmentIndexKey"] = cacheObj.computeIndexKey(cacheObj, indexMetadata)
-                                sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Registered sidx index ${coverageRange["segmentIndexKey"]}`)
-                            else
-                                sabr_ump_log(ctx, log_level_Type.DEBUG, "[SabrUmpProcessor] No sidx structure detected in init segment")
-                            end if
-                        end if
-                    end if
-                catch e
-                    sabr_ump_log(ctx, log_level_Type.FATAL, `[SabrUmpProcessor] Cache manager could not store init segment: ${e.message}`)
-                end try
-            end if
+        startSeqVal = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
+        endSeqVal = sabr_ump_toInt(segment.mediaHeader?.endSequenceNumber)
+        if endSeqVal = invalid
+            endSeqVal = startSeqVal
+        end if
+        startTimeVal = sabr_ump_toInt(segment.mediaHeader?.startMs)
+        if startTimeVal = invalid then startTimeVal = sabr_ump_toInt(segment.mediaHeader?.startTimeMs)
+        timescaleVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.timescale)
+        startTicksVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.startTicks)
+        durationTicksVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.durationTicks)
+        durationVal = sabr_ump_toInt(segment.mediaHeader?.durationMs)
+        if durationVal = invalid and durationTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
+            durationVal = int((durationTicksVal * 1000) / timescaleVal)
+        end if
+        if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
+            startTimeVal = int((startTicksVal * 1000) / timescaleVal)
+        end if
+
+        initStore = {
+            mediaIdHash: coverageRange?.mediaIdHash
+            contentType: coverageRange?.contentType
+            itag: coverageRange?.itag
+            trackId: ctx.requestMetadata?.format?.audioTrackId
+            rangeStart: coverageRange?.rangeStart
+            rangeEnd: coverageRange?.rangeEnd
+            isInit: true
+            bytes: segmentData
+            startSegmentIndex: startSeqVal
+            endSegmentIndex: endSeqVal
+            startTimeMs: startTimeVal
+            durationMs: durationVal
+            timescale: timescaleVal
+            startTicks: startTicksVal
+            durationTicks: durationTicksVal
+        }
+
+        if not isValid(initStore.itag) and isValid(segment.mediaHeader?.formatId)
+            initStore.itag = segment.mediaHeader.formatId?.itag
+        end if
+
+        cacheResult = sabrCacheStoreSegment(initStore)
+        cachedInit = cacheResult?.path ?? ""
+        if cachedInit <> "" and cachedInit.InStr("/") >= 0
+            partsInit = cachedInit.Split("/")
+            cachedInit = partsInit[partsInit.count() - 1]
+        end if
+        if cachedInit <> ""
+            sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Stored init segment ${cachedInit}`)
         end if
 
         sabr_ump_resetProcessingState(ctx)
@@ -709,51 +724,66 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
 end function
 
 sub sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segmentData as object)
-    if not isValid(ctx) or not isValid(ctx.cacheManager) then return
+    if not isValid(ctx) then return
     if not isValid(segmentData) or segmentData.count() = 0 then return
+
+    isInitSeg = mediaHeader?.isInitSeg = true
     startVal = sabr_ump_toInt(mediaHeader?.startRange)
     if startVal = invalid then startVal = 0
     rangeEnd = startVal + segmentData.count() - 1
-    cacheKey = createSegmentCacheKey(mediaHeader, ctx.requestMetadata?.format, startVal, rangeEnd)
-    if cacheKey = "" then return
 
-    coverageRange = {
+    startSeq = sabr_ump_toInt(mediaHeader?.startSequenceNumber)
+    if startSeq = invalid then startSeq = sabr_ump_toInt(mediaHeader?.sequenceNumber)
+    if startSeq = invalid then startSeq = sabr_ump_toInt(mediaHeader?.segmentIndex)
+    endSeq = sabr_ump_toInt(mediaHeader?.endSequenceNumber)
+    if endSeq = invalid then endSeq = startSeq
+    startTimeVal = sabr_ump_toInt(mediaHeader?.startMs)
+    if startTimeVal = invalid then startTimeVal = sabr_ump_toInt(mediaHeader?.startTimeMs)
+    timescaleVal = sabr_ump_toInt(mediaHeader?.timeRange?.timescale)
+    startTicksVal = sabr_ump_toInt(mediaHeader?.timeRange?.startTicks)
+    durationTicksVal = sabr_ump_toInt(mediaHeader?.timeRange?.durationTicks)
+    durationVal = sabr_ump_toInt(mediaHeader?.durationMs)
+    if durationVal = invalid and durationTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
+        durationVal = int((durationTicksVal * 1000) / timescaleVal)
+    end if
+    if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
+        startTimeVal = int((startTicksVal * 1000) / timescaleVal)
+    end if
+
+    storeOptions = {
+        mediaIdHash: ctx.requestMetadata?.mediaIdHash
+        contentType: ctx.requestMetadata?.contentType
+        itag: mediaHeader?.itag
+        trackId: ctx.requestMetadata?.format?.audioTrackId
         rangeStart: startVal
         rangeEnd: rangeEnd
-        headerId: mediaHeader?.headerId
+        isInit: isInitSeg
+        bytes: segmentData
+        startSegmentIndex: startSeq
+        endSegmentIndex: endSeq
+        startTimeMs: startTimeVal
+        durationMs: durationVal
+        timescale: timescaleVal
+        startTicks: startTicksVal
+        durationTicks: durationTicksVal
     }
-    coverageRange["contentType"] = ctx.requestMetadata?.contentType
-    coverageRange["itag"] = mediaHeader?.itag
-    if not isValid(coverageRange["itag"]) and isValid(mediaHeader?.formatId)
-        coverageRange["itag"] = mediaHeader.formatId?.itag
-    end if
-    if isValid(mediaHeader?.xtags)
-        coverageRange["xtags"] = mediaHeader?.xtags
-    else if isValid(mediaHeader?.formatId)
-        coverageRange["xtags"] = mediaHeader.formatId?.xtags
-    end if
-    coverageRange["mediaIdHash"] = ctx.requestMetadata?.mediaIdHash
-    seqVal = sabr_ump_toInt(mediaHeader?.sequenceNumber)
-    if seqVal <> invalid then coverageRange["sequenceNumber"] = seqVal
-    coverageRange["cacheKey"] = cacheKey
-    if GetInterface(ctx.cacheManager, "ifAssociativeArray") <> invalid and ctx.cacheManager.DoesExist("computeIndexKey")
-        segmentIndexKey = ctx.cacheManager.computeIndexKey(ctx.cacheManager, {
-            mediaIdHash: coverageRange?.mediaIdHash
-            contentType: coverageRange?.contentType
-            itag: coverageRange?.itag
-            xtags: coverageRange?.xtags
-        })
-        if segmentIndexKey <> ""
-            coverageRange["segmentIndexKey"] = segmentIndexKey
-        end if
+
+    if not isValid(storeOptions.itag) and isValid(mediaHeader?.formatId)
+        storeOptions.itag = mediaHeader.formatId?.itag
     end if
 
-    try
-        ctx.cacheManager.storeSegment(ctx.cacheManager, cacheKey, segmentData, coverageRange)
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Cached segment ${cacheKey} coverage=${startVal}-${rangeEnd}`)
-    catch e
-        sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to cache segment ${cacheKey}: ${e.message}`)
-    end try
+    cacheResult = sabrCacheStoreSegment(storeOptions)
+    cachedName = cacheResult?.path ?? ""
+    if cachedName <> "" and cachedName.InStr("/") >= 0
+        nameParts = cachedName.Split("/")
+        cachedName = nameParts[nameParts.count() - 1]
+    end if
+
+    if cachedName <> ""
+        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Cached segment ${cachedName} coverage=${startVal}-${rangeEnd}`)
+    else
+        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Cached segment coverage=${startVal}-${rangeEnd}`)
+    end if
 end sub
 
 function sabr_ump_mergeStreamInfo(ctx as object, newInfo as object) as void
@@ -1063,7 +1093,8 @@ end sub
 sub sabr_ump_uploadDirectory(ctx as object, baseUrl as string, fullPath as string, relativePath as string)
     entries = invalid
     try
-        entries = ListDir(fullPath)
+        fs = CreateObject("roFileSystem")
+        entries = fs.GetDirectoryListing(fullPath)
     catch e
         entries = invalid
     end try
@@ -1317,7 +1348,8 @@ end sub
 sub sabr_ump_deleteDirectoryContents(path as string)
     entries = invalid
     try
-        entries = ListDir(path)
+        fs = CreateObject("roFileSystem")
+        entries = fs.GetDirectoryListing(path)
     catch e
         entries = invalid
     end try
@@ -1397,7 +1429,8 @@ sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as o
         types.push(mp4box.type)
     end for
 
-    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Init diagnostics: boxes=${FormatJson(types)} size=${bytes.count()} cacheKey=${createSegmentCacheKey(mediaHeader, format)}`)
+    cacheKey = sabr_ump_buildCacheKey(ctx, mediaHeader, invalid, invalid, true)
+    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Init diagnostics: boxes=${FormatJson(types)} size=${bytes.count()} cacheKey=${cacheKey}`)
 
     if not findInArray(types, "ftyp")
         sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing ftyp box")
@@ -1659,36 +1692,96 @@ function formatInitializationKey(mediaHeader as dynamic) as string
     return parts.join(":")
 end function
 
-function createSegmentCacheKey(mediaHeader as object, format = invalid, rangeStart = invalid, rangeEnd = invalid) as string
-    if mediaHeader?.isInitSeg = true and isValid(format)
-        startLabel = sabr_ump_toSafeString(rangeStart)
-        endLabel = sabr_ump_toSafeString(rangeEnd)
-        if startLabel = "" then startLabel = "0"
-        if endLabel = "" and isValid(format?.contentLength)
-            endLabel = sabr_ump_toSafeString(format.contentLength)
-        end if
-        return `${mediaHeader.itag}:${mediaHeader.xtags ?? ""}:${startLabel}-${endLabel}:${format.mimeType ?? ""}`
-    end if
+function sabr_ump_buildCacheKey(ctx as object, mediaHeader as object, rangeStart = invalid, rangeEnd = invalid, isInitSegment = false) as string
+    request = ctx?.requestMetadata
+    format = request?.format
 
-    startLabel = sabr_ump_toSafeString(rangeStart)
-    if startLabel = ""
-        startLabel = sabr_ump_toSafeString(mediaHeader?.startRange)
-    end if
-    if startLabel = "" then startLabel = "0"
-
-    endLabel = sabr_ump_toSafeString(rangeEnd)
-
-    rangeLabel = startLabel
-    if endLabel <> ""
-        rangeLabel = `${startLabel}-${endLabel}`
-    end if
-
+    mediaId = sabr_ump_toSafeString(request?.mediaIdHash)
+    contentType = sabr_ump_toSafeString(request?.contentType)
     itagLabel = sabr_ump_toSafeString(mediaHeader?.itag)
+    if itagLabel = "" then itagLabel = sabr_ump_toSafeString(format?.itag)
+
     xtagLabel = sabr_ump_toSafeString(mediaHeader?.xtags)
-    if itagLabel = "" and isValid(mediaHeader?.formatId)
-        itagLabel = sabr_ump_toSafeString(mediaHeader.formatId?.itag)
-        if xtagLabel = "" then xtagLabel = sabr_ump_toSafeString(mediaHeader.formatId?.xtags)
+    if xtagLabel = "" then xtagLabel = sabr_ump_toSafeString(format?.xtags)
+
+    trackId = sabr_ump_toSafeString(format?.audioTrackId)
+
+    keyParts = []
+    if mediaId <> "" then keyParts.push(mediaId)
+    if contentType <> "" then keyParts.push(contentType)
+    if itagLabel <> "" then keyParts.push(itagLabel)
+    if xtagLabel <> "" then keyParts.push(xtagLabel)
+    if trackId <> "" then keyParts.push(trackId)
+
+    if isInitSegment = true
+        keyParts.push("init")
+    else
+        startLabel = sabr_ump_valueToLabel(rangeStart)
+        if startLabel = "" then startLabel = sabr_ump_valueToLabel(mediaHeader?.startRange)
+        if startLabel = "" then startLabel = sabr_ump_valueToLabel(request?.byteRange?.startRange)
+        if startLabel = "" then startLabel = sabr_ump_valueToLabel(request?.byteRange?.start)
+        if startLabel = "" then startLabel = "0"
+
+        endLabel = sabr_ump_valueToLabel(rangeEnd)
+        if endLabel = "" then endLabel = sabr_ump_valueToLabel(mediaHeader?.endRange)
+        if endLabel = "" then endLabel = sabr_ump_valueToLabel(request?.byteRange?.endRange)
+        if endLabel = "" then endLabel = sabr_ump_valueToLabel(request?.byteRange?.end)
+
+        if startLabel <> "" and endLabel <> ""
+            keyParts.push(`${startLabel}-${endLabel}`)
+        else if startLabel <> ""
+            keyParts.push(startLabel)
+        else
+            keyParts.push("segment")
+        end if
     end if
 
-    return `${rangeLabel}-${itagLabel}-${xtagLabel}`
+    return sabr_ump_joinWithPipe(keyParts)
+end function
+
+function sabr_ump_joinWithPipe(values as object) as string
+    if GetInterface(values, "ifArray") = invalid then return ""
+    total = values.count()
+    if total = 0 then return ""
+    result = ""
+    for i = 0 to total - 1
+        piece = values[i] ?? ""
+        if result <> "" then result = `${result}|`
+        result = `${result}${piece}`
+    end for
+    return result
+end function
+
+function sabr_ump_valueToLabel(value as dynamic) as string
+    if not isValid(value) then return ""
+    if IsString(value)
+        trimmed = value.trim()
+        if trimmed = "" then return ""
+        if Instr(1, trimmed, "e") > 0 or Instr(1, trimmed, "E") > 0
+            numeric = trimmed.toFloat()
+            if numeric <> invalid
+                return sabr_ump_valueToLabel(numeric)
+            end if
+        end if
+        return trimmed
+    end if
+    if IsInteger(value)
+        return value.toStr()
+    end if
+    if IsFloat(value) or IsDouble(value)
+        precise = FormatJson(value)
+        if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0
+            return precise
+        end if
+        intVal = int(value)
+        if Abs(value - intVal) < 0.000001
+            return intVal.toStr()
+        end if
+        strVal = Str(value).trim()
+        if Instr(1, strVal, "e") > 0 or Instr(1, strVal, "E") > 0
+            return FormatJson(int(value))
+        end if
+        return strVal
+    end if
+    return Str(value).trim()
 end function
