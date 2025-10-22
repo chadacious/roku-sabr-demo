@@ -1166,8 +1166,14 @@ function normalizeByteRange(cacheManager as dynamic, rawRange as object, context
     }, invalid)
 
     if isValid(inferred)
-        inferredStart = `${inferred?.rangeStart ?? "0"}`
-        inferredEnd = `${inferred?.rangeEnd ?? "0"}`
+        inferredStart = sabr_valueToLabel(inferred?.rangeStart)
+        inferredEnd = sabr_valueToLabel(inferred?.rangeEnd)
+        if inferredStart = "" and isValid(inferred?.rangeStart)
+            inferredStart = sabr_valueToLabel(toInt(inferred.rangeStart))
+        end if
+        if inferredEnd = "" and isValid(inferred?.rangeEnd)
+            inferredEnd = sabr_valueToLabel(toInt(inferred.rangeEnd))
+        end if
         if inferredStart <> "" then normalized["startRange"] = inferredStart
         if inferredEnd <> "" then normalized["endRange"] = inferredEnd
         if isValid(inferred?.sequenceNumber)
@@ -1209,8 +1215,8 @@ function byteRangeToCoverage(byteRange as object) as dynamic
     if endVal < startVal then return invalid
 
     return {
-        rangeStart: startVal
-        rangeEnd: endVal
+        "rangeStart": startVal
+        "rangeEnd": endVal
     }
 end function
 
@@ -1778,8 +1784,8 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                     if endLabel = "" then endLabel = `${entryInfo?.end ?? ""}`
                     if startLabel <> "" and endLabel <> ""
                         cachedCoverage = {
-                            rangeStart: startLabel.toInt()
-                            rangeEnd: endLabel.toInt()
+                            "rangeStart": startLabel.toInt()
+                            "rangeEnd": endLabel.toInt()
                         }
                     end if
                 end if
@@ -2084,26 +2090,55 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                             if not isValid(coverageMeta?.rangeStart) or not isValid(coverageMeta?.rangeEnd)
                                                 inferredRange = cacheManager.inferRangeForByteRange(cacheManager, coverageMeta, requestMetadataEntry.byteRange, segmentPayload.count())
                                                 if isValid(inferredRange)
-                                        if not isValid(coverageMeta?.rangeStart) and isValid(inferredRange?.rangeStart)
-                                            CoverageMeta["rangeStart"] = inferredRange.rangeStart
-                                        end if
-                                        if not isValid(coverageMeta?.rangeEnd) and isValid(inferredRange?.rangeEnd)
-                                            coverageMeta["rangeEnd"] = inferredRange.rangeEnd
-                                        end if
-                                        if not isValid(coverageMeta?.sequenceNumber) and isValid(inferredRange?.sequenceNumber)
-                                            coverageMeta["sequenceNumber"] = inferredRange.sequenceNumber
-                                        end if
+                                                    if not isValid(coverageMeta?.rangeStart) and isValid(inferredRange?.rangeStart)
+                                                        coverageMeta["rangeStart"] = inferredRange.rangeStart
+                                                    end if
+                                                    if not isValid(coverageMeta?.rangeEnd) and isValid(inferredRange?.rangeEnd)
+                                                        coverageMeta["rangeEnd"] = inferredRange.rangeEnd
+                                                    end if
+                                                    if not isValid(coverageMeta?.sequenceNumber) and isValid(inferredRange?.sequenceNumber)
+                                                        coverageMeta["sequenceNumber"] = inferredRange.sequenceNumber
+                                                    end if
                                                 end if
                                             end if
                                             coverageStartLabel = sabr_valueToLabel(coverageMeta?.rangeStart)
                                             coverageEndLabel = sabr_valueToLabel(coverageMeta?.rangeEnd)
                                             requestedRangeLabel = formatRequestedRangeForPath(requestMetadataEntry.byteRange)
-                                            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${cacheKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()} itag=${currentFormat?.itag}`)
-                                            cacheManager.storeSegment(cacheManager, cacheKey, segmentPayload, coverageMeta)
+                                            storageKey = cacheKey
+                                            coverageStartVal = toInt(coverageMeta?.rangeStart)
+                                            coverageEndVal = toInt(coverageMeta?.rangeEnd)
+                                            requestedStartVal = toInt(requestMetadataEntry.byteRange?.startRange)
+                                            requestedEndVal = toInt(requestMetadataEntry.byteRange?.endRange)
+                                            if requestedStartVal = invalid then requestedStartVal = toInt(requestMetadataEntry.byteRange?.start)
+                                            if requestedEndVal = invalid then requestedEndVal = toInt(requestMetadataEntry.byteRange?.end)
+                                            if coverageStartVal <> invalid and coverageEndVal <> invalid
+                                                needsRemap = false
+                                                if requestedStartVal = invalid or requestedEndVal = invalid
+                                                    needsRemap = true
+                                                else if coverageStartVal <> requestedStartVal or coverageEndVal <> requestedEndVal
+                                                    needsRemap = true
+                                                end if
+                                                if needsRemap
+                                                    remapRange = {
+                                                        startRange: `${coverageStartVal}`
+                                                        endRange: `${coverageEndVal}`
+                                                    }
+                                                    remapKey = buildSabrCacheKey(mediaIdHash, contentType, currentFormat, remapRange, false)
+                                                    if remapKey <> "" and remapKey <> cacheKey
+                                                        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Remapping cache key from ${cacheKey} to ${remapKey} based on coverage ${coverageStartLabel}-${coverageEndLabel}`)
+                                                        storageKey = remapKey
+                                                    end if
+                                                end if
+                                            end if
+                                            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${storageKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()} itag=${currentFormat?.itag}`)
+                                            coverageMeta["cacheKey"] = storageKey
+                                            cacheManager.storeSegment(cacheManager, storageKey, segmentPayload, coverageMeta)
+                                            requestMetadataEntry.cacheKey = storageKey
+                                            cacheKey = storageKey
                                             deliveredSegment = true
                                             logCoverageDiagnostics({
                                                 logTag: requestLogTag
-                                                cacheKey: cacheKey
+                                                cacheKey: storageKey
                                                 requested: requestMetadataEntry.byteRange
                                                 coverage: coverageMeta
                                             })
@@ -2794,8 +2829,8 @@ function buildSabrResponseForPlayer(requestMetadata as object, umpResult as dyna
                 covEnd = umpResult.Lookup("coverageEnd")
                 if isValid(covStart) and isValid(covEnd)
                     resultCoverage = {
-                        rangeStart: covStart
-                        rangeEnd: covEnd
+                        "rangeStart": covStart
+                        "rangeEnd": covEnd
                     }
                 end if
             end if
