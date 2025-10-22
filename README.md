@@ -1,3 +1,4 @@
+> **Warning:** This project is experimental and not entirely working yet.
 # Roku SABR Demo
 
 BrighterScript Roku SceneGraph application that demonstrates how to adapt YouTube SABR (Streaming Adaptive Bitrate) manifests on-device. The app spins up lightweight HTTP servers on the Roku device so that intercepted manifests and SABR segment requests can be rewritten, cached, and served directly to the built-in `Video` node.
