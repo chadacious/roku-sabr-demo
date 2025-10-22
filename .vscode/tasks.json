@@ -4,7 +4,7 @@
         {
             "label": "build",
             "type": "shell",
-            "command": "npx bsc"
+            "command": "node scripts/prepare-debug.js && npx bsc"
         }
     ]
 }

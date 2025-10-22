@@ -21,6 +21,12 @@ const path = require("path");
 const net = require("net");
 const http = require("http");
 const { spawn } = require("child_process");
+const {
+    EXTERNAL_DUMP_ROOT,
+    EXTERNAL_TELNET_LOG_PATH,
+    prepareExternalDumpDirectories,
+    writeLogFiles,
+} = require("./external-dumps");
 
 const DEFAULT_LOG_PORT = 8085;
 const DEFAULT_ECP_PORT = 8060;
@@ -48,6 +54,7 @@ async function main() {
 
     const logPort = Number(options.logPort) || DEFAULT_LOG_PORT;
     const ecpPort = Number(options.ecpPort) || DEFAULT_ECP_PORT;
+    await prepareExternalDumpDirectories();
     await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true });
     const runId = new Date().toISOString().replace(/[:]/g, "-");
     const logPath = path.join(ARTIFACTS_DIR, `logs-${runId}.txt`);
@@ -63,6 +70,7 @@ async function main() {
             host,
             port: logPort,
             filePath: logPath,
+            mirrorFilePaths: [EXTERNAL_TELNET_LOG_PATH],
             timeoutMs: LOG_CONNECT_TIMEOUT_MS,
             retryDelayMs: LOG_CONNECT_RETRY_DELAY_MS,
         });
@@ -160,14 +168,14 @@ function stripJsonComments(raw) {
     return raw.replace(/\/\/.*$/gm, "").replace(/\s*\/\*[\s\S]*?\*\//g, "");
 }
 
-async function openLogStreamWithRetry({ host, port, filePath, timeoutMs, retryDelayMs }) {
+async function openLogStreamWithRetry({ host, port, filePath, mirrorFilePaths = [], timeoutMs, retryDelayMs }) {
     const deadline = Date.now() + timeoutMs;
     let attempt = 0;
     let lastError;
     while (Date.now() < deadline) {
         attempt += 1;
         try {
-            return await openLogStreamOnce({ host, port, filePath });
+            return await openLogStreamOnce({ host, port, filePath, mirrorFilePaths });
         } catch (err) {
             lastError = err;
             console.warn(`[test] Log connection attempt ${attempt} failed: ${err.message}`);
@@ -177,7 +185,7 @@ async function openLogStreamWithRetry({ host, port, filePath, timeoutMs, retryDe
     throw new Error(`Unable to connect to BrightScript logs at ${host}:${port} (last error: ${lastError ? lastError.message : "unknown"})`);
 }
 
-function openLogStreamOnce({ host, port, filePath }) {
+function openLogStreamOnce({ host, port, filePath, mirrorFilePaths = [] }) {
     return new Promise((resolve, reject) => {
         const socket = net.createConnection({ host, port });
         let buffer = "";
@@ -193,11 +201,7 @@ function openLogStreamOnce({ host, port, filePath }) {
                 return;
             }
             finalized = true;
-            try {
-                fs.writeFileSync(filePath, logContents);
-            } catch (err) {
-                console.warn(`[test] Failed to write log file: ${err.message}`);
-            }
+            writeLogFiles([filePath, ...mirrorFilePaths], logContents);
         };
 
         socket.once("error", (err) => {

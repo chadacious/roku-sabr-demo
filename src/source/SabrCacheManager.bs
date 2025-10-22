@@ -444,7 +444,7 @@ function sabr_cache_pathForKey(ctx as object, key as string, isInitEntry as bool
     parts = []
     parts.push(contentType)
     if itagLabel <> "" then parts.push(itagLabel)
-    if xtagsLabel <> "" then parts.push(xtagsLabel)
+    if xtagsLabel <> "unknown" then parts.push(xtagsLabel)
     parts.push(descriptor)
     if rangeSuffix <> "" then parts.push(sabr_cache_sanitizeLabel(rangeSuffix ?? ""))
 
@@ -840,10 +840,14 @@ function sabr_cache_listSegments(ctx as object, filter = invalid as dynamic) as 
 end function
 
 function sabr_cache_sanitizeLabel(label as string) as string
-    if not isValid(label) then return "unknown"
+    if not isValid(label)
+        return "unknown"
+    end if
     result = ""
     total = Len(label)
-    if total = 0 then return "unknown"
+    if total = 0
+        return "unknown"
+    end if
     for i = 1 to total
         ch = Mid(label, i, 1)
         ascii = Asc(ch)
@@ -855,7 +859,9 @@ function sabr_cache_sanitizeLabel(label as string) as string
             result = result + "_"
         end if
     end for
-    if result = "" then result = "unknown"
+    if result = ""
+        result = "unknown"
+    end if
     return result
 end function
 

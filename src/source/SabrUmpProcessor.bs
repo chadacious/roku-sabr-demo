@@ -484,7 +484,9 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
                     ctx._desiredHeaderId = headerId
                     desiredStart = sabr_ump_resolveRequestedStart(ctx)
                     startLabel = sabr_ump_toSafeString(desiredStart)
-                    if startLabel = "" then startLabel = "unknown"
+                    if startLabel = ""
+                        startLabel = "unknown"
+                    end if
                     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Marked header ${headerId} as target for start ${startLabel}`)
                 end if
             else if not isValid(ctx._desiredHeaderId)

@@ -557,7 +557,9 @@ end function
 
 function streamInfoKey(contentType as string, format as object) as string
     keyPart = formatToKey(format)
-    if keyPart = "" then keyPart = "unknown"
+    if keyPart = ""
+        keyPart = "unknown"
+    end if
     typePart = contentType ?? ""
     if typePart = "" then typePart = "UNKNOWN"
     return `${typePart}|${keyPart}`
@@ -1051,13 +1053,17 @@ end function
 function getDumpLabel(playbackContext as object, prefix as string, requestNumber as string, byteRange as object, contentType = "" as string, format = invalid as dynamic) as string
     if not isValid(prefix) then prefix = "dump"
     rn = requestNumber
-    if rn = "" then rn = "unknown"
+    if rn = ""
+        rn = "unknown"
+    end if
     rangePart = formatRequestedRangeForPath(byteRange)
     if rangePart = "" then rangePart = "none"
 
     contentLabel = contentType ?? ""
     if contentLabel = "" then contentLabel = playbackContext?.lastContentType ?? ""
-    if contentLabel = "" then contentLabel = "unknown"
+    if contentLabel = ""
+        contentLabel = "unknown"
+    end if
 
     playbackContext["lastContentType"] = contentLabel
 
