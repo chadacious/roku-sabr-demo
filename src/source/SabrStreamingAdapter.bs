@@ -227,14 +227,15 @@ function lookupSegmentMetadata(playbackContext as object, contentType as string,
     return invalid
 end function
 
-function isInit(contentType as string, format as object, requestByteRange as object) as boolean
+function isInit(contentType as string, format as object, requestByteRange as object, requestRef = invalid as dynamic) as boolean
+    logTag = sabr_utilLogTag(contentType, requestRef)
     if rangesMatch(format?.initRange, requestByteRange)
-        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] SABR format itag ${format.itag} init range requested: ${FormatJson(requestByteRange)}`)
+        m.logs.printl(log_level_Type.INFO, `${logTag} SABR format itag ${format.itag} init range requested: ${FormatJson(requestByteRange)}`)
         return true
     end if
 
     if rangesMatch(format?.indexRange, requestByteRange)
-        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] SABR format itag ${format.itag} index range requested: ${FormatJson(requestByteRange)}`)
+        m.logs.printl(log_level_Type.INFO, `${logTag} SABR format itag ${format.itag} index range requested: ${FormatJson(requestByteRange)}`)
         return true
     end if
     return false
@@ -439,6 +440,7 @@ function buildPrefetchInfo(streamInfo as object, currentFormat as object, reques
         cacheKey: requestMetadataEntry?.cacheKey
         byteRange: requestMetadataEntry?.byteRange
         updatedAt: sabrCurrentTimestampMs()
+        requestNumber: requestMetadataEntry?.requestNumber
     }
 end function
 
@@ -457,7 +459,8 @@ sub maybeSchedulePrefetch(playbackContext as object, videoNode as object, prefet
             prefetchInfo.prefetchLogged = true
             prefetchInfo.loggedAt = sabrCurrentTimestampMs()
             playbackContext["prefetchState"] = prefetchInfo
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Prefetch window reached for cache key ${prefetchInfo.cacheKey}; remainingMs=${remainingMs}`)
+            logTag = sabr_utilLogTag(contentType, prefetchInfo?.requestNumber)
+            m.logs.printl(log_level_Type.INFO, `${logTag} Prefetch window reached for cache key ${prefetchInfo.cacheKey}; remainingMs=${remainingMs}`)
         end if
     end if
 end sub
@@ -494,10 +497,46 @@ function sabrCurrentTimestampMs() as integer
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function
 
+function sabr_valueToLabel(value as dynamic) as string
+    if not isValid(value) then return ""
+    if IsString(value)
+        trimmed = value.trim()
+        if trimmed = "" then return ""
+        if Instr(1, trimmed, "e") > 0 or Instr(1, trimmed, "E") > 0
+            numeric = trimmed.toFloat()
+            if numeric <> invalid
+                return sabr_valueToLabel(numeric)
+            end if
+        end if
+        return trimmed
+    end if
+    if IsInteger(value)
+        return value.toStr()
+    end if
+    if IsFloat(value) or IsDouble(value)
+        precise = FormatJson(value)
+        if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0
+            return precise
+        end if
+        intVal = int(value)
+        if Abs(value - intVal) < 0.000001
+            return intVal.toStr()
+        end if
+        strVal = Str(value).trim()
+        if Instr(1, strVal, "e") > 0 or Instr(1, strVal, "E") > 0
+            return FormatJson(int(value))
+        end if
+        return strVal
+    end if
+    return Str(value).trim()
+end function
+
 function formatRequestedRangeForPath(byteRange as object) as string
     if not isValid(byteRange) then return "none"
-    startLabel = `${byteRange?.startRange ?? ""}`
-    endLabel = `${byteRange?.endRange ?? ""}`
+    startLabel = sabr_valueToLabel(byteRange?.startRange)
+    if startLabel = "" then startLabel = sabr_valueToLabel(byteRange?.start)
+    endLabel = sabr_valueToLabel(byteRange?.endRange)
+    if endLabel = "" then endLabel = sabr_valueToLabel(byteRange?.end)
     if startLabel <> "" and endLabel <> ""
         return `${startLabel}-${endLabel}`
     else if startLabel <> ""
@@ -518,10 +557,12 @@ end function
 
 function buildSegmentCacheKeyForRange(format as object, byteRange as object) as string
     if not isValid(format) then return ""
-    startLabel = `${byteRange?.startRange ?? "0"}`
-    if startLabel = "" then startLabel = `${byteRange?.start ?? "0"}`
-    endLabel = `${byteRange?.endRange ?? "0"}`
-    if endLabel = "" then endLabel = `${byteRange?.end ?? "0"}`
+    startLabel = sabr_valueToLabel(byteRange?.startRange)
+    if startLabel = "" then startLabel = sabr_valueToLabel(byteRange?.start)
+    if startLabel = "" then startLabel = "0"
+    endLabel = sabr_valueToLabel(byteRange?.endRange)
+    if endLabel = "" then endLabel = sabr_valueToLabel(byteRange?.end)
+    if endLabel = "" then endLabel = "0"
     if startLabel = "" and endLabel = "" then return ""
     rangeLabel = startLabel
     if startLabel <> "" and endLabel <> ""
@@ -625,6 +666,7 @@ function guardRepeatedRequests(playbackContext as object, contentType as string,
     requestMetadataEntry["repeatKey"] = repeatKey
 
     nowTs = sabrCurrentTimestampMs()
+    logTag = sabr_utilLogTag(contentType, requestNumber)
     repeatState = playbackContext?.repeatRequestState
     consecutiveCount = 1
     lastKey = ""
@@ -676,13 +718,13 @@ function guardRepeatedRequests(playbackContext as object, contentType as string,
     newState["aborted"] = true
     playbackContext["repeatRequestState"] = newState
 
-    m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] ${fatalMessage}`)
+    m.logs.printl(log_level_Type.WARN, `${logTag} ${fatalMessage}`)
 
     if isValid(videoNode)
         try
             videoNode.control = "stop"
         catch e
-            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Util-${contentType}] Failed to stop video node after repeat guard: ${e?.message}`)
+            m.logs.printl(log_level_Type.DEBUG, `${logTag} Failed to stop video node after repeat guard: ${e?.message}`)
         end try
     end if
 
@@ -1263,6 +1305,27 @@ sub deleteFileIfExists(path as dynamic)
     end if
 end sub
 
+function sabr_extractRequestNumber(value as dynamic) as string
+    if not isValid(value) then return ""
+
+    if GetInterface(value, "ifAssociativeArray") <> invalid
+        if value.DoesExist("requestNumber")
+            return sabr_extractRequestNumber(value.requestNumber)
+        end if
+        return ""
+    end if
+
+    return sabr_valueToLabel(value)
+end function
+
+function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic) as string
+    rn = sabr_extractRequestNumber(requestRef)
+    if rn = ""
+        return `[YTSABR-Util-${contentType}]`
+    end if
+    return `[YTSABR-Util-${contentType}-${rn}]`
+end function
+
 function sabrHandleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, redirectDepth = 0 as integer) as object
     ok = true
 
@@ -1323,7 +1386,8 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     ' nextRequestId = generateSabrRequestNumber(playbackContext, contentType)
     nextRequestId = m.top.utilsTask.callFunc("getNextId", "sabrRequestNumber")
     playbackContext["requestNumber"] = nextRequestId
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] SABR playback request number: ${nextRequestId}`)
+    requestLogTag = sabr_utilLogTag(contentType, nextRequestId)
+    m.logs.printl(log_level_Type.INFO, `${requestLogTag} SABR playback request number: ${nextRequestId}`)
 
     ' update the URL's rn param (or create it) to be the request number
     regexRn = CreateObject("roRegex", "([&?])rn=[^&]*", "i")
@@ -1333,13 +1397,13 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         sep = sabrAbrUrl.inStr("?") > -1 ? "&" : "?"
         sabrAbrUrl = `${sabrAbrUrl}${sep}rn=${nextRequestId}`
     end if
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] URL: ${sabrAbrUrl}`)
+    m.logs.printl(log_level_Type.INFO, `${requestLogTag} URL: ${sabrAbrUrl}`)
 
     ' originalUrl = request.path
     try
         if not isValid(request.search.key) or request.search.key = ""
             ok = false
-            m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR itag key provided`)
+            m.logs.printl(log_level_Type.WARN, `${requestLogTag} No SABR itag key provided`)
         else
             currentKey = request.search.key.toInt()
             currentFormat = invalid
@@ -1352,12 +1416,12 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         end if
     catch e
         ok = false
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Error finding format for itag: ${request.search.key} - ${e.message}`)
+        m.logs.printl(log_level_Type.WARN, `${requestLogTag} Error finding format for itag: ${request.search.key} - ${e.message}`)
     end try
 
     if not isValid(currentFormat)
         ok = false
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] No matching format for itag: ${request.search.key}`)
+        m.logs.printl(log_level_Type.WARN, `${requestLogTag} No matching format for itag: ${request.search.key}`)
     end if
 
     '**
@@ -1382,7 +1446,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     })
     ' overridePlayerTimeMs = sabr_resolvePlayerTimeMs(playbackContext, contentType, currentFormat, requestByteRange, videoNode)
 
-    sabrRequestJson = createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, videoNode) ', overridePlayerTimeMs)
+    sabrRequestJson = createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, videoNode, nextRequestId) ', overridePlayerTimeMs)
 
      if isValid(currentFormat.height) 
         sabrRequestJson.clientAbrState.stickyResolution = currentFormat.height
@@ -1396,7 +1460,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         ' Sabr wants to send us both audio and video segments in the same response, but we only want one or the other
         sabrRequestJson.selectedFormatIds.push(formatToDiscard)
     end if
-    isInitSegmentRequest = isInit(contentType, currentFormat, requestByteRange)
+    isInitSegmentRequest = isInit(contentType, currentFormat, requestByteRange, nextRequestId)
 
     cacheKey = buildSabrCacheKey(mediaIdHash, contentType, currentFormat, requestByteRange, isInitSegmentRequest)
 
@@ -1537,7 +1601,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
             prefetchInfo = buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
             maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
             cacheHit = true
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Cache hit for SABR key: ${cacheKey}`)
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache hit for SABR key: ${cacheKey}`)
         end if
     end if
     batchCounter =  m.top.utilsTask.callFunc("getNextId", "sabrBatchCounter")
@@ -1555,7 +1619,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
             requestPayloadJson = FormatJson(sabrRequestJson)
             if isValid(requestPayloadJson) and requestPayloadJson <> ""
                 dumpLabel = getDumpLabel(playbackContext, "sabr-request", `${nextRequestId}`, requestMetadataEntry.byteRange, contentType, currentFormat)
-                roku_debugUploadText(debugUploadUrl, dumpLabel, requestPayloadJson, m.logs)
+                roku_debugUploadText(debugUploadUrl, `${dumpLabel}.json`, requestPayloadJson, m.logs)
             end if
         end if
         encodedProto = ""
@@ -1563,7 +1627,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         protoFilePath = ""
         responseFilePath = ""
         try
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Encoding SABR proto for itag: ${currentFormat.itag}`)
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Encoding SABR proto for itag: ${currentFormat.itag}`)
             ' m.logs.printl(log_level_Type.VERBOSE, FormatJson(sabrRequestJson))
             encodedProto = VideoPlaybackAbrRequestEncode(sabrRequestJson)
             if IsString(encodedProto) and encodedProto <> ""
@@ -1573,21 +1637,21 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 decodedProto = VideoPlaybackAbrRequestDecode(encodedProto)
                 if not isValid(decodedProto)
                     ok = false
-                    m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Error decoding SABR proto after encode`)
+                    m.logs.printl(log_level_Type.WARN, `${requestLogTag} Error decoding SABR proto after encode`)
                 ' else
-                '     m.logs.printl(log_level_Type.VERBOSE, `[YTSABR-Util-${contentType}] Decoded SABR proto: ${FormatJson(decodedProto)}`)
+                '     m.logs.printl(log_level_Type.VERBOSE, `${requestLogTag} Decoded SABR proto: ${FormatJson(decodedProto)}`)
                 end if
             end if
         catch e
             ok = false
-            m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Error encoding SABR proto: ${e.message}`)
+            m.logs.printl(log_level_Type.WARN, `${requestLogTag} Error encoding SABR proto: ${e.message}`)
         end try
 
         ' prepare the SABR request now
         if ok and IsValid(protoBytes)
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] proto payload`)
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} proto payload`)
             if playbackContext.hasVideoParts = true
-                m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Sending SABR video request to URL: ${sabrAbrUrl}`)
+                m.logs.printl(log_level_Type.INFO, `${requestLogTag} Sending SABR video request to URL: ${sabrAbrUrl}`)
                 ' write the protoBytes to a file and send that file to the SABR URL
                 protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
@@ -1605,14 +1669,14 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 res = makeRequest(sabrRequest)
                 if not isValid(res?.status) 
                     ok = false
-                    m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] No response status from SABR UMP request`)
+                    m.logs.printl(log_level_Type.WARN, `${requestLogTag} No response status from SABR UMP request`)
                     response = buildErrorResponseForPlayer(500, "SABR request failed")
                 else if res.status >= 200 and res?.status <= 206
                     responseFilePath = res.body
                     sabrUmpResponse = CreateObject("roByteArray")
                     if sabrUmpResponse.readFile(responseFilePath)
                         if sabrUmpResponse.count() > 0
-                            m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] SABR UMP response size: ${sabrUmpResponse.count()} bytes`)
+                            m.logs.printl(log_level_Type.INFO, `${requestLogTag} SABR UMP response size: ${sabrUmpResponse.count()} bytes`)
                             requestMetadata = {
                                 "isUMP": true
                                 "isSABR": true
@@ -1649,13 +1713,13 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     requestNumber: nextRequestId
                                     timestamp: sabrCurrentTimestampMs()
                                 }
-                                m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Fatal SABR error: ${fatalReason}`)
+                                m.logs.printl(log_level_Type.WARN, `${requestLogTag} Fatal SABR error: ${fatalReason}`)
                                 if response = invalid
                                     response = buildErrorResponseForPlayer(502, fatalReason)
                                 end if
                             else
                                 if isValid(segmentInfo)
-                                    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Segment info available after processing: ${FormatJson(segmentInfo)}`)
+                                    m.logs.printl(log_level_Type.INFO, `${requestLogTag} Segment info available after processing: ${FormatJson(segmentInfo)}`)
                                 end if
 
                                 playbackContext["lastSabrStreamInfo"] = requestMetadata.streamInfo
@@ -1673,7 +1737,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                         sabr.serverAbrStreamingUrl = redirectUrl
                                     end if
                                     playbackContext["serverAbrStreamingUrl"] = redirectUrl
-                                    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Updated SABR server URL via redirect: ${redirectUrl}`)
+                                    m.logs.printl(log_level_Type.INFO, `${requestLogTag} Updated SABR server URL via redirect: ${redirectUrl}`)
                                     if not isValid(umpResult?.data) or umpResult.data.count() = 0
                                         redirectTriggered = true
                                     end if
@@ -1683,9 +1747,9 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                 if redirectTriggered
                                     if redirectDepth >= 3
                                         fatalReason = "SABR redirect limit reached"
-                                        m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] ${fatalReason}`)
+                                        m.logs.printl(log_level_Type.WARN, `${requestLogTag} ${fatalReason}`)
                                     else
-                                        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Following SABR redirect to ${redirectUrl}`)
+                                        m.logs.printl(log_level_Type.INFO, `${requestLogTag} Following SABR redirect to ${redirectUrl}`)
                                         deleteFileIfExists(responseFilePath)
                                         deleteFileIfExists(protoFilePath)
                                         writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
@@ -1725,11 +1789,11 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     if isValid(requestMetadataEntry?.segmentIndexInfo)
                                         logDetails["segmentIndexInfo"] = requestMetadataEntry.segmentIndexInfo
                                     end if
-                                    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] UMP payload missing terminal part; details=${FormatJson(logDetails)}`)
+                                    m.logs.printl(log_level_Type.INFO, `${requestLogTag} UMP payload missing terminal part; details=${FormatJson(logDetails)}`)
                                     response = buildEmptySabrResponseForPlayer(contentType, currentFormat)
                                 else
                                     if isValid(umpResult?.data)
-                                        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] UMP result data size: ${umpResult.data.count()}`)
+                                        m.logs.printl(log_level_Type.INFO, `${requestLogTag} UMP result data size: ${umpResult.data.count()}`)
                                     end if
                                     response = buildSabrResponseForPlayer(requestMetadata, umpResult, currentFormat, requestByteRange, contentType)
 
@@ -1838,7 +1902,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                                 requestMetadata.streamInfo["deliveredCoverage"] = coverageMeta
                                             end if
                                         end if
-                                        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Cached SABR response under key: ${cacheKey}`)
+                                        m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cached SABR response under key: ${cacheKey}`)
                                     end if
 
                                     if isValid(metadataManager)
@@ -1863,22 +1927,22 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                 end if
                             end if
                         else
-                            m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] SABR UMP response was empty`)
+                            m.logs.printl(log_level_Type.WARN, `${requestLogTag} SABR UMP response was empty`)
                             response = buildErrorResponseForPlayer(502, "Empty SABR response")
                         end if
                     else
-                        m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Failed to read SABR UMP response file`)
+                        m.logs.printl(log_level_Type.WARN, `${requestLogTag} Failed to read SABR UMP response file`)
                         response = buildErrorResponseForPlayer(500, "Failed to read SABR response")
                     end if
                 else
-                    m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] SABR UMP request failed with status: ${res?.status}`)
+                    m.logs.printl(log_level_Type.WARN, `${requestLogTag} SABR UMP request failed with status: ${res?.status}`)
                     response = buildErrorResponseForPlayer(`${res?.status ?? 0}`.toInt(), `SABR request failed`)
                 end if
             else
-                m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] ignoring audio SABR request for now`)
+                m.logs.printl(log_level_Type.INFO, `${requestLogTag} ignoring audio SABR request for now`)
             end if
         else
-            m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] No valid SABR proto bytes to send`)
+            m.logs.printl(log_level_Type.WARN, `${requestLogTag} No valid SABR proto bytes to send`)
         end if
 
         deleteFileIfExists(responseFilePath)
@@ -1891,7 +1955,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         if GetInterface(response.body, "ifByteArray") <> invalid
             bytesCount = response.body.count()
         end if
-        m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Response body size=${bytesCount} bytes for request ${nextRequestId}`)
+        m.logs.printl(log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId}`)
         dumpBase = getDumpLabel(playbackContext, "response", `${nextRequestId}`, requestByteRange, contentType, currentFormat)
         roku_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", response.body, m.logs)
 
@@ -1909,7 +1973,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     recordRepeatResult(playbackContext, requestMetadataEntry, response)
 
     ' write the playbackContext to the playbackContext.json file to preserve state
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
+    m.logs.printl(log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
     m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
     writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
 
@@ -1984,10 +2048,11 @@ function pickMeasuredBitrate(info as dynamic) as dynamic
     return invalid
 end function
 
-function createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, videoNode as object) as object ' , overridePlayerTimeMs = invalid as dynamic
+function createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, videoNode as object, requestRef = invalid as dynamic) as object ' , overridePlayerTimeMs = invalid as dynamic
     ' Create the ABR request object
+    logTag = sabr_utilLogTag(contentType, requestRef)
     if not isValid(sabr.ustreamerConfig)
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR ustreamerConfig available`)
+        m.logs.printl(log_level_Type.WARN, `${logTag} No SABR ustreamerConfig available`)
         return {}
     end if
 
@@ -2012,7 +2077,7 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
 
     playbackContext["lastPlayerTimeSecs"] = videoNode.position
 
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] streamingSegment : ${FormatJson(videoNode.streamingSegment)}`)
+    m.logs.printl(log_level_Type.INFO, `${logTag} streamingSegment : ${FormatJson(videoNode.streamingSegment)}`)
 
     bandwidthEstimate = pickMeasuredBitrate(videoNode.completedStreamInfo)
     if not isValid(bandwidthEstimate)
@@ -2044,6 +2109,8 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
     ' end if
     if playerTimeMs < 0 then playerTimeMs = 0
     ' playbackContext["estimatedPlayerTimeMs"] = playerTimeMs
+
+    m.logs.printl(log_level_Type.INFO, `${logTag} Creating SABR ABR request with playerTimeMs=${playerTimeMs}, bandwidthEstimate=${bandwidthEstimate}`)
 
     req = {
         "clientAbrState": {
