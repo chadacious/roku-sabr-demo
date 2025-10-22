@@ -364,8 +364,11 @@ function buildSabrCacheKey(mediaIdHash as string, contentType as string, format 
     if isInitSegment
         keyParts.push("init")
     else
-        startRange = `${byteRange?.startRange ?? "0"}`
-        endRange = `${byteRange?.endRange ?? ""}`
+        startRange = sabr_valueToLabel(byteRange?.startRange)
+        if startRange = "" then startRange = sabr_valueToLabel(byteRange?.start)
+        if startRange = "" then startRange = "0"
+        endRange = sabr_valueToLabel(byteRange?.endRange)
+        if endRange = "" then endRange = sabr_valueToLabel(byteRange?.end)
         if startRange <> "" and endRange <> ""
             keyParts.push(`${startRange}-${endRange}`)
         else if startRange <> ""
@@ -1531,6 +1534,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         "contentType": contentType
         "format": currentFormat
     })
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Normalized byteRange start=${requestByteRange?.startRange ?? ""} end=${requestByteRange?.endRange ?? ""} seq=${requestByteRange?.sequenceNumber ?? ""}`)
     streamInfoForFormat = fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
     isInitSegmentRequest = isInit(contentType, currentFormat, requestByteRange, nextRequestId)
 
@@ -1659,6 +1663,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 segmentCacheKey = buildSegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
                 ' legacyCacheKey = buildLegacySegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
                 if segmentCacheKey <> ""
+                    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Trying alternate cache key=${segmentCacheKey} for range=${cacheLookupRange}`)
                     if hasCompleteByteRange(requestMetadataEntry.byteRange)
                         cachedBytes = cacheManager.getSegmentSlice(cacheManager, segmentCacheKey, requestMetadataEntry.byteRange)
                         if isValid(cachedBytes) and cachedBytes.count() > 0
@@ -2026,6 +2031,10 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                                     end if
                                                 end if
                                             end if
+                                            coverageStartLabel = sabr_valueToLabel(coverageMeta?.rangeStart)
+                                            coverageEndLabel = sabr_valueToLabel(coverageMeta?.rangeEnd)
+                                            requestedRangeLabel = formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+                                            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${cacheKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()}`)
                                             cacheManager.storeSegment(cacheManager, cacheKey, segmentPayload, coverageMeta)
                                             deliveredSegment = true
                                             if isValid(requestMetadata.streamInfo) and GetInterface(requestMetadata.streamInfo, "ifAssociativeArray") <> invalid
