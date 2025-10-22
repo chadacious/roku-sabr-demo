@@ -578,6 +578,43 @@ function buildSegmentCacheKeyForRange(format as object, byteRange as object) as 
     return `${rangeLabel}-${itagPart}-${xtagsPart}`
 end function
 
+function inferCacheCoverageForRequest(cacheManager as dynamic, metadata as dynamic, byteRange as object) as dynamic
+    if not isValid(cacheManager) then return invalid
+    if GetInterface(cacheManager, "ifAssociativeArray") = invalid then return invalid
+    if not isValid(byteRange) then return invalid
+
+    queryMetadata = {
+        mediaIdHash: metadata?.mediaIdHash
+        contentType: metadata?.contentType
+        itag: metadata?.itag
+        xtags: metadata?.xtags
+    }
+
+    if isValid(byteRange?.startRange)
+        queryMetadata["rangeStart"] = byteRange.startRange
+    end if
+    if isValid(byteRange?.endRange)
+        queryMetadata["rangeEnd"] = byteRange.endRange
+    end if
+
+    fallbackLength = invalid
+    startVal = toInt(byteRange?.startRange)
+    endVal = toInt(byteRange?.endRange)
+    if startVal <> invalid and endVal <> invalid and endVal >= startVal
+        fallbackLength = (endVal - startVal) + 1
+    end if
+
+    inferred = cacheManager.inferRangeForByteRange(cacheManager, queryMetadata, byteRange, fallbackLength)
+    if not isValid(inferred) then return invalid
+    if not isValid(inferred?.rangeStart) then return invalid
+
+    if not isValid(inferred?.rangeEnd) and endVal <> invalid
+        inferred["rangeEnd"] = endVal
+    end if
+
+    return inferred
+end function
+
 ' function sabr_buildLegacySegmentCacheKeyForRange(format as object, byteRange as object) as string
 '     if not isValid(format) then return ""
 '     startLabel = toSafeString(byteRange?.startRange)
@@ -1631,68 +1668,81 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     if cacheLookupLabel = "" then cacheLookupLabel = "none"
     cacheHitSource = ""
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache lookup start isInit=${isInitSegmentRequest} key=${cacheLookupLabel} range=${cacheLookupRange}`)
-    if isValid(cacheManager) and cacheKey <> ""
-        cachedBytes = invalid
-        if isInitSegmentRequest
-            if hasCompleteByteRange(requestMetadataEntry.byteRange)
-                cachedBytes = cacheManager.getInitSegmentSlice(cacheManager, cacheKey, requestMetadataEntry.byteRange)
-                if isValid(cachedBytes) and cachedBytes.count() > 0
-                    cacheHitSource = "init-slice"
-                end if
-            end if
-            if not isValid(cachedBytes)
-                cachedBytes = cacheManager.getInitSegment(cacheManager, cacheKey)
-                if isValid(cachedBytes) and cachedBytes.count() > 0
-                    cacheHitSource = "init-full"
-                end if
+
+    if isValid(cacheManager)
+        candidateKeys = []
+
+        if cacheKey <> "" then candidateKeys.push({
+            key: cacheKey
+            source: isInitSegmentRequest ? "init-primary" : "segment-primary"
+            preferSlice: hasCompleteByteRange(requestMetadataEntry.byteRange)
+        })
+
+        inferredRange = inferCacheCoverageForRequest(cacheManager, {
+            mediaIdHash: mediaIdHash
+            contentType: contentType
+            itag: currentFormat?.itag
+            xtags: currentFormat?.xtags
+        }, requestMetadataEntry.byteRange)
+        if isValid(inferredRange)
+            inferredKeyRange = {
+                startRange: `${inferredRange.rangeStart}`
+                endRange: `${inferredRange.rangeEnd}`
+            }
+            inferredKey = buildSabrCacheKey(mediaIdHash, contentType, currentFormat, inferredKeyRange, isInitSegmentRequest)
+            if inferredKey <> "" and inferredKey <> cacheKey
+                candidateKeys.push({
+                    key: inferredKey
+                    source: "coverage"
+                    preferSlice: hasCompleteByteRange(requestMetadataEntry.byteRange)
+                })
+                m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Coverage key candidate=${inferredKey} coverage=${inferredRange.rangeStart}-${inferredRange.rangeEnd}`)
             end if
         else
-            if hasCompleteByteRange(requestMetadataEntry.byteRange)
-                cachedBytes = cacheManager.getSegmentSlice(cacheManager, cacheKey, requestMetadataEntry.byteRange)
-                if isValid(cachedBytes) and cachedBytes.count() > 0
-                    cacheHitSource = "segment-slice"
-                end if
-            end if
-            if not isValid(cachedBytes)
-                cachedBytes = cacheManager.getSegment(cacheManager, cacheKey)
-                if isValid(cachedBytes) and cachedBytes.count() > 0
-                    cacheHitSource = "segment-full"
-                end if
-            end if
-            if not isValid(cachedBytes)
-                segmentCacheKey = buildSegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
-                ' legacyCacheKey = buildLegacySegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
-                if segmentCacheKey <> ""
-                    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Trying alternate cache key=${segmentCacheKey} for range=${cacheLookupRange}`)
-                    if hasCompleteByteRange(requestMetadataEntry.byteRange)
-                        cachedBytes = cacheManager.getSegmentSlice(cacheManager, segmentCacheKey, requestMetadataEntry.byteRange)
-                        if isValid(cachedBytes) and cachedBytes.count() > 0
-                            cacheHitSource = "segment-slice-alt"
-                        end if
-                    end if
-                    if not isValid(cachedBytes)
-                        cachedBytes = cacheManager.getSegment(cacheManager, segmentCacheKey)
-                        if isValid(cachedBytes) and cachedBytes.count() > 0
-                            cacheHitSource = "segment-full-alt"
-                        end if
-                    end if
-                    if isValid(cachedBytes) and cachedBytes.count() > 0
-                        cacheKey = segmentCacheKey
-                    end if
-                end if
-                ' if (not isValid(cachedBytes) or cachedBytes.count() = 0) and legacyCacheKey <> "" and legacyCacheKey <> segmentCacheKey
-                '     if sabr_hasCompleteByteRange(requestMetadataEntry.byteRange)
-                '         cachedBytes = cacheManager.getSegmentSlice(cacheManager, legacyCacheKey, requestMetadataEntry.byteRange)
-                '     end if
-                '     if not isValid(cachedBytes)
-                '         cachedBytes = cacheManager.getSegment(cacheManager, legacyCacheKey)
-                '     end if
-                '     if isValid(cachedBytes) and cachedBytes.count() > 0
-                '         cacheKey = legacyCacheKey
-                '     end if
-                ' end if
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Coverage inference unavailable for range=${cacheLookupRange}`)
+        end if
+
+        if not isInitSegmentRequest
+            segmentCacheKey = buildSegmentCacheKeyForRange(currentFormat, requestMetadataEntry.byteRange)
+            if segmentCacheKey <> "" and segmentCacheKey <> cacheKey
+                candidateKeys.push({
+                    key: segmentCacheKey
+                    source: "segment-alt"
+                    preferSlice: hasCompleteByteRange(requestMetadataEntry.byteRange)
+                })
             end if
         end if
+
+        for each candidate in candidateKeys
+            key = candidate.key
+            if key = "" then continue for
+
+            cachedBytes = invalid
+            if candidate.preferSlice = true
+                if isInitSegmentRequest
+                    cachedBytes = cacheManager.getInitSegmentSlice(cacheManager, key, requestMetadataEntry.byteRange)
+                else
+                    cachedBytes = cacheManager.getSegmentSlice(cacheManager, key, requestMetadataEntry.byteRange)
+                end if
+            end if
+
+            if not isValid(cachedBytes)
+                if isInitSegmentRequest
+                    cachedBytes = cacheManager.getInitSegment(cacheManager, key)
+                else
+                    cachedBytes = cacheManager.getSegment(cacheManager, key)
+                end if
+            end if
+
+            if isValid(cachedBytes) and cachedBytes.count() > 0
+                cacheKey = key
+                cacheHitSource = candidate.source
+                exit for
+            else
+                m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache attempt miss key=${key} source=${candidate.source}`)
+            end if
+        end for
+
         if isValid(cachedBytes) and cachedBytes.count() > 0
             if not isValid(requestMetadataEntry.streamInfo)
                 storedInfo = fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
@@ -1702,11 +1752,9 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                     requestMetadataEntry.streamInfo = playbackContext.lastSabrStreamInfo
                 end if
             end if
-            ' if isValid(requestMetadataEntry.streamInfo)
-            '     updateEstimatedPlayerTime(playbackContext, requestMetadataEntry.streamInfo)
-            ' end if
+
             cachedCoverage = invalid
-            if isValid(cacheManager) and cacheKey <> ""
+            if cacheKey <> ""
                 requestMetadataEntry.cacheKey = cacheKey
                 entryInfo = cacheManager.getEntryInfo(cacheManager, cacheKey)
                 if isValid(entryInfo)
@@ -1722,6 +1770,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                     end if
                 end if
             end if
+
             cachedResult = {
                 data: cachedBytes
                 done: true
@@ -1736,6 +1785,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
             m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache hit (${cacheHitSource}) key=${cacheKey} range=${cacheLookupRange} bytes=${cachedBytes.count()}`)
         end if
     end if
+
     if cacheHit = false
         m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache miss key=${cacheLookupLabel} range=${cacheLookupRange}`)
     end if
@@ -2020,21 +2070,21 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                             if not isValid(coverageMeta?.rangeStart) or not isValid(coverageMeta?.rangeEnd)
                                                 inferredRange = cacheManager.inferRangeForByteRange(cacheManager, coverageMeta, requestMetadataEntry.byteRange, segmentPayload.count())
                                                 if isValid(inferredRange)
-                                                    if not isValid(coverageMeta?.rangeStart) and isValid(inferredRange?.rangeStart)
-                                                        coverageMeta["rangeStart"] = inferredRange.rangeStart
-                                                    end if
-                                                    if not isValid(coverageMeta?.rangeEnd) and isValid(inferredRange?.rangeEnd)
-                                                        coverageMeta["rangeEnd"] = inferredRange.rangeEnd
-                                                    end if
-                                                    if not isValid(coverageMeta?.sequenceNumber) and isValid(inferredRange?.sequenceNumber)
-                                                        coverageMeta["sequenceNumber"] = inferredRange.sequenceNumber
-                                                    end if
+                                        if not isValid(coverageMeta?.rangeStart) and isValid(inferredRange?.rangeStart)
+                                            CoverageMeta["rangeStart"] = inferredRange.rangeStart
+                                        end if
+                                        if not isValid(coverageMeta?.rangeEnd) and isValid(inferredRange?.rangeEnd)
+                                            coverageMeta["rangeEnd"] = inferredRange.rangeEnd
+                                        end if
+                                        if not isValid(coverageMeta?.sequenceNumber) and isValid(inferredRange?.sequenceNumber)
+                                            coverageMeta["sequenceNumber"] = inferredRange.sequenceNumber
+                                        end if
                                                 end if
                                             end if
                                             coverageStartLabel = sabr_valueToLabel(coverageMeta?.rangeStart)
                                             coverageEndLabel = sabr_valueToLabel(coverageMeta?.rangeEnd)
                                             requestedRangeLabel = formatRequestedRangeForPath(requestMetadataEntry.byteRange)
-                                            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${cacheKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()}`)
+                                            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${cacheKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()} itag=${currentFormat?.itag}`)
                                             cacheManager.storeSegment(cacheManager, cacheKey, segmentPayload, coverageMeta)
                                             deliveredSegment = true
                                             if isValid(requestMetadata.streamInfo) and GetInterface(requestMetadata.streamInfo, "ifAssociativeArray") <> invalid
@@ -2662,6 +2712,11 @@ end sub
 
 function buildSabrResponseForPlayer(requestMetadata as object, umpResult as dynamic, currentFormat as object, requestByteRange as object, contentType as string) as object
     headers = CreateObject("roAssociativeArray")
+    itagLabelForHeader = sabr_valueToLabel(currentFormat?.itag)
+    if itagLabelForHeader = "" then itagLabelForHeader = `${requestMetadata?.format?.itag ?? ""}`
+    if itagLabelForHeader <> ""
+        headers["X-Cache-Itag"] = itagLabelForHeader
+    end if
     body = CreateObject("roByteArray")
     fullBody = invalid
     status = 204

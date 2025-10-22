@@ -356,11 +356,20 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
     if GetInterface(headers, "ifAssociativeArray") <> invalid
         rangeHeader = headers.Lookup("Content-Range")
         if not isValid(rangeHeader) then rangeHeader = headers.Lookup("content-range")
-        if not isValid(rangeHeader) and headers.DoesExist("X-Cache-Range")
+        if not isValid(rangeHeader)
             rangeHeader = headers.Lookup("X-Cache-Range")
         end if
+        itagHeader = headers.Lookup("X-Cache-Itag")
+        if not isValid(itagHeader) then itagHeader = headers.Lookup("x-cache-itag")
+        if not isValid(itagHeader)
+            itagHeader = headers.Lookup("X-Stream-Itag")
+        end if
         if isValid(rangeHeader)
-            loggers.printl(log_level_Type.INFO, `[HTTP] Reply range=${rangeHeader} status=${response_code} length=${data.Count()}`)
+            if isValid(itagHeader) and itagHeader <> ""
+                loggers.printl(log_level_Type.INFO, `[HTTP] Reply itag=${itagHeader} range=${rangeHeader} status=${response_code} length=${data.Count()}`)
+            else
+                loggers.printl(log_level_Type.INFO, `[HTTP] Reply range=${rangeHeader} status=${response_code} length=${data.Count()}`)
+            end if
         end if
     end if
     loggers.printl(log_level_Type.INFO, `Preparing to HTTP reply with:${chr(13)}${chr(10)}${packet}${chr(13)}${chr(10)}Raw data length: ${str(data.Count())}`)

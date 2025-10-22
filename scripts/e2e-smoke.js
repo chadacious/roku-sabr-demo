@@ -90,14 +90,21 @@ async function main() {
         await logStream.waitFor(/VideoPlayer\] setVideo/, 10000);
         await pause(1500);
 
-        const screenshotPath = await captureScreenshot({
-            host,
-            username,
-            password,
-            outDir: ARTIFACTS_DIR,
-            outFile: `screenshot-${runId}`,
-        });
-        console.log(`[test] Screenshot saved to ${screenshotPath}`);
+        console.log("[test] Waiting for SABR outcome logs (errors or repeats) ...");
+        try {
+            await logStream.waitFor(/Repeated SABR requests detected/, 60000);
+            console.log("[test] Detected repeat request guard trip");
+        } catch (_err) {
+            console.log("[test] No repeat guard detected within 60s");
+        }
+        try {
+            await logStream.waitFor(/VideoPlayer\][^\n]*error/i, 35000);
+            console.log("[test] Detected video error log");
+        } catch (_err) {
+            console.log("[test] No video error detected within 35s");
+        }
+        await pause(3000);
+        console.log("[test] Completed log observation window");
     } finally {
         if (logStream) {
             await pause(500);
@@ -260,14 +267,14 @@ function waitForLog({ matcher, timeoutMs, watchers, getBuffer }) {
 
         watchers.add(watcher);
         const initialBuffer = getBuffer();
-    if (initialBuffer && initialBuffer.length > 0) {
-        if (matchBuffer(initialBuffer, matcher)) {
-            watchers.delete(watcher);
-            clearTimeout(watcher.timer);
-            resolve();
-            return;
+        if (initialBuffer && initialBuffer.length > 0) {
+            if (matchBuffer(initialBuffer, matcher)) {
+                watchers.delete(watcher);
+                clearTimeout(watcher.timer);
+                resolve();
+                return;
+            }
         }
-    }
         tryResolveWatcher(watcher, getBuffer(), watchers);
     });
 }
