@@ -615,6 +615,20 @@ function inferCacheCoverageForRequest(cacheManager as dynamic, metadata as dynam
     return inferred
 end function
 
+sub logCoverageDiagnostics(info as object)
+    if not isValid(info) then return
+    logTag = info?.logTag ?? "[coverage]"
+    cacheKey = info?.cacheKey ?? ""
+    requested = info?.requested
+    coverage = info?.coverage
+    requestedLabel = formatRequestedRangeForPath(requested)
+    coverageLabel = ""
+    if isValid(coverage)
+        coverageLabel = `${coverage?.rangeStart ?? "?"}-${coverage?.rangeEnd ?? "?"}`
+    end if
+    m.logs.printl(log_level_Type.DEBUG, `${logTag} Coverage diagnostics key=${cacheKey} requested=${requestedLabel} coverage=${coverageLabel} sequence=${coverage?.sequenceNumber ?? requested?.sequenceNumber ?? "?"}`)
+end sub
+
 ' function sabr_buildLegacySegmentCacheKeyForRange(format as object, byteRange as object) as string
 '     if not isValid(format) then return ""
 '     startLabel = toSafeString(byteRange?.startRange)
@@ -2087,6 +2101,12 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                             m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Storing segment cache key=${cacheKey} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()} itag=${currentFormat?.itag}`)
                                             cacheManager.storeSegment(cacheManager, cacheKey, segmentPayload, coverageMeta)
                                             deliveredSegment = true
+                                            logCoverageDiagnostics({
+                                                logTag: requestLogTag
+                                                cacheKey: cacheKey
+                                                requested: requestMetadataEntry.byteRange
+                                                coverage: coverageMeta
+                                            })
                                             if isValid(requestMetadata.streamInfo) and GetInterface(requestMetadata.streamInfo, "ifAssociativeArray") <> invalid
                                                 requestMetadata.streamInfo["deliveredCoverage"] = coverageMeta
                                             end if
