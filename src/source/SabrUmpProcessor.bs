@@ -666,23 +666,23 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
         end if
 
         initStore = {
-            mediaIdHash: coverageRange?.mediaIdHash
-            contentType: coverageRange?.contentType
-            itag: coverageRange?.itag
-            trackId: ctx.requestMetadata?.format?.audioTrackId
-            rangeStart: coverageRange?.rangeStart
-            rangeEnd: coverageRange?.rangeEnd
-            isInit: true
-            bytes: segmentData
-            startSegmentIndex: startSeqVal
-            endSegmentIndex: endSeqVal
-            sequenceNumber: startSeqVal
-            startTimeMs: startTimeVal
-            durationMs: durationVal
-            timescale: timescaleVal
-            startTicks: startTicksVal
-            durationTicks: durationTicksVal
-            formatId: segment.mediaHeader?.formatId
+            "mediaIdHash": coverageRange?.mediaIdHash
+            "contentType": coverageRange?.contentType
+            "itag": coverageRange?.itag
+            "trackId": ctx.requestMetadata?.format?.audioTrackId
+            "rangeStart": coverageRange?.rangeStart
+            "rangeEnd": coverageRange?.rangeEnd
+            "isInit": true
+            "bytes": segmentData
+            "startSegmentIndex": startSeqVal
+            "endSegmentIndex": endSeqVal
+            "sequenceNumber": startSeqVal
+            "startTimeMs": startTimeVal
+            "durationMs": durationVal
+            "timescale": timescaleVal
+            "startTicks": startTicksVal
+            "durationTicks": durationTicksVal
+            "formatId": segment.mediaHeader?.formatId
         }
 
         if not isValid(initStore.itag) and isValid(segment.mediaHeader?.formatId)
