@@ -338,17 +338,18 @@ function sabr_ump_handleNextRequestPolicy(ctx as object, part as object) as dyna
     if isValid(nextPolicy)
         sabr_ump_mergeStreamInfo(ctx, { "nextRequestPolicy": nextPolicy })
         cookieProto = nextPolicy?.playbackCookie
-        if isValid(cookieProto)
-            cookieEncoded = invalid
-            try
-                cookieEncoded = PlaybackCookieEncode(cookieProto)
-            catch e
-                cookieEncoded = invalid
-            end try
-            if isValid(cookieEncoded) and cookieEncoded <> ""
-                ctx.requestMetadata.playbackCookie = cookieEncoded
-            end if
-        end if
+        ctx.requestMetadata.playbackCookie = cookieProto
+        ' if isValid(cookieProto)
+        '     cookieEncoded = invalid
+        '     try
+        '         cookieEncoded = PlaybackCookieEncode(cookieProto)
+        '     catch e
+        '         cookieEncoded = invalid
+        '     end try
+        '     if isValid(cookieEncoded) and cookieEncoded <> ""
+        '         ctx.requestMetadata.playbackCookie = cookieEncoded
+        '     end if
+        ' end if
     end if
     sabr_ump_logPartDetails(ctx, "next_request_policy", part.data, nextPolicy)
     if sabr_ump_shouldDebugDump(ctx)
@@ -1444,7 +1445,7 @@ sub sabr_ump_logPartDetails(ctx as object, label as string, rawData as dynamic, 
         hexPreview = Left(hexPreview, 512) + "..."
     end if
 
-    sabr_ump_log(ctx, log_level_Type.VERBOSE, `[SabrUmpProcessor] Part ${label} size=${size} hex=${hexPreview}`)
+    ' sabr_ump_log(ctx, log_level_Type.VERBOSE, `[SabrUmpProcessor] Part ${label} size=${size} hex=${hexPreview}`)
 
     if isValid(decoded)
         decodedText = FormatJson(decoded)

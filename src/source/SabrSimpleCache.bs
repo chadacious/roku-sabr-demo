@@ -1,7 +1,8 @@
 ' Simple filesystem-based cache helpers for SABR segments.
 
 const SABR_CACHE_BASE_DIR = "tmp:/sabr-cache"
-const SABR_CACHE_LOG_SAMPLE = 8
+const SABR_CACHE_LOG_SAMPLE = 100
+const SABR_CACHE_PER_TYPE_LIMIT = 100
 
 sub sabrCacheSetLogger(logs as dynamic)
     m.sabrCacheLogger = logs
@@ -292,6 +293,8 @@ function sabrCacheStoreSegment(options as object) as object
     end if
     sabrCacheRememberMetadata(fileName, extra)
 
+    sabrCacheEnforceContentLimit(options?.contentType, SABR_CACHE_PER_TYPE_LIMIT, path)
+
     sabrCacheLogSnapshot("store", path)
     return {
         path: path
@@ -426,6 +429,110 @@ function sabrCacheLoadSegment(params as object) as object
         rangeEnd: effectiveEnd
         path: best.path
     }
+end function
+
+sub sabrCacheEnforceContentLimit(rawContentType as dynamic, limit as integer, latestPath as string)
+    if limit <= 0 then return
+    contentType = sabrCacheSanitize(rawContentType)
+    if contentType = "" then return
+
+    base = sabrCacheEnsureBasePath()
+    fs = CreateObject("roFileSystem")
+    names = fs.GetDirectoryListing(base)
+    if GetInterface(names, "ifArray") = invalid then return
+
+    entries = []
+    for each name in names
+        parsed = sabrCacheParseEntry(name)
+        if GetInterface(parsed, "ifAssociativeArray") = invalid then continue for
+        if parsed.isInit = true then continue for
+        entryType = sabrCacheSanitize(parsed.contentType)
+        if entryType <> contentType then continue for
+        path = `${base}/${name}`
+        stamp = sabrCacheExtractModifiedTicks(fs, path)
+        if path = latestPath then
+            stamp = stamp + 9223372036854.0
+        end if
+        entries.push({
+            name: name
+            path: path
+            stamp: stamp
+        })
+    end for
+
+    total = entries.count()
+    if total <= limit then return
+
+    for i = 0 to total - 2
+        for j = i + 1 to total - 1
+            lhs = entries[i]
+            rhs = entries[j]
+            swap = false
+            if rhs.stamp > lhs.stamp
+                swap = true
+            else if rhs.stamp = lhs.stamp and rhs.name > lhs.name
+                swap = true
+            end if
+            if swap
+                temp = entries[i]
+                entries[i] = entries[j]
+                entries[j] = temp
+            end if
+        end for
+    end for
+    removedAny = false
+    targetRemovals = total - limit
+    lastRemoved = ""
+    idx = total - 1
+    while idx >= 0 and targetRemovals > 0
+        victim = entries[idx]
+        if victim.path = latestPath
+            idx = idx - 1
+            continue while
+        end if
+        if fs.Exists(victim.path)
+            fs.Delete(victim.path)
+            removedAny = true
+            lastRemoved = victim.path
+        end if
+        targetRemovals = targetRemovals - 1
+        idx = idx - 1
+    end while
+
+    if removedAny
+        updated = fs.GetDirectoryListing(base)
+        sabrCachePruneMetadata(updated)
+        focus = latestPath
+        if focus = "" then focus = lastRemoved
+        sabrCacheLogSnapshot("prune", focus)
+    end if
+end sub
+
+function sabrCacheExtractModifiedTicks(fs as object, path as string) as double
+    if fs = invalid then return 0.0
+    info = fs.Stat(path)
+    if GetInterface(info, "ifAssociativeArray") = invalid then return 0.0
+
+    keys = [ "modified", "modificationTime", "creationTime", "ctime", "mtime" ]
+    stamp = invalid
+    for each key in keys
+        if info.DoesExist(key)
+            stamp = info.Lookup(key)
+            exit for
+        end if
+    end for
+
+    if stamp = invalid then return 0.0
+
+    if GetInterface(stamp, "ifDateTime") <> invalid
+        return (stamp.AsSeconds() * 1000.0) + stamp.GetMilliseconds()
+    end if
+
+    if IsInteger(stamp) or IsFloat(stamp) or IsDouble(stamp)
+        return stamp + 0.0
+    end if
+
+    return 0.0
 end function
 
 sub sabrCacheLogSnapshot(reason as string, focusPath as string)

@@ -31,7 +31,7 @@ import "pkg:/source/isItem.bs"
 import "pkg:/source/httpRequest.bs"
 import "pkg:/source/taskUtils.bs"
 
-const SABR_REPEAT_SEGMENT_THRESHOLD = 4
+const SABR_REPEAT_SEGMENT_THRESHOLD = 2
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
 
 function getHeaderByteRange(request as object) as object
@@ -1712,8 +1712,8 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     sabrRequestJson = createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, playerTimeOverride, videoNode, nextRequestId)
 
      if isValid(currentFormat.height) 
-        sabrRequestJson.clientAbrState.stickyResolution = currentFormat.height
-        sabrRequestJson.clientAbrState.lastManualSelectedResolution = currentFormat.height
+        sabrRequestJson.clientAbrState["stickyResolution"] = currentFormat.height
+        sabrRequestJson.clientAbrState["lastManualSelectedResolution"] = currentFormat.height
      end if
 
     formatToDiscard = applyBufferedStateToRequest(sabrRequestJson, bufferState)
@@ -1851,8 +1851,15 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 if not isValid(decodedProto)
                     ok = false
                     m.logs.printl(log_level_Type.WARN, `${requestLogTag} Error decoding SABR proto after encode`)
-                ' else
-                '     m.logs.printl(log_level_Type.VERBOSE, `${requestLogTag} Decoded SABR proto: ${FormatJson(decodedProto)}`)
+                else
+                    ' m.logs.printl(log_level_Type.VERBOSE, `${requestLogTag} Decoded SABR proto: ${FormatJson(decodedProto)}`)
+                    if debugUploadUrl <> ""
+                        requestPayloadJson = FormatJson(decodedProto)
+                        if isValid(requestPayloadJson) and requestPayloadJson <> ""
+                            dumpLabel = getDumpLabel(playbackContext, "sabr-request-decode", `${nextRequestId}`, requestMetadataEntry.byteRange, contentType, currentFormat)
+                            roku_debugUploadText(debugUploadUrl, `${dumpLabel}.json`, requestPayloadJson, m.logs)
+                        end if
+                    end if
                 end if
             end if
         catch e
@@ -2292,7 +2299,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
 
     ' write the playbackContext to the playbackContext.json file to preserve state
     m.logs.printl(log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
-    m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
+    ' m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
     writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
 
     return response
@@ -2378,7 +2385,7 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
         "poToken": sabr.poToken,
         "playbackCookie": invalid, ' the playbackContext.lastPlaybackCookie will be set on handling the response nextRequestPolicy.playbackCookie
         "clientInfo": sabr.clientInfo,
-        "sabrContext": [],
+        "sabrContexts": [],
         "unsentSabrContexts": [],
     }
 
@@ -2387,9 +2394,9 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
     end if
 
     if isValid(playbackContext.sabrContexts)
-        streamerContext["sabrContext"] = []
+        streamerContext["sabrContexts"] = []
         for each key in playbackContext.sabrContexts
-            streamerContext.sabrContext.push(playbackContext.sabrContexts[key])
+            streamerContext.sabrContexts.push(playbackContext.sabrContexts[key])
         end for
     end if
 
