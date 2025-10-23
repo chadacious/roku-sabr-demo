@@ -90,10 +90,12 @@ function collectBufferedRangesForFormat(mediaIdHash as string, formatType as str
     return ranges
 end function
 
-function computeBufferedEndTime(ranges as object) as dynamic
-    if GetInterface(ranges, "ifArray") = invalid then return invalid
+function computeNextPlaybackTime(ranges as object, formatType as string) as dynamic
+    if GetInterface(ranges, "ifArray") = invalid or ranges.count() = 0 then return invalid
 
-    entries = []
+    latest = invalid
+    latestIndex = -2147483647
+
     for each range in ranges
         if GetInterface(range, "ifAssociativeArray") = invalid then continue for
 
@@ -101,84 +103,46 @@ function computeBufferedEndTime(ranges as object) as dynamic
         if idx = invalid then idx = toInt(range?.sequenceNumber)
         if idx = invalid then idx = toInt(range?.rangeStart)
 
-        startMs = toInt(range?.startTimeMs)
-        if startMs = invalid then startMs = toInt(range?.startMs)
-        if startMs = invalid
-            startTicks = toInt(range?.timeRange?.startTicks)
-            timescaleForStart = toInt(range?.timeRange?.timescale)
-            if startTicks <> invalid and timescaleForStart <> invalid and timescaleForStart <> 0
-                startMs = int((startTicks * 1000) / timescaleForStart)
-            end if
-        end if
-
-        durationMs = toInt(range?.durationMs)
-        if durationMs = invalid
-            durationTicks = toInt(range?.timeRange?.durationTicks)
-            timescaleForDuration = toInt(range?.timeRange?.timescale)
-            if durationTicks <> invalid and timescaleForDuration <> invalid and timescaleForDuration <> 0
-                durationMs = int((durationTicks * 1000) / timescaleForDuration)
-            end if
-        end if
-
-        if idx = invalid or durationMs = invalid or durationMs <= 0 then continue for
-
-        entry = {
-            idx: idx
-            startMs: startMs
-            durationMs: durationMs
-        }
-        entries.push(entry)
-    end for
-
-    totalEntries = entries.count()
-    if totalEntries = 0 then return invalid
-
-    ' sort by segment index ascending
-    for i = 0 to totalEntries - 2
-        for j = i + 1 to totalEntries - 1
-            left = entries[i]
-            right = entries[j]
-            if toInt(left?.idx) > toInt(right?.idx)
-                temp = entries[i]
-                entries[i] = entries[j]
-                entries[j] = temp
-            end if
-        end for
-    end for
-
-    seen = {}
-    baseStart = invalid
-    totalDuration = 0
-    expectedIdx = invalid
-
-    for each entry in entries
-        idx = toInt(entry?.idx)
         if idx = invalid then continue for
-        if seen.DoesExist(`${idx}`) then continue for
-
-        if expectedIdx = invalid
-            expectedIdx = idx
-            baseStart = toInt(entry?.startMs)
+        if idx >= latestIndex
+            latestIndex = idx
+            latest = range
         end if
-
-        if idx > expectedIdx
-            exit for
-        end if
-
-        if baseStart = invalid
-            baseStart = toInt(entry?.startMs)
-        else if toInt(entry?.startMs) <> invalid and toInt(entry?.startMs) < baseStart
-            baseStart = toInt(entry?.startMs)
-        end if
-
-        totalDuration = totalDuration + entry.durationMs
-        expectedIdx = idx + 1
-        seen[`${idx}`] = true
     end for
 
-    if baseStart = invalid then baseStart = 0
-    if totalDuration <= 0 then return baseStart
-    return baseStart + totalDuration
+    if not isValid(latest) then return invalid
+
+    startMs = toInt(latest?.startTimeMs)
+    if startMs = invalid then startMs = toInt(latest?.startMs)
+    if startMs = invalid
+        startTicks = toInt(latest?.timeRange?.startTicks)
+        timescale = toInt(latest?.timeRange?.timescale)
+        if startTicks <> invalid and timescale <> invalid and timescale <> 0
+            startMs = int((startTicks * 1000) / timescale)
+        end if
+    end if
+    if startMs = invalid then startMs = 0
+
+    durationMs = toInt(latest?.durationMs)
+    if durationMs = invalid
+        durationTicks = toInt(latest?.timeRange?.durationTicks)
+        timescale = toInt(latest?.timeRange?.timescale)
+        if durationTicks <> invalid and timescale <> invalid and timescale <> 0
+            durationMs = int((durationTicks * 1000) / timescale)
+        end if
+    end if
+
+    if durationMs = invalid or durationMs < 0 then durationMs = 0
+
+    if durationMs = 0
+        if formatType = "AUDIO"
+            durationMs = 9985
+        else if formatType = "VIDEO"
+            durationMs = 7000
+        end if
+    end if
+
+    return startMs + durationMs
 end function
 
 function buildBufferedState(mediaIdHash as string, currentFormat as object, activeFormats as object, playbackContext as object, requestedFormatType as string) as object
@@ -241,7 +205,7 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
         playerRanges = state.rangesByType.Lookup(requestedFormatType)
     end if
 
-    playerTimeCandidate = computeBufferedEndTime(playerRanges)
+    playerTimeCandidate = computeNextPlaybackTime(playerRanges, requestedFormatType)
     if playerTimeCandidate <> invalid and playerTimeCandidate >= 0
         state.playerTimeMs = playerTimeCandidate
     else
