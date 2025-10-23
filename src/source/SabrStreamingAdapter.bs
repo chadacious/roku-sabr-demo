@@ -33,6 +33,7 @@ import "pkg:/source/taskUtils.bs"
 
 const SABR_REPEAT_SEGMENT_THRESHOLD = 4
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
+const MAX_BUFFERED_RANGES_PER_TYPE = 1
 
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
 const PLAYER_TIME_STRATEGY_METADATA = "metadata"
@@ -89,7 +90,7 @@ function collectBufferedRangesForFormat(mediaIdHash as string, formatType as str
                 seen[label] = true
             end if
             newest.push(rangeEntry)
-            if newest.count() >= 6
+            if newest.count() >= MAX_BUFFERED_RANGES_PER_TYPE
                 exit for
             end if
         end if
