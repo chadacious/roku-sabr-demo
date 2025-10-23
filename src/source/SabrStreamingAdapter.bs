@@ -31,8 +31,13 @@ import "pkg:/source/isItem.bs"
 import "pkg:/source/httpRequest.bs"
 import "pkg:/source/taskUtils.bs"
 
-const SABR_REPEAT_SEGMENT_THRESHOLD = 2
+const SABR_REPEAT_SEGMENT_THRESHOLD = 4
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
+
+const PLAYER_TIME_STRATEGY_SIDX = "sidx"
+const PLAYER_TIME_STRATEGY_METADATA = "metadata"
+const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
+const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
 
 function getHeaderByteRange(request as object) as object
     range = "bytes=0-"
@@ -99,71 +104,6 @@ function collectBufferedRangesForFormat(mediaIdHash as string, formatType as str
     return ranges
 end function
 
-function computeNextPlaybackTime(ranges as object, formatType as string) as dynamic
-    if GetInterface(ranges, "ifArray") = invalid or ranges.count() = 0 then return invalid
-
-    if isValid(m?.logs)
-        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Evaluating ${ranges.count()} buffered ranges for ${formatType}`)
-    end if
-
-    latest = invalid
-    latestIndex = -2147483647
-
-    for each range in ranges
-        if GetInterface(range, "ifAssociativeArray") = invalid then continue for
-
-        idx = toInt(range?.startSegmentIndex)
-        if idx = invalid then idx = toInt(range?.sequenceNumber)
-        if idx = invalid then idx = toInt(range?.rangeStart)
-
-        if idx = invalid then continue for
-        if idx >= latestIndex
-            latestIndex = idx
-            latest = range
-        end if
-    end for
-
-    if not isValid(latest) then return invalid
-
-    startMs = toInt(latest?.startTimeMs)
-    if startMs = invalid then startMs = toInt(latest?.startMs)
-    if startMs = invalid
-        startTicks = toInt(latest?.timeRange?.startTicks)
-        timescale = toInt(latest?.timeRange?.timescale)
-        if startTicks <> invalid and timescale <> invalid and timescale <> 0
-            startMs = int((startTicks * 1000) / timescale)
-        end if
-    end if
-    if startMs = invalid then startMs = 0
-
-    durationMs = toInt(latest?.durationMs)
-    if durationMs = invalid
-        durationTicks = toInt(latest?.timeRange?.durationTicks)
-        timescale = toInt(latest?.timeRange?.timescale)
-        if durationTicks <> invalid and timescale <> invalid and timescale <> 0
-            durationMs = int((durationTicks * 1000) / timescale)
-        end if
-    end if
-
-    ' if durationMs = invalid or durationMs < 0 then durationMs = 0
-
-    ' if durationMs = 0
-    '     if formatType = "AUDIO"
-    '         durationMs = 9985
-    '     else if formatType = "VIDEO"
-    '         durationMs = 7000
-    '     end if
-    ' end if
-
-    result = startMs + durationMs
-
-    if isValid(m?.logs)
-        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Selected range index=${latestIndex} startMs=${startMs} durationMs=${durationMs} result=${result}`)
-    end if
-
-    return result
-end function
-
 function currentPlayerPositionMs(videoNode as object, playbackContext as object) as dynamic
     positionSeconds = invalid
     if isValid(videoNode) and isValid(videoNode.position)
@@ -184,8 +124,6 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
     state = {
         "formatToDiscard": invalid
         "rangesByType": rangesByType
-        "playerTimeMs": invalid
-        "playerTimeSource": "unset"
     }
 
     currentFormatKey = formatToKey(currentFormat)
@@ -232,23 +170,6 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
         end if
     end for
 
-    playerRanges = invalid
-    if state.rangesByType.DoesExist(requestedFormatType)
-        playerRanges = state.rangesByType.Lookup(requestedFormatType)
-    end if
-
-    ' if activeFormats.videoFormat.itag = 160
-    '     stop
-    ' end if
-    playerTimeCandidate = computeNextPlaybackTime(playerRanges, requestedFormatType)
-    if playerTimeCandidate <> invalid and playerTimeCandidate >= 0
-        state.playerTimeMs = playerTimeCandidate
-        state.playerTimeSource = "bufferedRanges"
-    else
-        state.playerTimeMs = invalid
-        state.playerTimeSource = "bufferedRanges:empty"
-    end if
-
     return state
 end function
 
@@ -272,6 +193,565 @@ function applyBufferedStateToRequest(videoPlaybackAbrRequest as object, bufferSt
     return bufferState?.formatToDiscard
 end function
 
+
+sub ensurePlayerTimeStrategy(playbackContext as object) as void
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return
+    current = playbackContext?.playerTimeStrategy
+    if isValid(current) and current <> "" then return
+
+    defaultStrategy = DEFAULT_PLAYER_TIME_STRATEGY
+    override = invalid
+    if isValid(m?.top?.playerTimeStrategy)
+        override = `${m.top.playerTimeStrategy}`
+    end if
+    if isValid(override) and override <> ""
+        defaultStrategy = LCase(override)
+    end if
+    playbackContext["playerTimeStrategy"] = defaultStrategy
+end sub
+
+function determinePlayerTimeStrategy(playbackContext as object) as string
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return DEFAULT_PLAYER_TIME_STRATEGY
+    ensurePlayerTimeStrategy(playbackContext)
+    strategy = playbackContext?.playerTimeStrategy
+    if not isValid(strategy) or strategy = "" then return DEFAULT_PLAYER_TIME_STRATEGY
+    normalized = LCase(`${strategy}`)
+    if normalized = PLAYER_TIME_STRATEGY_SIDX or normalized = PLAYER_TIME_STRATEGY_METADATA or normalized = PLAYER_TIME_STRATEGY_HYBRID
+        return normalized
+    end if
+    return DEFAULT_PLAYER_TIME_STRATEGY
+end function
+
+function globalSidxIndexMap() as object
+    if GetInterface(m?.sidxIndexCache, "ifAssociativeArray") = invalid
+        m.sidxIndexCache = {}
+    end if
+    return m.sidxIndexCache
+end function
+
+function requestedByteStart(byteRange as object) as dynamic
+    if GetInterface(byteRange, "ifAssociativeArray") = invalid then return invalid
+    startVal = toInt(byteRange?.startRange)
+    if startVal = invalid then startVal = toInt(byteRange?.start)
+    if startVal = invalid
+        label = ""
+        if byteRange.DoesExist("startRange") then label = `${byteRange.startRange}`
+        if label = "" and byteRange.DoesExist("start") then label = `${byteRange.start}`
+        if label <> ""
+            startVal = Val(label)
+        end if
+    end if
+    if startVal = invalid and byteRange.DoesExist("segmentIndexInfo")
+        info = byteRange.segmentIndexInfo
+        if GetInterface(info, "ifAssociativeArray") <> invalid
+            startVal = toInt(info?.rangeStart)
+            if startVal = invalid and isValid(info?.rangeStart)
+                startLabel = `${info.rangeStart}`
+                if startLabel <> ""
+                    startVal = Val(startLabel)
+                end if
+            end if
+        end if
+    end if
+    return startVal
+end function
+
+function resolvePlayerTimeMsForRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
+    ensurePlayerTimeStrategy(playbackContext)
+
+    strategy = determinePlayerTimeStrategy(playbackContext)
+    attempts = []
+    if strategy = PLAYER_TIME_STRATEGY_SIDX
+        attempts = [ PLAYER_TIME_STRATEGY_SIDX ]
+    else if strategy = PLAYER_TIME_STRATEGY_METADATA
+        attempts = [ PLAYER_TIME_STRATEGY_METADATA ]
+    else
+        attempts = [ PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA ]
+    end if
+
+    if isValid(m?.logs)
+        entryStatus = "none"
+        globalKeys = []
+        globalMap = globalSidxIndexMap()
+        if GetInterface(globalMap, "ifAssociativeArray") <> invalid
+            for each keyName in globalMap
+                globalKeys.push(keyName)
+            end for
+            entryStatus = `global:${globalKeys.count()}${FormatJson(globalKeys)}`
+        end if
+        contextKeys = []
+        contextMap = playbackContext?.sidxIndexByFormat
+        if GetInterface(contextMap, "ifAssociativeArray") <> invalid
+            for each ctxKey in contextMap
+                contextKeys.push(ctxKey)
+            end for
+            entryStatus = `${entryStatus}|context:${contextKeys.count()}${FormatJson(contextKeys)}`
+        end if
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Strategy ${strategy} sidxIndex=${entryStatus}`)
+    end if
+
+    for each attempt in attempts
+        result = invalid
+        if attempt = PLAYER_TIME_STRATEGY_SIDX
+            result = lookupPlayerTimeMsFromSidx(playbackContext, contentType, currentFormat, requestByteRange)
+        else if attempt = PLAYER_TIME_STRATEGY_METADATA
+            result = lookupPlayerTimeMsFromMetadata(playbackContext, contentType, currentFormat, requestByteRange)
+        end if
+
+        candidate = toInt(result?.value)
+        if candidate <> invalid and candidate >= 0
+            label = result?.source
+            if not isValid(label) or label = "" then label = attempt
+            return {
+                value: candidate
+                source: label
+            }
+        end if
+    end for
+
+    actualPositionMs = currentPlayerPositionMs(videoNode, playbackContext)
+    if actualPositionMs <> invalid and actualPositionMs >= 0
+        return {
+            value: actualPositionMs
+            source: "playerPosition"
+        }
+    end if
+
+    fallbackInfo = resolveFallbackPlayerTimeMsInfo(playbackContext, currentFormat)
+    fallbackValue = toInt(fallbackInfo?.value)
+    if fallbackValue = invalid then fallbackValue = 0
+    fallbackSource = fallbackInfo?.source
+    if not isValid(fallbackSource) or fallbackSource = "" then fallbackSource = "default"
+    return {
+        value: fallbackValue
+        source: `fallback:${fallbackSource}`
+    }
+end function
+
+function buildPlayerTimeIndexKey(contentType as string, format as object) as string
+    typeLabel = `${contentType ?? ""}`
+    if typeLabel = "" then typeLabel = formatTypeFromFormat(format)
+    if typeLabel = "" then typeLabel = "UNKNOWN"
+    return `${typeLabel}|${formatToKey(format)}`
+end function
+
+function parseFormatKey(formatKey as string) as object
+    info = {
+        itag: invalid
+        xtags: ""
+    }
+    if not isValid(formatKey) then return info
+    parts = formatKey.Split(":")
+    if parts.count() >= 1
+        info.itag = toInt(parts[0])
+    end if
+    if parts.count() >= 2
+        info.xtags = `${parts[1]}`
+    end if
+    return info
+end function
+
+sub seedMetadataFromSidx(playbackContext as object, contentType as string, formatKey as string, sidxEntry as object)
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return
+    if GetInterface(sidxEntry, "ifAssociativeArray") = invalid then return
+
+    entries = sidxEntry?.entries
+    if GetInterface(entries, "ifArray") = invalid or entries.count() = 0 then return
+
+    byRange = getSegmentMetadataByRangeKey(playbackContext, contentType, formatKey, true)
+    if GetInterface(byRange, "ifAssociativeArray") = invalid then return
+
+    formatInfo = parseFormatKey(formatKey)
+
+    for each entry in entries
+        startVal = toInt(entry?.rangeStart)
+        if startVal = invalid then startVal = toInt(entry?.rangeStartLabel)
+        endVal = toInt(entry?.rangeEnd)
+        if endVal = invalid then endVal = toInt(entry?.rangeEndLabel)
+        if startVal = invalid or endVal = invalid then continue for
+
+        startTimeMs = toInt(entry?.startTimeMs)
+        durationMs = toInt(entry?.durationMs)
+
+        meta = {
+            formatId: {}
+            rangeStart: startVal
+            rangeEnd: endVal
+            startTimeMs: `${startTimeMs <> invalid ? startTimeMs : 0}`
+            durationMs: `${durationMs <> invalid ? durationMs : 0}`
+            timeRange: {
+                timescale: 1000
+                startTicks: startTimeMs <> invalid ? startTimeMs : 0
+                durationTicks: durationMs <> invalid ? durationMs : 0
+            }
+        }
+
+        if isValid(formatInfo.itag)
+            meta.formatId["itag"] = formatInfo.itag
+        end if
+        if formatInfo.xtags <> ""
+            meta.formatId["xtags"] = formatInfo.xtags
+        end if
+
+        byRange[`${startVal}`] = meta
+    end for
+
+end sub
+
+function lookupPlayerTimeMsFromSidx(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
+    result = {
+        value: invalid
+        source: "sidx"
+    }
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return result
+
+    indexMap = globalSidxIndexMap()
+    if GetInterface(indexMap, "ifAssociativeArray") = invalid
+        indexMap = {}
+    end if
+
+    key = buildPlayerTimeIndexKey(contentType, currentFormat)
+    if key = "" then return result
+
+    entrySource = "global"
+    indexEntry = invalid
+    if GetInterface(indexMap, "ifAssociativeArray") <> invalid and indexMap.DoesExist(key)
+        indexEntry = indexMap.Lookup(key)
+    end if
+
+    if GetInterface(indexEntry, "ifAssociativeArray") = invalid
+        playbackMap = playbackContext?.sidxIndexByFormat
+        if GetInterface(playbackMap, "ifAssociativeArray") <> invalid and playbackMap.DoesExist(key)
+            indexEntry = playbackMap.Lookup(key)
+            entrySource = "context"
+        end if
+    end if
+
+    if GetInterface(indexEntry, "ifAssociativeArray") = invalid then return result
+
+    if indexEntry.DoesExist("unsupportedReason")
+        reasonLabel = `${indexEntry.Lookup("unsupportedReason") ?? ""}`
+        if reasonLabel <> ""
+            result["source"] = `sidx:unsupported:${reasonLabel}`
+            if isValid(m?.logs)
+                m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] SIDX unsupported for ${key} source=${entrySource} reason=${reasonLabel}`)
+            end if
+            return result
+        end if
+    end if
+
+    entries = indexEntry?.entries
+    if GetInterface(entries, "ifArray") = invalid or entries.count() = 0 then return result
+
+    targetStart = requestedByteStart(requestByteRange)
+    if targetStart = invalid then return result
+    targetValue = targetStart
+
+    if isValid(m?.logs)
+        firstEntry = entries[0]
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] SIDX lookup ${key} source=${entrySource} target=${targetValue} entries=${entries.count()} firstStart=${firstEntry?.rangeStart} duration=${firstEntry?.durationMs}`)
+    end if
+
+    matchEntry = invalid
+    lowerEntry = invalid
+
+    for each entry in entries
+        startVal = toInt(entry?.rangeStart)
+        if startVal = invalid and entry.DoesExist("rangeStartLabel")
+            labelStart = `${entry.rangeStartLabel ?? ""}`
+            if labelStart <> ""
+                startVal = toInt(labelStart)
+                if startVal = invalid
+                    startVal = Val(labelStart)
+                end if
+            end if
+        end if
+        endVal = toInt(entry?.rangeEnd)
+        if endVal = invalid and entry.DoesExist("rangeEndLabel")
+            labelEnd = `${entry.rangeEndLabel ?? ""}`
+            if labelEnd <> ""
+                endVal = toInt(labelEnd)
+                if endVal = invalid
+                    endVal = Val(labelEnd)
+                end if
+            end if
+        end if
+        if startVal = invalid then continue for
+        if targetValue = startVal
+            matchEntry = entry
+            exit for
+        end if
+        if endVal <> invalid and targetValue >= startVal and targetValue <= endVal
+            matchEntry = entry
+            exit for
+        end if
+        if targetValue > startVal
+            if GetInterface(lowerEntry, "ifAssociativeArray") = invalid
+                lowerEntry = entry
+            else
+                lowerStart = lowerEntry?.rangeStart
+                if lowerStart = invalid
+                    lowerStart = toInt(lowerEntry?.rangeStart)
+                end if
+                if lowerStart = invalid and lowerEntry.DoesExist("rangeStartLabel")
+                    lowerLabel = `${lowerEntry.rangeStartLabel ?? ""}`
+                    if lowerLabel <> ""
+                        lowerStart = Val(lowerLabel)
+                    end if
+                end if
+                if lowerStart = invalid or startVal > lowerStart
+                    lowerEntry = entry
+                end if
+            end if
+        end if
+    end for
+
+    candidateEntry = matchEntry
+    label = "sidx"
+    if GetInterface(candidateEntry, "ifAssociativeArray") = invalid
+        candidateEntry = lowerEntry
+        if GetInterface(candidateEntry, "ifAssociativeArray") <> invalid
+            label = "sidx:nearest"
+        end if
+    else
+        label = "sidx:exact"
+    end if
+
+    if GetInterface(candidateEntry, "ifAssociativeArray") = invalid
+        if isValid(m?.logs)
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] SIDX lookup miss for ${key} target=${targetValue}`)
+        end if
+        return result
+    end if
+
+    predicted = predictPlayerTimeFromSidxEntry(candidateEntry, targetStart)
+    if predicted = invalid then return result
+
+    result["value"] = predicted
+    result["source"] = label
+    return result
+end function
+
+function predictPlayerTimeFromSidxEntry(entry as object, targetStart as dynamic) as dynamic
+    if GetInterface(entry, "ifAssociativeArray") = invalid then return invalid
+    startMs = toInt(entry?.startTimeMs)
+    if startMs = invalid then return invalid
+
+    durationMs = toInt(entry?.durationMs)
+    rangeStart = toInt(entry?.rangeStart)
+    if rangeStart = invalid and entry.DoesExist("rangeStartLabel")
+        labelStart = `${entry.rangeStartLabel ?? ""}`
+        if labelStart <> ""
+            rangeStart = toInt(labelStart)
+            if rangeStart = invalid
+                rangeStart = Val(labelStart)
+            end if
+        end if
+    end if
+    rangeEnd = toInt(entry?.rangeEnd)
+    if rangeEnd = invalid and entry.DoesExist("rangeEndLabel")
+        labelEnd = `${entry.rangeEndLabel ?? ""}`
+        if labelEnd <> ""
+            rangeEnd = toInt(labelEnd)
+            if rangeEnd = invalid
+                rangeEnd = Val(labelEnd)
+            end if
+        end if
+    end if
+    if durationMs = invalid or rangeStart = invalid or rangeEnd = invalid then return startMs
+
+    span = rangeEnd - rangeStart + 1
+    if span <= 0 then return startMs
+
+    targetValue = targetStart * 1.0
+    offset = targetStart - rangeStart
+    if offset <= 0 then return startMs
+
+    return startMs + int((offset * durationMs) / span)
+end function
+
+function lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
+    result = {
+        value: invalid
+        source: "metadata"
+    }
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return result
+
+    targetStart = requestedByteStart(requestByteRange)
+    if targetStart = invalid then return result
+
+    metadataByRange = getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
+    if GetInterface(metadataByRange, "ifAssociativeArray") = invalid or metadataByRange.Count() = 0 then return result
+
+    exactKey = `${targetStart}`
+    if metadataByRange.DoesExist(exactKey)
+        meta = metadataByRange.Lookup(exactKey)
+        predicted = predictPlayerTimeFromMetadata(meta, targetStart)
+        if predicted <> invalid
+            result["value"] = predicted
+            result["source"] = "metadata:exact"
+            return result
+        end if
+    end if
+
+    bestCandidate = invalid
+    bestLabel = "metadata:nearest"
+    bestStart = -2147483647
+
+    for each key in metadataByRange
+        meta = metadataByRange.Lookup(key)
+        startVal = toInt(meta?.rangeStart)
+        if startVal = invalid then startVal = toInt(meta?.startRange)
+        endVal = toInt(meta?.rangeEnd)
+        if endVal = invalid then endVal = toInt(meta?.endRange)
+        if startVal = invalid then continue for
+
+        if endVal <> invalid and targetStart >= startVal and targetStart <= endVal
+            predicted = predictPlayerTimeFromMetadata(meta, targetStart)
+            if predicted <> invalid
+                result["value"] = predicted
+                result["source"] = "metadata:within"
+                return result
+            end if
+        end if
+
+        if targetStart >= startVal and startVal > bestStart
+            bestStart = startVal
+            bestCandidate = meta
+        end if
+    end for
+
+    if GetInterface(bestCandidate, "ifAssociativeArray") = invalid then return result
+
+    predicted = predictPlayerTimeFromMetadata(bestCandidate, targetStart)
+    if predicted = invalid then return result
+
+    result["value"] = predicted
+    result["source"] = bestLabel
+    return result
+end function
+
+function predictPlayerTimeFromMetadata(metadata as object, targetStart as integer) as dynamic
+    if GetInterface(metadata, "ifAssociativeArray") = invalid then return invalid
+
+    startMs = sabr_segmentStartMs(metadata)
+    if startMs = invalid then startMs = toInt(metadata?.startTimeMs)
+    if startMs = invalid then return invalid
+
+    durationMs = segmentDurationMs(metadata)
+    rangeStart = toInt(metadata?.rangeStart)
+    if rangeStart = invalid then rangeStart = toInt(metadata?.startRange)
+    rangeEnd = toInt(metadata?.rangeEnd)
+    if rangeEnd = invalid then rangeEnd = toInt(metadata?.endRange)
+
+    if durationMs = invalid or rangeStart = invalid or rangeEnd = invalid then return startMs
+
+    span = rangeEnd - rangeStart + 1
+    if span <= 0 then return startMs
+
+    offset = targetStart - rangeStart
+    if offset <= 0 then return startMs
+
+    return startMs + int((offset * durationMs) / span)
+end function
+
+sub storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)
+    if GetInterface(playbackContext, "ifAssociativeArray") = invalid then return
+    if GetInterface(update, "ifAssociativeArray") = invalid then return
+
+    formatKey = `${update?.formatKey ?? ""}`
+    if formatKey = "" and update.DoesExist("format_id")
+        inferred = update.Lookup("format_id")
+        if GetInterface(inferred, "ifAssociativeArray") <> invalid
+            itagLabel = sabr_valueToLabel(inferred.Lookup("itag"))
+            xtagLabel = sabr_valueToLabel(inferred.Lookup("xtags"))
+            formatKey = `${itagLabel}:${xtagLabel}`
+        end if
+    end if
+    if formatKey = "" then return
+
+    typeLabel = `${update?.contentType ?? contentType ?? ""}`
+    if typeLabel = "" then typeLabel = contentType
+    indexKey = `${typeLabel ?? ""}`
+    if indexKey = "" then indexKey = "UNKNOWN"
+    indexKey = `${indexKey}|${formatKey}`
+
+    sanitized = {
+        formatKey: formatKey
+        entries: []
+        timescale: toInt(update?.timescale)
+        earliestPresentationTime: update?.earliestPresentationTime
+        contentType: typeLabel
+    }
+
+    if update.DoesExist("unsupportedReason")
+        sanitized["unsupportedReason"] = `${update.Lookup("unsupportedReason")}`
+    end if
+
+    entryList = update?.entries
+    if GetInterface(entryList, "ifArray") <> invalid
+        cleaned = []
+        for each entry in entryList
+            if GetInterface(entry, "ifAssociativeArray") = invalid then continue for
+            startNumeric = toInt(entry?.rangeStart)
+            if startNumeric = invalid and isValid(entry?.rangeStart)
+                labelStart = `${entry.rangeStart}`
+                if labelStart <> ""
+                    startNumeric = Val(labelStart)
+                end if
+            end if
+            endNumeric = toInt(entry?.rangeEnd)
+            if endNumeric = invalid and isValid(entry?.rangeEnd)
+                labelEndVal = `${entry.rangeEnd}`
+                if labelEndVal <> ""
+                    endNumeric = Val(labelEndVal)
+                end if
+            end if
+            cleanedEntry = {
+                rangeStart: startNumeric
+                rangeEnd: endNumeric
+                startTimeMs: toInt(entry?.startTimeMs)
+                durationMs: toInt(entry?.durationMs)
+                referenceType: toInt(entry?.referenceType)
+            }
+            if isValid(entry?.rangeStart)
+                cleanedEntry["rangeStartLabel"] = `${entry.rangeStart}`
+            end if
+            if isValid(entry?.rangeEnd)
+                cleanedEntry["rangeEndLabel"] = `${entry.rangeEnd}`
+            end if
+            cleaned.push(cleanedEntry)
+        end for
+        sanitized["entries"] = cleaned
+    end if
+
+    map = playbackContext?.sidxIndexByFormat
+    if GetInterface(map, "ifAssociativeArray") = invalid
+        map = {}
+    end if
+    map[indexKey] = sanitized
+    playbackContext["sidxIndexByFormat"] = map
+
+    globalMap = globalSidxIndexMap()
+    globalMap[indexKey] = sanitized
+    m.sidxIndexCache = globalMap
+
+    seedMetadataFromSidx(playbackContext, typeLabel, formatKey, sanitized)
+
+    if isValid(m?.logs)
+        entryCount = GetInterface(sanitized.entries, "ifArray") <> invalid ? sanitized.entries.count() : 0
+        reason = sanitized?.unsupportedReason
+        if isValid(reason) and reason <> ""
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Stored SIDX index for ${indexKey} entries=${entryCount} unsupported=${reason}`)
+        else
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Stored SIDX index for ${indexKey} entries=${entryCount}`)
+            if entryCount > 0
+                preview = sanitized.entries[0]
+                m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] SIDX preview start=${preview?.rangeStart} duration=${preview?.durationMs} bytes=${preview?.rangeStart}-${preview?.rangeEnd}`)
+            end if
+        end if
+    end if
+end sub
 
 function sortCacheEntriesBySegment(entries as object) as object
     if GetInterface(entries, "ifArray") = invalid then return entries
@@ -1457,56 +1937,17 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolving segment start; init=${isInitSegmentRequest} formatKey=${formatKeyForLog} totals=${totalLogValue}`)
 
     bufferState = buildBufferedState(mediaIdHash, currentFormat, activeFormats, playbackContext, contentType)
-    bufferedCandidate = bufferState?.playerTimeMs
-    bufferedSourceLabel = bufferState?.playerTimeSource ?? "bufferedRanges:unknown"
-    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Buffered playerTime candidate=${bufferedCandidate ?? "invalid"} source=${bufferedSourceLabel}`)
 
-    playerTimeOverride = invalid
-    playerTimeSourceLabel = ""
-
-    formatHistory = playbackContext?.lastFormatKeyByType
-    if GetInterface(formatHistory, "ifAssociativeArray") = invalid
-        formatHistory = {}
-    end if
-
-    historyKey = contentType ?? "UNKNOWN"
-    previousFormatKey = ""
-    if formatHistory.DoesExist(historyKey)
-        previousFormatKey = `${formatHistory.Lookup(historyKey) ?? ""}`
-    end if
-    representationSwitched = previousFormatKey <> "" and previousFormatKey <> formatKeyForLog
-    if representationSwitched
-        actualPositionMs = currentPlayerPositionMs(videoNode, playbackContext)
-        if actualPositionMs <> invalid and actualPositionMs >= 0
-            playerTimeOverride = actualPositionMs
-            playerTimeSourceLabel = `representationSwitch:${previousFormatKey}->${formatKeyForLog}`
-            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Representation switch detected ${previousFormatKey}->${formatKeyForLog}; using video position ${playerTimeOverride}`)
-        else
-            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Representation switch detected ${previousFormatKey}->${formatKeyForLog} but video position unavailable`)
-        end if
-    end if
-
-    formatHistory[historyKey] = formatKeyForLog
-    playbackContext["lastFormatKeyByType"] = formatHistory
-
-    if playerTimeOverride = invalid
-        if bufferedCandidate <> invalid
-            playerTimeOverride = bufferedCandidate
-            playerTimeSourceLabel = bufferedSourceLabel
-            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using buffered playerTimeMs=${playerTimeOverride}`)
-        else
-            fallbackInfo = resolveFallbackPlayerTimeMsInfo(playbackContext, currentFormat)
-            playerTimeOverride = fallbackInfo["value"]
-            playerTimeSourceLabel = `fallback:${fallbackInfo["source"]}`
-            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Fallback playerTime path source=${fallbackInfo["source"]} value=${playerTimeOverride}`)
-        end if
-    end if
-    if playerTimeOverride = invalid
+    playerTimeInfo = resolvePlayerTimeMsForRequest(playbackContext, contentType, currentFormat, requestByteRange, videoNode)
+    playerTimeOverride = toInt(playerTimeInfo?.value)
+    if playerTimeOverride = invalid or playerTimeOverride < 0
         playerTimeOverride = 0
-        playerTimeSourceLabel = "safety:zero"
     end if
+    playerTimeSourceLabel = `${playerTimeInfo?.source ?? "unknown"}`
+    playbackContext["lastResolvedPlayerTimeMs"] = playerTimeOverride
+    playbackContext["lastResolvedPlayerTimeSource"] = playerTimeSourceLabel
 
-    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Final playerTimeMs=${playerTimeOverride} source=${playerTimeSourceLabel}`)
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolved playerTimeMs=${playerTimeOverride} source=${playerTimeSourceLabel}`)
     rangeLabelForLog = formatRequestedRangeForPath(requestByteRange)
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using playerTimeMs=${playerTimeOverride} for range ${rangeLabelForLog}`)
 
@@ -2110,6 +2551,9 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
 
     ' write the playbackContext to the playbackContext.json file to preserve state
     m.logs.printl(log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
+    if isValid(playbackContext?.sidxIndexByFormat)
+        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} SIDX map snapshot ${FormatJson(playbackContext.sidxIndexByFormat)}`)
+    end if
     ' m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
     writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
 
@@ -2865,6 +3309,15 @@ end function
 
 sub applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
     if not isValid(streamInfo) then return
+
+    sidxUpdates = streamInfo?.sidxIndexUpdates
+    if GetInterface(sidxUpdates, "ifArray") <> invalid
+        for each sidxUpdate in sidxUpdates
+            storeSidxIndexUpdate(playbackContext, contentType, sidxUpdate)
+        end for
+    else if GetInterface(streamInfo?.sidxIndexUpdate, "ifAssociativeArray") <> invalid
+        storeSidxIndexUpdate(playbackContext, contentType, streamInfo.sidxIndexUpdate)
+    end if
 
     if isValid(streamInfo.nextRequestPolicy)
         playbackContext["nextRequestPolicy"] = streamInfo.nextRequestPolicy

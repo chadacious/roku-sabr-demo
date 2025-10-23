@@ -821,6 +821,19 @@ sub sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segment
         storeOptions.sequenceNumber = startSeq
     end if
 
+    if isInitSeg
+        sidxUpdate = sabr_ump_buildSidxIndexUpdate(ctx, mediaHeader, segmentData)
+        if GetInterface(sidxUpdate, "ifAssociativeArray") <> invalid
+            sabr_ump_mergeStreamInfo(ctx, { sidxIndexUpdates: [ sidxUpdate ] })
+            reason = sidxUpdate?.unsupportedReason
+            if isValid(reason) and reason <> ""
+                sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] SIDX index ignored for format ${sidxUpdate?.formatKey ?? ""}: ${reason}`)
+            else
+                sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Captured SIDX index for format ${sidxUpdate?.formatKey ?? ""} references=${GetInterface(sidxUpdate?.entries, "ifArray") <> invalid ? sidxUpdate.entries.count() : 0}`)
+            end if
+        end if
+    end if
+
     cacheResult = sabrCacheStoreSegment(storeOptions)
     cachedName = cacheResult?.path ?? ""
     if cachedName <> "" and cachedName.InStr("/") >= 0
@@ -1602,6 +1615,112 @@ function sabr_ump_extractSidxIndex(bytes as object) as dynamic
         end if
     end for
     return invalid
+end function
+
+function sabr_ump_formatKeyFromHeader(mediaHeader as object) as string
+    if not isValid(mediaHeader) then return ""
+
+    itagPart = sabr_ump_valueToLabel(mediaHeader?.itag)
+    xtagsPart = sabr_ump_valueToLabel(mediaHeader?.xtags)
+
+    formatId = mediaHeader?.formatId
+    if itagPart = "" and GetInterface(formatId, "ifAssociativeArray") <> invalid
+        itagPart = sabr_ump_valueToLabel(formatId?.itag)
+    end if
+    if xtagsPart = "" and GetInterface(formatId, "ifAssociativeArray") <> invalid
+        xtagsPart = sabr_ump_valueToLabel(formatId?.xtags)
+    end if
+
+    return `${itagPart}:${xtagsPart}`
+end function
+
+function sabr_ump_formatKeyFromFormat(format as object) as string
+    if not isValid(format) then return ""
+    itagPart = sabr_ump_valueToLabel(format?.itag)
+    xtagPart = sabr_ump_valueToLabel(format?.xtags)
+    return `${itagPart}:${xtagPart}`
+end function
+
+function sabr_ump_buildSidxIndexUpdate(ctx as object, mediaHeader as object, segmentData as object) as dynamic
+    if not isValid(mediaHeader) then return invalid
+    if not isValid(segmentData) then return invalid
+
+    sidxInfo = sabr_ump_extractSidxIndex(segmentData)
+    if GetInterface(sidxInfo, "ifAssociativeArray") = invalid then return invalid
+
+    references = sidxInfo?.references
+    if GetInterface(references, "ifArray") = invalid or references.count() = 0 then return invalid
+
+    timescale = sabr_ump_toInt(sidxInfo?.timescale)
+    formatKey = sabr_ump_formatKeyFromHeader(mediaHeader)
+    if formatKey = "" and isValid(ctx?.requestMetadata?.format)
+        formatKey = sabr_ump_formatKeyFromFormat(ctx.requestMetadata.format)
+    end if
+
+    if formatKey = "" then return invalid
+
+    update = {
+        formatKey: formatKey
+        timescale: timescale
+        earliestPresentationTime: sidxInfo?.earliestPresentationTime
+        baseRangeStart: sidxInfo?.baseRangeStart
+        firstOffset: sidxInfo?.firstOffset
+        entries: []
+    }
+
+    if timescale = invalid or timescale <= 0
+        update["unsupportedReason"] = "invalid_timescale"
+        return update
+    end if
+
+    hasHierarchical = false
+    currentPts = sabr_ump_toInt(sidxInfo?.earliestPresentationTime)
+    if currentPts = invalid then currentPts = 0
+    runningStartMs = 0
+
+    for each ref in references
+        if GetInterface(ref, "ifAssociativeArray") = invalid then continue for
+
+        refType = sabr_ump_toInt(ref?.referenceType)
+        if refType = invalid then refType = 0
+        if refType <> 0 then hasHierarchical = true
+
+        startByte = sabr_ump_valueToLabel(ref?.rangeStart)
+        endByte = sabr_ump_valueToLabel(ref?.rangeEnd)
+        subDuration = sabr_ump_toInt(ref?.subsegmentDuration)
+
+        entry = {
+            rangeStart: startByte
+            rangeEnd: endByte
+            referenceType: refType
+            subsegmentDuration: subDuration
+        }
+
+        if refType = 0
+            durationMs = 0
+            if subDuration <> invalid and subDuration > 0
+                durationMs = int((subDuration * 1000) / timescale)
+            end if
+            entry["startTimeMs"] = runningStartMs
+            entry["durationMs"] = durationMs
+            if subDuration <> invalid and subDuration > 0
+                currentPts = currentPts + subDuration
+                runningStartMs = runningStartMs + durationMs
+            end if
+        end if
+
+        update.entries.push(entry)
+    end for
+
+    if hasHierarchical
+        update["unsupportedReason"] = "hierarchical_index"
+    end if
+
+    if isValid(ctx?.requestMetadata?.contentType)
+        update["contentType"] = ctx.requestMetadata.contentType
+    end if
+
+    return update
 end function
 
 function sabr_ump_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
