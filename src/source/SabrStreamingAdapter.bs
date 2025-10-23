@@ -93,6 +93,10 @@ end function
 function computeNextPlaybackTime(ranges as object, formatType as string) as dynamic
     if GetInterface(ranges, "ifArray") = invalid or ranges.count() = 0 then return invalid
 
+    if isValid(m?.logs)
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Evaluating ${ranges.count()} buffered ranges for ${formatType}`)
+    end if
+
     latest = invalid
     latestIndex = -2147483647
 
@@ -142,7 +146,25 @@ function computeNextPlaybackTime(ranges as object, formatType as string) as dyna
     '     end if
     ' end if
 
-    return startMs + durationMs
+    result = startMs + durationMs
+
+    if isValid(m?.logs)
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Selected range index=${latestIndex} startMs=${startMs} durationMs=${durationMs} result=${result}`)
+    end if
+
+    return result
+end function
+
+function currentPlayerPositionMs(videoNode as object, playbackContext as object) as dynamic
+    positionSeconds = invalid
+    if isValid(videoNode) and isValid(videoNode.position)
+        positionSeconds = videoNode.position
+    end if
+    if positionSeconds = invalid and isValid(playbackContext?.lastPlayerTimeSecs)
+        positionSeconds = playbackContext.lastPlayerTimeSecs
+    end if
+    if positionSeconds = invalid then return invalid
+    return int((positionSeconds ?? 0) * 1000)
 end function
 
 function buildBufferedState(mediaIdHash as string, currentFormat as object, activeFormats as object, playbackContext as object, requestedFormatType as string) as object
@@ -154,6 +176,7 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
         "formatToDiscard": invalid
         "rangesByType": rangesByType
         "playerTimeMs": invalid
+        "playerTimeSource": "unset"
     }
 
     currentFormatKey = formatToKey(currentFormat)
@@ -211,8 +234,10 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
     playerTimeCandidate = computeNextPlaybackTime(playerRanges, requestedFormatType)
     if playerTimeCandidate <> invalid and playerTimeCandidate >= 0
         state.playerTimeMs = playerTimeCandidate
+        state.playerTimeSource = "bufferedRanges"
     else
-        state.playerTimeMs = resolveFallbackPlayerTimeMs(playbackContext, currentFormat)
+        state.playerTimeMs = invalid
+        state.playerTimeSource = "bufferedRanges:empty"
     end if
 
     return state
@@ -541,13 +566,13 @@ function buildPrefetchInfo(streamInfo as object, currentFormat as object, reques
     endTimeMs = startTimeMs + durationMs
 
     return {
-        formatKey: formatToKey(currentFormat)
-        endTimeMs: endTimeMs
-        durationMs: durationMs
-        cacheKey: requestMetadataEntry?.cacheKey
-        byteRange: requestMetadataEntry?.byteRange
-        updatedAt: sabrCurrentTimestampMs()
-        requestNumber: requestMetadataEntry?.requestNumber
+        "formatKey": formatToKey(currentFormat)
+        "endTimeMs": endTimeMs
+        "durationMs": durationMs
+        "cacheKey": requestMetadataEntry?.cacheKey
+        "byteRange": requestMetadataEntry?.byteRange
+        "updatedAt": sabrCurrentTimestampMs()
+        "requestNumber": requestMetadataEntry?.requestNumber
     }
 end function
 
@@ -789,16 +814,16 @@ function guardRepeatedRequests(playbackContext as object, contentType as string,
 
     rangeLabel = formatRequestedRangeForPath(requestMetadataEntry?.byteRange)
     newState = {
-        lastKey: repeatKey
-        count: consecutiveCount
-        updatedAt: nowTs
-        lastRequestNumber: requestNumber
-        range: rangeLabel
-        formatKey: formatToKey(currentFormat)
-        successStreak: successStreak
-        failureStreak: failureStreak
-        lastResult: repeatState?.lastResult ?? ""
-        lastStatus: repeatState?.lastStatus
+        "lastKey": repeatKey
+        "count": consecutiveCount
+        "updatedAt": nowTs
+        "lastRequestNumber": requestNumber
+        "range": rangeLabel
+        "formatKey": formatToKey(currentFormat)
+        "successStreak": successStreak
+        "failureStreak": failureStreak
+        "lastResult": repeatState?.lastResult ?? ""
+        "lastStatus": repeatState?.lastStatus
     }
     playbackContext["repeatRequestState"] = newState
 
@@ -806,9 +831,9 @@ function guardRepeatedRequests(playbackContext as object, contentType as string,
 
     fatalMessage = `Repeated SABR requests detected for segment ${repeatKey} (range ${rangeLabel}); aborting playback`
     playbackContext["sabrFatalError"] = {
-        reason: fatalMessage
-        requestNumber: requestNumber
-        timestamp: nowTs
+        "reason": fatalMessage
+        "requestNumber": requestNumber
+        "timestamp": nowTs
     }
     newState["aborted"] = true
     playbackContext["repeatRequestState"] = newState
@@ -1037,8 +1062,8 @@ end function
 
 function normalizeByteRange(rawRange as object, context = invalid as dynamic) as object
     normalized = {
-        startRange: ""
-        endRange: ""
+        "startRange": ""
+        "endRange": ""
     }
 
     if isValid(rawRange)
@@ -1423,8 +1448,56 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolving segment start; init=${isInitSegmentRequest} formatKey=${formatKeyForLog} totals=${totalLogValue}`)
 
     bufferState = buildBufferedState(mediaIdHash, currentFormat, activeFormats, playbackContext, contentType)
-    playerTimeOverride = bufferState?.playerTimeMs
-    if playerTimeOverride = invalid then playerTimeOverride = resolveFallbackPlayerTimeMs(playbackContext, currentFormat)
+    bufferedCandidate = bufferState?.playerTimeMs
+    bufferedSourceLabel = bufferState?.playerTimeSource ?? "bufferedRanges:unknown"
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Buffered playerTime candidate=${bufferedCandidate ?? "invalid"} source=${bufferedSourceLabel}`)
+
+    playerTimeOverride = invalid
+    playerTimeSourceLabel = ""
+
+    formatHistory = playbackContext?.lastFormatKeyByType
+    if GetInterface(formatHistory, "ifAssociativeArray") = invalid
+        formatHistory = {}
+    end if
+
+    historyKey = contentType ?? "UNKNOWN"
+    previousFormatKey = ""
+    if formatHistory.DoesExist(historyKey)
+        previousFormatKey = `${formatHistory.Lookup(historyKey) ?? ""}`
+    end if
+    representationSwitched = previousFormatKey <> "" and previousFormatKey <> formatKeyForLog
+    if representationSwitched
+        actualPositionMs = currentPlayerPositionMs(videoNode, playbackContext)
+        if actualPositionMs <> invalid and actualPositionMs >= 0
+            playerTimeOverride = actualPositionMs
+            playerTimeSourceLabel = `representationSwitch:${previousFormatKey}->${formatKeyForLog}`
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Representation switch detected ${previousFormatKey}->${formatKeyForLog}; using video position ${playerTimeOverride}`)
+        else
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Representation switch detected ${previousFormatKey}->${formatKeyForLog} but video position unavailable`)
+        end if
+    end if
+
+    formatHistory[historyKey] = formatKeyForLog
+    playbackContext["lastFormatKeyByType"] = formatHistory
+
+    if playerTimeOverride = invalid
+        if bufferedCandidate <> invalid
+            playerTimeOverride = bufferedCandidate
+            playerTimeSourceLabel = bufferedSourceLabel
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using buffered playerTimeMs=${playerTimeOverride}`)
+        else
+            fallbackInfo = resolveFallbackPlayerTimeMsInfo(playbackContext, currentFormat)
+            playerTimeOverride = fallbackInfo["value"]
+            playerTimeSourceLabel = `fallback:${fallbackInfo["source"]}`
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Fallback playerTime path source=${fallbackInfo["source"]} value=${playerTimeOverride}`)
+        end if
+    end if
+    if playerTimeOverride = invalid
+        playerTimeOverride = 0
+        playerTimeSourceLabel = "safety:zero"
+    end if
+
+    m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Final playerTimeMs=${playerTimeOverride} source=${playerTimeSourceLabel}`)
     rangeLabelForLog = formatRequestedRangeForPath(requestByteRange)
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using playerTimeMs=${playerTimeOverride} for range ${rangeLabelForLog}`)
 
@@ -1493,13 +1566,13 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache lookup start isInit=${isInitSegmentRequest} key=${cacheLookupLabel} range=${cacheLookupRange}`)
 
     cacheEntry = sabrCacheLoadSegment({
-        mediaIdHash: mediaIdHash
-        contentType: contentType
-        itag: currentFormat?.itag
-        trackId: currentFormat?.audioTrackId
-        requestedStart: requestMetadataEntry.byteRange?.startRange
-        requestedEnd: requestMetadataEntry.byteRange?.endRange
-        isInit: isInitSegmentRequest
+        "mediaIdHash": mediaIdHash
+        "contentType": contentType
+        "itag": currentFormat?.itag
+        "trackId": currentFormat?.audioTrackId
+        "requestedStart": requestMetadataEntry.byteRange?.startRange
+        "requestedEnd": requestMetadataEntry.byteRange?.endRange
+        "isInit": isInitSegmentRequest
     })
 
     if GetInterface(cacheEntry, "ifAssociativeArray") <> invalid and GetInterface(cacheEntry?.data, "ifByteArray") <> invalid and cacheEntry.data.count() > 0
@@ -1513,11 +1586,11 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         end if
 
         cachedResult = {
-            data: cacheEntry.data
-            done: true
-            coverage: {
-                rangeStart: cacheEntry.rangeStart
-                rangeEnd: cacheEntry.rangeEnd
+            "data": cacheEntry.data
+            "done": true
+            "coverage": {
+                "rangeStart": cacheEntry.rangeStart
+                "rangeEnd": cacheEntry.rangeEnd
             }
         }
 
@@ -1595,12 +1668,12 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                 protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
                 sabrRequest = {
-                    url: sabrAbrUrl, ' "http://192.168.119.94:8000/sabr"
-                    requestType: "proxy",
-                    timeout: 10000,
-                    options: {
-                        method: "POST_FILE_TO_FILE_WITH_DECODINGS",
-                        body: protoFilePath
+                    "url": sabrAbrUrl, ' "http://192.168.119.94:8000/sabr"
+                    "requestType": "proxy",
+                    "timeout": 10000,
+                    "options": {
+                        "method": "POST_FILE_TO_FILE_WITH_DECODINGS",
+                        "body": protoFilePath
                     }
                 }
 
@@ -1652,9 +1725,9 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
 
                             if fatalReason <> ""
                                 playbackContext["sabrFatalError"] = {
-                                    reason: fatalReason
-                                    requestNumber: nextRequestId
-                                    timestamp: sabrCurrentTimestampMs()
+                                    "reason": fatalReason
+                                    "requestNumber": nextRequestId
+                                    "timestamp": sabrCurrentTimestampMs()
                                 }
                                 m.logs.printl(log_level_Type.WARN, `${requestLogTag} Fatal SABR error: ${fatalReason}`)
                                 if response = invalid
@@ -1737,14 +1810,14 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     end if
 
                                     logDetails = {
-                                        requestNumber: nextRequestId
-                                        requestedRange: formatRequestedRangeForPath(requestMetadataEntry?.byteRange)
-                                        requestedSequence: requestMetadataEntry?.sequenceNumber ?? "0"
-                                        cacheKey: cacheKey
-                                        processedParts: processedParts
-                                        pendingSegments: pendingSummary
-                                        streamInfoKeys: streamInfoKeys
-                                        redirectUrl: redirectUrl
+                                        "requestNumber": nextRequestId
+                                        "requestedRange": formatRequestedRangeForPath(requestMetadataEntry?.byteRange)
+                                        "requestedSequence": requestMetadataEntry?.sequenceNumber ?? "0"
+                                        "cacheKey": cacheKey
+                                        "processedParts": processedParts
+                                        "pendingSegments": pendingSummary
+                                        "streamInfoKeys": streamInfoKeys
+                                        "redirectUrl": redirectUrl
                                     }
                                     if isValid(requestMetadataEntry?.segmentIndexInfo)
                                         logDetails["segmentIndexInfo"] = requestMetadataEntry.segmentIndexInfo
@@ -1897,34 +1970,39 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                                 segmentEndIndex = segmentStartIndex
                                             end if
                                         end if
+                                        playerTimeForStore = toInt(playbackContext?.lastRequestedPlayerTimeMs)
                                         storeOptions = {
-                                            mediaIdHash: mediaIdHash
-                                            contentType: contentType
-                                            itag: currentFormat?.itag
-                                            trackId: currentFormat?.audioTrackId
-                                            rangeStart: coverageMeta?.rangeStart
-                                            rangeEnd: coverageMeta?.rangeEnd
-                                            isInit: isInitSegmentRequest
-                                            bytes: segmentPayload
-                                            startSegmentIndex: segmentStartIndex
-                                            endSegmentIndex: segmentEndIndex
-                                            sequenceNumber: coverageMeta?.sequenceNumber
-                                            startTimeMs: segmentStartTime
-                                            durationMs: segmentDuration
-                                            timescale: segmentTimescale
-                                            startTicks: segmentStartTicks
-                                            durationTicks: segmentDurationTicks
-                                            formatId: formatToFormatId(currentFormat)
+                                            "mediaIdHash": mediaIdHash
+                                            "contentType": contentType
+                                            "itag": currentFormat?.itag
+                                            "trackId": currentFormat?.audioTrackId
+                                            "rangeStart": coverageMeta?.rangeStart
+                                            "rangeEnd": coverageMeta?.rangeEnd
+                                            "isInit": isInitSegmentRequest
+                                            "bytes": segmentPayload
+                                            "startSegmentIndex": segmentStartIndex
+                                            "endSegmentIndex": segmentEndIndex
+                                            "sequenceNumber": coverageMeta?.sequenceNumber
+                                            "startTimeMs": segmentStartTime
+                                            "durationMs": segmentDuration
+                                            "timescale": segmentTimescale
+                                            "startTicks": segmentStartTicks
+                                            "durationTicks": segmentDurationTicks
+                                            "formatId": formatToFormatId(currentFormat)
                                         }
-                                        if storeOptions.itag = invalid and isValid(currentFormat?.formatId)
-                                            storeOptions.itag = currentFormat.formatId?.itag
+                                        if playerTimeForStore <> invalid and playerTimeForStore >= 0
+                                            storeOptions["playerTimeMs"] = playerTimeForStore
+                                            requestMetadataEntry["playerTimeMs"] = playerTimeForStore
                                         end if
-                                        if storeOptions.sequenceNumber = invalid and isValid(segmentStartIndex)
-                                            storeOptions.sequenceNumber = segmentStartIndex
+                                        if storeOptions["itag"] = invalid and isValid(currentFormat?.formatId)
+                                            storeOptions["itag"] = currentFormat.formatId?.itag
+                                        end if
+                                        if storeOptions["sequenceNumber"] = invalid and isValid(segmentStartIndex)
+                                            storeOptions["sequenceNumber"] = segmentStartIndex
                                         end if
                                         if isInitSegmentRequest
-                                            storeOptions.rangeStart = 0
-                                            storeOptions.rangeEnd = segmentPayload.count() - 1
+                                            storeOptions["rangeStart"] = 0
+                                            storeOptions["rangeEnd"] = segmentPayload.count() - 1
                                         end if
                                         storeResult = sabrCacheStoreSegment(storeOptions)
                                         storagePath = storeResult?.path ?? storagePath
@@ -1938,10 +2016,10 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                         cacheKey = storagePath
                                             deliveredSegment = true
                                             logCoverageDiagnostics({
-                                                logTag: requestLogTag
-                                                cacheKey: storageLabel
-                                                requested: requestMetadataEntry.byteRange
-                                                coverage: coverageMeta
+                                                "logTag": requestLogTag
+                                                "cacheKey": storageLabel
+                                                "requested": requestMetadataEntry.byteRange
+                                                "coverage": coverageMeta
                                             })
                                             if isValid(requestMetadata.streamInfo) and GetInterface(requestMetadata.streamInfo, "ifAssociativeArray") <> invalid
                                                 requestMetadata.streamInfo["deliveredCoverage"] = coverageMeta
@@ -2185,23 +2263,55 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
 
 end function
 
-function resolveFallbackPlayerTimeMs(playbackContext as object, format as object) as dynamic
-    if not isValid(playbackContext) then return 0
+function resolveFallbackPlayerTimeMsInfo(playbackContext as object, format as object) as object
+    info = {
+        "value": 0
+        "source": "default:0"
+    }
+
+    if not isValid(playbackContext) then return info
 
     formatKey = formatToKey(format)
     totals = playbackContext?.deliveredDurationTotals
     if GetInterface(totals, "ifAssociativeArray") <> invalid and formatKey <> "" and totals.DoesExist(formatKey)
         candidate = toInt(totals.Lookup(formatKey))
-        if candidate <> invalid and candidate >= 0 then return candidate
+        if candidate <> invalid and candidate >= 0
+            info["value"] = candidate
+            info["source"] = "deliveredDurationTotals"
+            return info
+        end if
     end if
 
     previous = toInt(playbackContext?.lastRequestedPlayerTimeMs)
-    if previous <> invalid and previous >= 0 then return previous
+    if previous <> invalid and previous >= 0
+        info["value"] = previous
+        info["source"] = "lastRequestedPlayerTimeMs"
+        return info
+    end if
 
     estimate = toInt(playbackContext?.estimatedPlayerTimeMs)
-    if estimate <> invalid and estimate >= 0 then return estimate
+    if estimate <> invalid and estimate >= 0
+        info["value"] = estimate
+        info["source"] = "estimatedPlayerTimeMs"
+        return info
+    end if
 
-    return 0
+    lastPositionSeconds = playbackContext?.lastPlayerTimeSecs
+    if isValid(lastPositionSeconds)
+        positionMs = int((lastPositionSeconds ?? 0) * 1000)
+        if positionMs >= 0
+            info["value"] = positionMs
+            info["source"] = "lastPlayerTimeSecs"
+            return info
+        end if
+    end if
+
+    return info
+end function
+
+function resolveFallbackPlayerTimeMs(playbackContext as object, format as object) as dynamic
+    info = resolveFallbackPlayerTimeMsInfo(playbackContext, format)
+    return info["value"]
 end function
 
 ' function ensureInitializedFormatMap(playbackContext as object) as object
@@ -2666,9 +2776,9 @@ function buildSabrResponseForPlayer(requestMetadata as object, umpResult as dyna
         headers["Content-Length"] = resourceLength.toStr()
 
         responseObj = {
-            status: status
-            headers: headers
-            body: body
+            "status": status
+            "headers": headers
+            "body": body
         }
         responseObj["fullBody"] = fullBody
         return responseObj
@@ -2691,9 +2801,9 @@ function buildSabrResponseForPlayer(requestMetadata as object, umpResult as dyna
     end if
 
     return {
-        status: status
-        headers: headers
-        body: body
+        "status": status
+        "headers": headers
+        "body": body
     }
 end function
 
@@ -2719,9 +2829,9 @@ function buildEmptySabrResponseForPlayer(contentType as string, currentFormat as
     }
 
     return {
-        status: 204
-        headers: headers
-        body: body
+        "status": 204
+        "headers": headers
+        "body": body
     }
 end function
 
@@ -2738,9 +2848,9 @@ function buildErrorResponseForPlayer(status as integer, message as string) as ob
     }
 
     return {
-        status: status
-        headers: headers
-        body: body
+        "status": status
+        "headers": headers
+        "body": body
     }
 end function
 

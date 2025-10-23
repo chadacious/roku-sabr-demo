@@ -65,7 +65,7 @@ sub sabrCacheRememberMetadata(fileName as string, metadata as object)
     if fileName = "" then return
     if GetInterface(metadata, "ifAssociativeArray") = invalid then return
     meaningful = false
-    fields = [ "startSegmentIndex", "endSegmentIndex", "startTimeMs", "durationMs", "timescale", "startTicks", "durationTicks" ]
+    fields = [ "startSegmentIndex", "endSegmentIndex", "startTimeMs", "durationMs", "timescale", "startTicks", "durationTicks", "playerTimeMs" ]
     for each fieldName in fields
         value = invalid
         if metadata.DoesExist(fieldName)
@@ -211,6 +211,7 @@ function sabrCacheParseEntry(fileName as string) as object
         if extra.DoesExist("durationTicks") then entry.durationTicks = extra.Lookup("durationTicks")
         if extra.DoesExist("sequenceNumber") then entry.sequenceNumber = extra.Lookup("sequenceNumber")
         if extra.DoesExist("formatId") then entry.formatId = extra.Lookup("formatId")
+        if extra.DoesExist("playerTimeMs") then entry.playerTimeMs = extra.Lookup("playerTimeMs")
     end if
     return entry
 end function
@@ -302,15 +303,18 @@ function sabrCacheStoreSegment(options as object) as object
     if GetInterface(formatIdOpt, "ifAssociativeArray") <> invalid
         extra.formatId = formatIdOpt
     end if
+    if isValid(options?.playerTimeMs)
+        extra["playerTimeMs"] = options.playerTimeMs
+    end if
     sabrCacheRememberMetadata(fileName, extra)
 
     sabrCacheEnforceContentLimit(options?.contentType, SABR_CACHE_PER_TYPE_LIMIT, path)
 
     sabrCacheLogSnapshot("store", path)
     return {
-        path: path
-        rangeStart: options?.rangeStart
-        rangeEnd: options?.rangeEnd
+        "path": path
+        "rangeStart": options?.rangeStart
+        "rangeEnd": options?.rangeEnd
     }
 end function
 
@@ -392,10 +396,10 @@ function sabrCacheLoadSegment(params as object) as object
 
     if params?.isInit = true
         return {
-            data: bytes
-            rangeStart: coverageStart
-            rangeEnd: coverageEnd
-            path: best.path
+            "data": bytes
+            "rangeStart": coverageStart
+            "rangeEnd": coverageEnd
+            "path": best.path
         }
     end if
 
@@ -435,10 +439,10 @@ function sabrCacheLoadSegment(params as object) as object
     effectiveEnd = effectiveStart + sliced.count() - 1
 
     return {
-        data: sliced
-        rangeStart: effectiveStart
-        rangeEnd: effectiveEnd
-        path: best.path
+        "data": sliced
+        "rangeStart": effectiveStart
+        "rangeEnd": effectiveEnd
+        "path": best.path
     }
 end function
 
@@ -465,9 +469,9 @@ sub sabrCacheEnforceContentLimit(rawContentType as dynamic, limit as integer, la
             stamp = stamp + 9223372036854.0
         end if
         entries.push({
-            name: name
-            path: path
-            stamp: stamp
+            "name": name
+            "path": path
+            "stamp": stamp
         })
     end for
 
