@@ -79,9 +79,10 @@ artifacts/                # Log and screenshot outputs from automation
 
 | Strategy | Description |
 | --- | --- |
-| `sidx` | Parse the MP4 SIDX index (captured from SABR init segments) and translate the requested byte range to its start time/duration. Uses the raw SABR index; falls back to lower entry if the exact start isn’t found. |
-| `metadata` | Predict from segment metadata accumulated as SABR responses arrive (coverage start/end, start time, duration). Also seeds the metadata map from SIDX entries when no coverage exists yet. |
-| `hybrid` *(default)* | Try the SIDX path first; if unavailable, fall back to metadata; finally use historical counters (delivered duration, last requested time, etc.) as a safety net. |
+| `streamingSegment` | Read the active Roku `Video.streamingSegment` payload and derive the start time from its `segStart`/`segStartTime` fields. If byte-range data is present the start time is adjusted to match the requested offset. |
+| `sidx` | Parse the MP4 SIDX index (captured from SABR init segments) and translate the requested byte range to its start time/duration. Uses the raw SABR index; falls back to the closest lower entry if the exact start isn’t found. |
+| `metadata` *(default)* | Predict from segment metadata accumulated as SABR responses arrive. When a `streamingSegment` payload is available it is used first, then coverage/metadata, and finally the historical fallbacks. |
+| `hybrid` | Try `streamingSegment`, then SIDX, then metadata; finally use historical counters (delivered duration, last requested time, etc.) as a safety net. |
 
 The strategy engine logs each decision in the telnet console (e.g., `Strategy hybrid sidxIndex=...`, `Resolved playerTimeMs=... source=...`) which makes it easier to audit how requests were computed.
 

@@ -36,6 +36,7 @@ const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
 
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
 const PLAYER_TIME_STRATEGY_METADATA = "metadata"
+const PLAYER_TIME_STRATEGY_STREAMING_SEGMENT = "streamingsegment"
 const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
 const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_METADATA
 
@@ -216,7 +217,10 @@ function determinePlayerTimeStrategy(playbackContext as object) as string
     strategy = playbackContext?.playerTimeStrategy
     if not isValid(strategy) or strategy = "" then return DEFAULT_PLAYER_TIME_STRATEGY
     normalized = LCase(`${strategy}`)
-    if normalized = PLAYER_TIME_STRATEGY_SIDX or normalized = PLAYER_TIME_STRATEGY_METADATA or normalized = PLAYER_TIME_STRATEGY_HYBRID
+    if normalized = "streaming"
+        return PLAYER_TIME_STRATEGY_STREAMING_SEGMENT
+    end if
+    if normalized = PLAYER_TIME_STRATEGY_SIDX or normalized = PLAYER_TIME_STRATEGY_METADATA or normalized = PLAYER_TIME_STRATEGY_STREAMING_SEGMENT or normalized = PLAYER_TIME_STRATEGY_HYBRID
         return normalized
     end if
     return DEFAULT_PLAYER_TIME_STRATEGY
@@ -256,17 +260,227 @@ function requestedByteStart(byteRange as object) as dynamic
     return startVal
 end function
 
+function requestedByteEnd(byteRange as object) as dynamic
+    if GetInterface(byteRange, "ifAssociativeArray") = invalid then return invalid
+    endVal = toInt(byteRange?.endRange)
+    if endVal = invalid then endVal = toInt(byteRange?.end)
+    if endVal = invalid
+        label = ""
+        if byteRange.DoesExist("endRange") then label = `${byteRange.endRange}`
+        if label = "" and byteRange.DoesExist("end") then label = `${byteRange.end}`
+        if label <> ""
+            endVal = Val(label)
+        end if
+    end if
+    if endVal = invalid and byteRange.DoesExist("segmentIndexInfo")
+        info = byteRange.segmentIndexInfo
+        if GetInterface(info, "ifAssociativeArray") <> invalid
+            endVal = toInt(info?.rangeEnd)
+            if endVal = invalid and isValid(info?.rangeEnd)
+                endLabel = `${info.rangeEnd}`
+                if endLabel <> ""
+                    endVal = Val(endLabel)
+                end if
+            end if
+        end if
+    end if
+    return endVal
+end function
+
+function pickFirstValidInt(map as object, fieldNames as object) as dynamic
+    if GetInterface(map, "ifAssociativeArray") = invalid then return invalid
+    if GetInterface(fieldNames, "ifArray") = invalid then return invalid
+    for each name in fieldNames
+        if not isValid(name) then continue for
+        label = `${name}`
+        if label = "" then continue for
+        if map.DoesExist(label)
+            candidate = toInt(map.Lookup(label))
+            if candidate <> invalid
+                return candidate
+            end if
+        end if
+    end for
+    return invalid
+end function
+
+function pickFirstValidNumber(map as object, fieldNames as object) as dynamic
+    if GetInterface(map, "ifAssociativeArray") = invalid then return invalid
+    if GetInterface(fieldNames, "ifArray") = invalid then return invalid
+    for each name in fieldNames
+        if not isValid(name) then continue for
+        label = `${name}`
+        if label = "" then continue for
+        if map.DoesExist(label)
+            candidate = toFloatValue(map.Lookup(label))
+            if candidate <> invalid
+                return candidate
+            end if
+        end if
+    end for
+    return invalid
+end function
+
+function streamingSegmentRangeStart(segInfo as object) as dynamic
+    return pickFirstValidInt(segInfo, [
+        "segRangeStart",
+        "segRangeStartByte",
+        "segStartByte",
+        "byteRangeStart",
+        "rangeStart",
+        "segByteRangeStart"
+    ])
+end function
+
+function streamingSegmentRangeEnd(segInfo as object) as dynamic
+    return pickFirstValidInt(segInfo, [
+        "segRangeEnd",
+        "segRangeEndByte",
+        "segEndByte",
+        "byteRangeEnd",
+        "rangeEnd",
+        "segByteRangeEnd"
+    ])
+end function
+
+function streamingSegmentSequenceNumber(segInfo as object) as dynamic
+    return pickFirstValidInt(segInfo, [
+        "segSequenceNumber",
+        "segSequence",
+        "sequenceNumber",
+        "segNum",
+        "segmentNumber",
+        "segIndex"
+    ])
+end function
+
+function streamingSegmentItag(segInfo as object) as dynamic
+    return pickFirstValidInt(segInfo, [
+        "segItag",
+        "itag"
+    ])
+end function
+
+function streamingSegmentStartMs(segInfo as object) as dynamic
+    if GetInterface(segInfo, "ifAssociativeArray") = invalid then return invalid
+    startMs = pickFirstValidInt(segInfo, [
+        "segStartMs",
+        "segStartMilliseconds",
+        "startTimeMs",
+        "segStartTimeMs"
+    ])
+    if startMs <> invalid then return startMs
+
+    startSeconds = pickFirstValidNumber(segInfo, [
+        "segStart",
+        "startTime",
+        "segStartSeconds",
+        "segmentStart",
+        "segStartTime"
+    ])
+    if startSeconds = invalid then return invalid
+
+    return int(startSeconds * 1000)
+end function
+
+function streamingSegmentDurationMs(segInfo as object) as dynamic
+    if GetInterface(segInfo, "ifAssociativeArray") = invalid then return invalid
+    durationMs = pickFirstValidInt(segInfo, [
+        "segDurationMs",
+        "segDurationMilliseconds",
+        "durationMs",
+        "segSegmentDurationMs"
+    ])
+    if durationMs <> invalid then return durationMs
+
+    durationSeconds = pickFirstValidNumber(segInfo, [
+        "segDuration",
+        "duration",
+        "segLength"
+    ])
+    if durationSeconds = invalid
+        endSeconds = pickFirstValidNumber(segInfo, [
+            "segEnd",
+            "endTime",
+            "segStop"
+        ])
+        startSeconds = pickFirstValidNumber(segInfo, [
+            "segStart",
+            "startTime",
+            "segStartTime"
+        ])
+        if endSeconds <> invalid and startSeconds <> invalid
+            durationSeconds = endSeconds - startSeconds
+        end if
+    end if
+
+    if durationSeconds = invalid then return invalid
+    return int(durationSeconds * 1000)
+end function
+
+function requestSequenceNumber(byteRange as object) as dynamic
+    if GetInterface(byteRange, "ifAssociativeArray") = invalid then return invalid
+
+    seqVal = toInt(byteRange?.sequenceNumber)
+    if seqVal <> invalid then return seqVal
+
+    if byteRange.DoesExist("segmentIndexInfo")
+        info = byteRange.segmentIndexInfo
+        if GetInterface(info, "ifAssociativeArray") <> invalid
+            seqVal = toInt(info?.sequenceNumber)
+            if seqVal = invalid then seqVal = toInt(info?.segmentIndex)
+            if seqVal = invalid then seqVal = toInt(info?.segmentNumber)
+            if seqVal = invalid and info.DoesExist("sequence")
+                seqVal = toInt(info.sequence)
+            end if
+        end if
+    end if
+
+    return seqVal
+end function
+
+function normalizeContentTypeLabel(label as dynamic) as string
+    if not isValid(label) then return ""
+    text = ""
+    if IsString(label)
+        text = label
+    else
+        text = `${label}`
+    end if
+    trimmed = text.trim()
+    if trimmed = "" then return ""
+    return UCase(trimmed)
+end function
+
+function streamingSegmentContentTypeMatches(segInfo as object, contentType as string) as boolean
+    requested = normalizeContentTypeLabel(contentType)
+    if requested = "" then return true
+    if GetInterface(segInfo, "ifAssociativeArray") = invalid then return false
+
+    segmentType = normalizeContentTypeLabel(segInfo?.segContentType)
+    if segmentType = "" then segmentType = normalizeContentTypeLabel(segInfo?.contentType)
+    if segmentType = "" then segmentType = normalizeContentTypeLabel(segInfo?.trackType)
+    if segmentType = "" then return true
+
+    if segmentType = requested then return true
+    if requested = "VIDEO" and Instr(1, segmentType, "VIDEO") > 0 then return true
+    if requested = "AUDIO" and Instr(1, segmentType, "AUDIO") > 0 then return true
+    return false
+end function
+
 function resolvePlayerTimeMsForRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
     ensurePlayerTimeStrategy(playbackContext)
 
     strategy = determinePlayerTimeStrategy(playbackContext)
     attempts = []
-    if strategy = PLAYER_TIME_STRATEGY_SIDX
+    if strategy = PLAYER_TIME_STRATEGY_STREAMING_SEGMENT
+        attempts = [ PLAYER_TIME_STRATEGY_STREAMING_SEGMENT ]
+    else if strategy = PLAYER_TIME_STRATEGY_SIDX
         attempts = [ PLAYER_TIME_STRATEGY_SIDX ]
     else if strategy = PLAYER_TIME_STRATEGY_METADATA
-        attempts = [ PLAYER_TIME_STRATEGY_METADATA ]
+        attempts = [ PLAYER_TIME_STRATEGY_STREAMING_SEGMENT, PLAYER_TIME_STRATEGY_METADATA ]
     else
-        attempts = [ PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA ]
+        attempts = [ PLAYER_TIME_STRATEGY_STREAMING_SEGMENT, PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA ]
     end if
 
     if isValid(m?.logs)
@@ -296,6 +510,8 @@ function resolvePlayerTimeMsForRequest(playbackContext as object, contentType as
             result = lookupPlayerTimeMsFromSidx(playbackContext, contentType, currentFormat, requestByteRange)
         else if attempt = PLAYER_TIME_STRATEGY_METADATA
             result = lookupPlayerTimeMsFromMetadata(playbackContext, contentType, currentFormat, requestByteRange)
+        else if attempt = PLAYER_TIME_STRATEGY_STREAMING_SEGMENT
+            result = lookupPlayerTimeMsFromStreamingSegment(playbackContext, contentType, currentFormat, requestByteRange, videoNode)
         end if
 
         candidate = toInt(result?.value)
@@ -658,6 +874,78 @@ function lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType a
 
     result["value"] = predicted
     result["source"] = bestLabel
+    return result
+end function
+
+function lookupPlayerTimeMsFromStreamingSegment(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
+    result = {
+        value: invalid
+        source: "streamingSegment"
+    }
+
+    if GetInterface(videoNode, "ifSGNodeFieldAccess") = invalid then return result
+
+    segInfo = invalid
+    if isValid(videoNode.streamingSegment)
+        segInfo = videoNode.streamingSegment
+    end if
+    if GetInterface(segInfo, "ifAssociativeArray") = invalid then return result
+
+    if not streamingSegmentContentTypeMatches(segInfo, contentType)
+        return result
+    end if
+
+    requestStart = requestedByteStart(requestByteRange)
+    segmentStart = streamingSegmentRangeStart(segInfo)
+    segmentEnd = streamingSegmentRangeEnd(segInfo)
+
+    matchedViaByte = false
+    if requestStart <> invalid and segmentStart <> invalid
+        if requestStart = segmentStart
+            matchedViaByte = true
+        else if segmentEnd <> invalid and requestStart >= segmentStart and requestStart <= segmentEnd
+            matchedViaByte = true
+        end if
+    end if
+
+    requestSeq = requestSequenceNumber(requestByteRange)
+    segmentSeq = streamingSegmentSequenceNumber(segInfo)
+    matchedViaSeq = requestSeq <> invalid and segmentSeq <> invalid and requestSeq = segmentSeq
+
+    segmentItag = streamingSegmentItag(segInfo)
+    currentItag = toInt(currentFormat?.itag)
+    if segmentItag <> invalid and currentItag <> invalid and segmentItag <> currentItag
+        return result
+    end if
+
+    if requestSeq <> invalid and segmentSeq <> invalid and requestSeq <> segmentSeq
+        return result
+    end if
+
+    startMs = streamingSegmentStartMs(segInfo)
+    if startMs = invalid then return result
+
+    durationMs = streamingSegmentDurationMs(segInfo)
+    if matchedViaByte and durationMs <> invalid and segmentStart <> invalid and segmentEnd <> invalid and requestStart <> invalid
+        span = (segmentEnd - segmentStart) + 1
+        if span > 0
+            offsetBytes = requestStart - segmentStart
+            if offsetBytes > 0
+                startMs = startMs + int((offsetBytes * durationMs) / span)
+            end if
+        end if
+    end if
+
+    label = "streamingSegment"
+    if matchedViaSeq
+        label = "streamingSegment:sequence"
+    else if matchedViaByte
+        label = "streamingSegment:range"
+    else
+        label = "streamingSegment:approx"
+    end if
+    result["source"] = label
+    result["value"] = startMs
     return result
 end function
 
@@ -1267,6 +1555,46 @@ function toInt(value as dynamic) as dynamic
         trimmed = value.trim()
         if trimmed = "" then return invalid
         return trimmed.toInt()
+    end if
+    return invalid
+end function
+
+function toFloatValue(value as dynamic) as dynamic
+    if not isValid(value) then return invalid
+    if IsFloat(value) or IsDouble(value) then return value
+    if IsInteger(value) then return value * 1.0
+    if IsString(value)
+        trimmed = value.trim()
+        if trimmed = "" then return invalid
+        candidate = trimmed.toFloat()
+        if candidate <> 0
+            return candidate
+        end if
+        if trimmed = "0" or trimmed = "0.0"
+            return 0.0
+        end if
+        zeroNormalized = trimmed
+        if Len(zeroNormalized) > 0
+            firstChar = Left(zeroNormalized, 1)
+            if firstChar = "+" or firstChar = "-"
+                zeroNormalized = Mid(zeroNormalized, 2)
+            end if
+        end if
+        allZeroChars = true
+        for i = 1 to Len(zeroNormalized)
+            ch = Mid(zeroNormalized, i, 1)
+            if ch <> "." and ch <> "0"
+                allZeroChars = false
+                exit for
+            end if
+        end for
+        if allZeroChars
+            return 0.0
+        end if
+        intCandidate = trimmed.toInt()
+        if intCandidate <> 0
+            return intCandidate * 1.0
+        end if
     end if
     return invalid
 end function
