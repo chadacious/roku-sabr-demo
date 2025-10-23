@@ -338,18 +338,18 @@ function sabr_ump_handleNextRequestPolicy(ctx as object, part as object) as dyna
     if isValid(nextPolicy)
         sabr_ump_mergeStreamInfo(ctx, { "nextRequestPolicy": nextPolicy })
         cookieProto = nextPolicy?.playbackCookie
-        ctx.requestMetadata.playbackCookie = cookieProto
-        ' if isValid(cookieProto)
-        '     cookieEncoded = invalid
-        '     try
-        '         cookieEncoded = PlaybackCookieEncode(cookieProto)
-        '     catch e
-        '         cookieEncoded = invalid
-        '     end try
-        '     if isValid(cookieEncoded) and cookieEncoded <> ""
-        '         ctx.requestMetadata.playbackCookie = cookieEncoded
-        '     end if
-        ' end if
+        ' ctx.requestMetadata.playbackCookie = cookieProto
+        if isValid(cookieProto)
+            cookieEncoded = invalid
+            try
+                cookieEncoded = PlaybackCookieEncode(cookieProto)
+            catch e
+                cookieEncoded = invalid
+            end try
+            if isValid(cookieEncoded) and cookieEncoded <> ""
+                ctx.requestMetadata.playbackCookie = cookieEncoded
+            end if
+        end if
     end if
     sabr_ump_logPartDetails(ctx, "next_request_policy", part.data, nextPolicy)
     if sabr_ump_shouldDebugDump(ctx)
@@ -676,15 +676,20 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
             bytes: segmentData
             startSegmentIndex: startSeqVal
             endSegmentIndex: endSeqVal
+            sequenceNumber: startSeqVal
             startTimeMs: startTimeVal
             durationMs: durationVal
             timescale: timescaleVal
             startTicks: startTicksVal
             durationTicks: durationTicksVal
+            formatId: segment.mediaHeader?.formatId
         }
 
         if not isValid(initStore.itag) and isValid(segment.mediaHeader?.formatId)
             initStore.itag = segment.mediaHeader.formatId?.itag
+        end if
+        if initStore.sequenceNumber = invalid and isValid(startSeqVal)
+            initStore.sequenceNumber = startSeqVal
         end if
 
         cacheResult = sabrCacheStoreSegment(initStore)
@@ -800,15 +805,20 @@ sub sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segment
         bytes: segmentData
         startSegmentIndex: startSeq
         endSegmentIndex: endSeq
+        sequenceNumber: startSeq
         startTimeMs: startTimeVal
         durationMs: durationVal
         timescale: timescaleVal
         startTicks: startTicksVal
         durationTicks: durationTicksVal
+        formatId: mediaHeader?.formatId
     }
 
     if not isValid(storeOptions.itag) and isValid(mediaHeader?.formatId)
         storeOptions.itag = mediaHeader.formatId?.itag
+    end if
+    if storeOptions.sequenceNumber = invalid and isValid(startSeq)
+        storeOptions.sequenceNumber = startSeq
     end if
 
     cacheResult = sabrCacheStoreSegment(storeOptions)
@@ -1020,10 +1030,53 @@ function sabr_ump_decodePart(decoderFn as dynamic, data as object, ctx = invalid
 end function
 
 function sabr_ump_log(ctx as object, level as integer, message as string) as void
+    taggedMessage = sabr_ump_applyRequestLogTag(ctx, message)
     loggerRef = ctx?.logs
     if isValid(loggerRef) and GetInterface(loggerRef, "ifAssociativeArray") <> invalid and loggerRef.DoesExist("printl")
-        loggerRef.printl(level, message)
+        loggerRef.printl(level, taggedMessage)
     end if
+end function
+
+function sabr_ump_applyRequestLogTag(ctx as object, message as string) as string
+    if not IsString(message) then return message
+    prefix = "[SabrUmpProcessor]"
+    if Instr(1, message, prefix) = 1
+        replacement = sabr_ump_buildLogTag(ctx)
+        if replacement = "" then replacement = prefix
+        remainder = Mid(message, Len(prefix) + 1)
+        return `${replacement}${remainder}`
+    end if
+    return message
+end function
+
+function sabr_ump_buildLogTag(ctx as object) as string
+    parts = ["SabrUmpProcessor"]
+    typeLabel = sabr_ump_normalizeContentType(ctx?.requestMetadata?.contentType)
+    if typeLabel <> "" then parts.push(typeLabel)
+    requestLabel = sabr_ump_extractRequestNumber(ctx?.requestMetadata?.requestNumber)
+    if requestLabel <> "" then parts.push(requestLabel)
+    return `[${parts.Join("-")}]`
+end function
+
+function sabr_ump_normalizeContentType(value as dynamic) as string
+    label = LCase(sabr_ump_toSafeString(value))
+    if label = "" then return ""
+    if Instr(1, label, "video") > 0 then return "video"
+    if Instr(1, label, "audio") > 0 then return "audio"
+    if Instr(1, label, "text") > 0 then return "text"
+    if Instr(1, label, "caption") > 0 then return "text"
+    return label
+end function
+
+function sabr_ump_extractRequestNumber(value as dynamic) as string
+    if not isValid(value) then return ""
+    if GetInterface(value, "ifAssociativeArray") <> invalid
+        if value.DoesExist("requestNumber")
+            return sabr_ump_extractRequestNumber(value.requestNumber)
+        end if
+        return ""
+    end if
+    return sabr_ump_toSafeString(value)
 end function
 
 function sabr_ump_diagnosticsEnabled() as boolean

@@ -209,6 +209,8 @@ function sabrCacheParseEntry(fileName as string) as object
         if extra.DoesExist("timescale") then entry.timescale = extra.Lookup("timescale")
         if extra.DoesExist("startTicks") then entry.startTicks = extra.Lookup("startTicks")
         if extra.DoesExist("durationTicks") then entry.durationTicks = extra.Lookup("durationTicks")
+        if extra.DoesExist("sequenceNumber") then entry.sequenceNumber = extra.Lookup("sequenceNumber")
+        if extra.DoesExist("formatId") then entry.formatId = extra.Lookup("formatId")
     end if
     return entry
 end function
@@ -290,6 +292,15 @@ function sabrCacheStoreSegment(options as object) as object
     end if
     if isValid(options?.durationTicks)
         extra.durationTicks = options.durationTicks
+    end if
+    if isValid(options?.sequenceNumber)
+        extra.sequenceNumber = options.sequenceNumber
+    else if isValid(extra?.startSegmentIndex)
+        extra.sequenceNumber = extra.startSegmentIndex
+    end if
+    formatIdOpt = options?.formatId
+    if GetInterface(formatIdOpt, "ifAssociativeArray") <> invalid
+        extra.formatId = formatIdOpt
     end if
     sabrCacheRememberMetadata(fileName, extra)
 

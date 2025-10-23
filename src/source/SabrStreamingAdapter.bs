@@ -50,7 +50,7 @@ function getHeaderByteRange(request as object) as object
     return { startRange: startRange, endRange: endRange }
 end function
 
-function collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object, playbackContext as object) as object
+function collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object) as object
     ranges = []
     if not isValid(activeFormat) then return ranges
     if not isValid(mediaIdHash) or mediaIdHash = "" then return ranges
@@ -68,7 +68,7 @@ function collectBufferedRangesForFormat(mediaIdHash as string, formatType as str
     sortedEntries = sortCacheEntriesBySegment(segmentEntries)
     seen = {}
     for each entry in sortedEntries
-        metadata = buildMetadataFromCacheEntry(entry, activeFormat, formatType, playbackContext)
+        metadata = buildMetadataFromCacheEntry(entry, activeFormat, formatType)
         rangeEntry = buildBufferedRangeFromMetadata(metadata)
         if isValid(rangeEntry)
             startKey = rangeEntry?.startSegmentIndex
@@ -186,7 +186,7 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
                 state.formatToDiscard = format
             end if
         else
-            bufferedRanges = collectBufferedRangesForFormat(mediaIdHash, formatType, format, playbackContext)
+            bufferedRanges = collectBufferedRangesForFormat(mediaIdHash, formatType, format)
         end if
 
         if GetInterface(bufferedRanges, "ifArray") <> invalid
@@ -212,13 +212,6 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
         state.playerTimeMs = resolveFallbackPlayerTimeMs(playbackContext, currentFormat)
     end if
 
-    latestSanitized = sanitizeLatestBufferedRange(playerRanges, requestedFormatType)
-    if isValid(latestSanitized)
-        sanitizedList = []
-        sanitizedList.push(latestSanitized)
-        state.rangesByType[requestedFormatType] = sanitizedList
-    end if
-
     return state
 end function
 
@@ -242,63 +235,6 @@ function applyBufferedStateToRequest(videoPlaybackAbrRequest as object, bufferSt
     return bufferState?.formatToDiscard
 end function
 
-function sanitizeLatestBufferedRange(ranges as object, formatType as string) as dynamic
-    if GetInterface(ranges, "ifArray") = invalid or ranges.count() = 0 then return invalid
-
-    latest = invalid
-    latestIndex = -2147483647
-
-    for each range in ranges
-        if GetInterface(range, "ifAssociativeArray") = invalid then continue for
-
-        idx = toInt(range?.startSegmentIndex)
-        if idx = invalid then idx = toInt(range?.sequenceNumber)
-        if idx = invalid then idx = toInt(range?.rangeStart)
-
-        if idx = invalid then continue for
-        if idx >= latestIndex
-            latestIndex = idx
-            latest = range
-        end if
-    end for
-
-    if not isValid(latest) then return invalid
-
-    durationVal = toInt(latest?.durationMs)
-    if durationVal = invalid or durationVal <= 0
-        durationVal = toInt(latest?.timeRange?.durationTicks)
-        if durationVal = invalid or durationVal <= 0
-            durationVal = 0
-        end if
-    end if
-
-    durationStr = `${durationVal}`
-    if durationStr = "" then durationStr = "0"
-
-    timescaleVal = toInt(latest?.timeRange?.timescale)
-    if timescaleVal = invalid or timescaleVal <= 0
-        if formatType = "AUDIO"
-            timescaleVal = 44100
-        else
-            timescaleVal = 1000
-        end if
-    end if
-
-    sanitized = {
-        "formatId": latest?.formatId
-        "startSegmentIndex": latestIndex
-        "endSegmentIndex": latestIndex
-        "durationMs": durationStr
-        "startTimeMs": "0"
-        "timeRange": {
-            "timescale": timescaleVal
-            "startTicks": "0"
-            "durationTicks": durationStr
-        }
-    }
-
-    return sanitized
-end function
 
 function sortCacheEntriesBySegment(entries as object) as object
     if GetInterface(entries, "ifArray") = invalid then return entries
@@ -331,145 +267,174 @@ function sortCacheEntriesBySegment(entries as object) as object
     return sorted
 end function
 
-function buildMetadataFromCacheEntry(entry as object, activeFormat as object, formatType as string, playbackContext as object) as dynamic
+function sabr_entryItagValue(entry as object) as dynamic
+    if GetInterface(entry, "ifAssociativeArray") = invalid then return invalid
+    raw = entry?.itag
+    if not isValid(raw) then return invalid
+    if IsInteger(raw) then return raw
+    if IsFloat(raw) or IsDouble(raw) then return int(raw)
+    if IsString(raw)
+        trimmed = raw.trim()
+        if trimmed = "" then return invalid
+        parsed = toInt(trimmed)
+        if parsed <> invalid then return parsed
+        return trimmed
+    end if
+    return raw
+end function
+
+function sabr_copyFormatId(source as object) as object
+    if GetInterface(source, "ifAssociativeArray") = invalid then return invalid
+    copy = {}
+    for each key in source
+        copy[key] = source[key]
+    end for
+    return copy
+end function
+
+function sabr_resolveFormatIdForCacheEntry(entry as object, fallback as dynamic, activeFormat as object) as object
+    formatId = invalid
+    if GetInterface(fallback, "ifAssociativeArray") <> invalid
+        fallbackId = fallback?.formatId
+        if GetInterface(fallbackId, "ifAssociativeArray") <> invalid
+            formatId = sabr_copyFormatId(fallbackId)
+        end if
+    end if
+
+    entryItag = sabr_entryItagValue(entry)
+    if entryItag <> invalid
+        if GetInterface(formatId, "ifAssociativeArray") = invalid
+            formatId = {}
+        end if
+        formatId["itag"] = entryItag
+    end if
+
+    if GetInterface(formatId, "ifAssociativeArray") <> invalid
+        existingXtags = invalid
+        if formatId.DoesExist("xtags")
+            existingXtags = formatId.Lookup("xtags")
+        end if
+        xtagsMissing = true
+        if isValid(existingXtags)
+            xtagsMissing = sabr_valueToLabel(existingXtags) = ""
+        end if
+        if xtagsMissing
+            candidate = invalid
+            if GetInterface(fallback?.formatId, "ifAssociativeArray") <> invalid and fallback.formatId.DoesExist("xtags")
+                candidate = fallback.formatId.Lookup("xtags")
+            else if isValid(activeFormat?.xtags)
+                candidate = activeFormat.xtags
+            end if
+            if isValid(candidate) then formatId["xtags"] = candidate
+        end if
+        existingLastModified = invalid
+        if formatId.DoesExist("lastModified")
+            existingLastModified = formatId.Lookup("lastModified")
+        end if
+        lastModifiedMissing = true
+        if isValid(existingLastModified)
+            lastModifiedMissing = sabr_valueToLabel(existingLastModified) = ""
+        end if
+        if lastModifiedMissing
+            candidate = invalid
+            if GetInterface(fallback?.formatId, "ifAssociativeArray") <> invalid and fallback.formatId.DoesExist("lastModified")
+                candidate = fallback.formatId.Lookup("lastModified")
+            else if isValid(activeFormat?.lastModified)
+                candidate = activeFormat.lastModified
+            end if
+            if isValid(candidate) then formatId["lastModified"] = candidate
+        end if
+    else
+        formatId = formatToFormatId(activeFormat)
+    end if
+
+    if GetInterface(formatId, "ifAssociativeArray") = invalid
+        formatId = formatToFormatId(activeFormat)
+    end if
+
+    return formatId
+end function
+
+function buildMetadataFromCacheEntry(entry as object, activeFormat as object, formatType as string) as dynamic
     if GetInterface(entry, "ifAssociativeArray") = invalid then return invalid
 
-    fallback = invalid
-    if (toInt(entry?.startSegmentIndex) = invalid or toInt(entry?.endSegmentIndex) = invalid) or (toInt(entry?.durationMs) = invalid and toInt(entry?.durationTicks) = invalid)
-        metadataByRange = lookupSegmentMetadata(playbackContext, formatType, activeFormat, entry?.rangeStart)
-        if isValid(metadataByRange)
-            fallback = metadataByRange
-        end if
-    end if
-    if not isValid(fallback)
-        seqCandidate = toInt(entry?.startSegmentIndex)
-        if seqCandidate <> invalid
-            fallback = sabr_lookupRecentMetadataBySequence(playbackContext, activeFormat, seqCandidate, formatType)
-        end if
-    end if
-
-    metadata = {
-        "formatId": formatToFormatId(activeFormat)
-    }
+    metadata = {}
+    metadata["formatId"] = sabr_resolveFormatIdForCacheEntry(entry, entry, activeFormat)
 
     rangeStartVal = toInt(entry?.rangeStart)
-    if rangeStartVal = invalid and isValid(fallback)
-        rangeStartVal = toInt(fallback?.rangeStart)
-    end if
-    if rangeStartVal <> invalid then metadata["rangeStart"] = rangeStartVal
-
     rangeEndVal = toInt(entry?.rangeEnd)
-    if rangeEndVal = invalid and isValid(fallback)
-        rangeEndVal = toInt(fallback?.rangeEnd)
-    end if
-    if rangeEndVal <> invalid then metadata["rangeEnd"] = rangeEndVal
 
     startIndex = toInt(entry?.startSegmentIndex)
-    if startIndex = invalid and isValid(fallback)
-        startIndex = toInt(fallback?.startSequenceNumber)
-        if startIndex = invalid then startIndex = toInt(fallback?.sequenceNumber)
-    end if
-    if startIndex = invalid and rangeStartVal <> invalid
-        startIndex = rangeStartVal
-    end if
+    if startIndex = invalid then startIndex = toInt(entry?.sequenceNumber)
+    if startIndex = invalid and rangeStartVal <> invalid then startIndex = rangeStartVal
     if startIndex = invalid then return invalid
 
     endIndex = toInt(entry?.endSegmentIndex)
-    if endIndex = invalid and isValid(fallback)
-        endIndex = toInt(fallback?.endSequenceNumber)
-    end if
+    if endIndex = invalid then endIndex = toInt(entry?.sequenceNumber)
     if endIndex = invalid then endIndex = startIndex
+
+    startTimeVal = toInt(entry?.startTimeMs)
+    if startTimeVal = invalid then startTimeVal = toInt(entry?.startMs)
+    startTicksVal = toInt(entry?.startTicks)
+    durationMsVal = toInt(entry?.durationMs)
+    durationTicksVal = toInt(entry?.durationTicks)
+
+    timescaleVal = toInt(entry?.timescale)
+    if timescaleVal = invalid or timescaleVal <= 0
+        timescaleVal = toInt(entry?.timeRange?.timescale)
+    end if
+    if timescaleVal = invalid or timescaleVal <= 0
+        if formatType = "AUDIO"
+            timescaleVal = 48000
+        else
+            timescaleVal = 1000
+        end if
+    end if
+
+    if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal > 0
+        startTimeVal = int((startTicksVal * 1000) / timescaleVal)
+    end if
+    if startTicksVal = invalid and startTimeVal <> invalid and timescaleVal > 0
+        startTicksVal = int((startTimeVal * timescaleVal) / 1000)
+    end if
+
+    if durationMsVal = invalid and durationTicksVal <> invalid and timescaleVal > 0
+        durationMsVal = int((durationTicksVal * 1000) / timescaleVal)
+    end if
+    if durationTicksVal = invalid and durationMsVal <> invalid and timescaleVal > 0
+        durationTicksVal = int((durationMsVal * timescaleVal) / 1000)
+    end if
+
+    if startTimeVal = invalid then startTimeVal = 0
+    if startTimeVal < 0 then startTimeVal = 0
+    if durationMsVal = invalid then durationMsVal = 0
+    if durationMsVal < 0 then durationMsVal = 0
+    if startTicksVal = invalid then startTicksVal = int((startTimeVal * timescaleVal) / 1000)
+    if durationTicksVal = invalid then durationTicksVal = int((durationMsVal * timescaleVal) / 1000)
+    if startTicksVal = invalid then startTicksVal = 0
+    if startTicksVal < 0 then startTicksVal = 0
+    if durationTicksVal = invalid then durationTicksVal = 0
+    if durationTicksVal < 0 then durationTicksVal = 0
 
     metadata["startSequenceNumber"] = startIndex
     metadata["endSequenceNumber"] = endIndex
-    metadata["sequenceNumber"] = startIndex
+    metadata["sequenceNumber"] = toInt(entry?.sequenceNumber)
+    if metadata["sequenceNumber"] = invalid then metadata["sequenceNumber"] = startIndex
 
-    startTimeMsVal = toInt(entry?.startTimeMs)
-    if startTimeMsVal = invalid and isValid(fallback)
-        startTimeMsVal = toInt(fallback?.startTimeMs)
-        if startTimeMsVal = invalid then startTimeMsVal = toInt(fallback?.startMs)
-    end if
-    if startTimeMsVal = invalid and startIndex <> invalid and isValid(fallback)
-        estimateDuration = segmentDurationMs(fallback)
-        baseSeq = toInt(fallback?.startSequenceNumber)
-        if baseSeq = invalid then baseSeq = toInt(fallback?.sequenceNumber)
-        if estimateDuration <> invalid and estimateDuration > 0 and baseSeq <> invalid
-            offset = startIndex - baseSeq
-            if offset <> invalid and offset >= 0
-                baseStart = toInt(fallback?.startTimeMs)
-                if baseStart = invalid then baseStart = toInt(fallback?.startMs)
-                if baseStart <> invalid
-                    startTimeMsVal = baseStart + (offset * estimateDuration)
-                end if
-            end if
-        end if
-    end if
-    if startTimeMsVal <> invalid then metadata["startTimeMs"] = startTimeMsVal.toStr()
-
-    durationMsVal = toInt(entry?.durationMs)
-    if durationMsVal = invalid and isValid(fallback)
-        durationMsVal = toInt(fallback?.durationMs)
-    end if
-    if durationMsVal = invalid and isValid(fallback)
-        durationMsVal = segmentDurationMs(fallback)
-    end if
-    if durationMsVal <> invalid and durationMsVal > 0 then metadata["durationMs"] = durationMsVal.toStr()
-
-    timescaleVal = toInt(entry?.timescale)
-    if timescaleVal = invalid and isValid(fallback)
-        timescaleVal = toInt(fallback?.timeRange?.timescale)
-        if timescaleVal = invalid then timescaleVal = toInt(fallback?.timescale)
-    end if
-    if timescaleVal = invalid or timescaleVal <= 0 then timescaleVal = 1000
+    metadata["startTimeMs"] = startTimeVal.toStr()
+    metadata["startMs"] = metadata["startTimeMs"]
+    metadata["durationMs"] = durationMsVal.toStr()
     metadata["timescale"] = timescaleVal
-
-    startTicksVal = invalid
-    if startTimeMsVal <> invalid
-        startTicksVal = int((startTimeMsVal * timescaleVal) / 1000)
-    end if
-    if startTicksVal = invalid then startTicksVal = toInt(entry?.startTicks)
-    if startTicksVal = invalid and isValid(fallback)
-        startTicksVal = toInt(fallback?.timeRange?.startTicks)
-    end if
-    if startTicksVal <> invalid and startTicksVal < 0
-        startTicksVal = 0
-    end if
-
-    durationTicksVal = invalid
-    if durationMsVal <> invalid and durationMsVal > 0
-        durationTicksVal = int((durationMsVal * timescaleVal) / 1000)
-    end if
-    if durationTicksVal = invalid then durationTicksVal = toInt(entry?.durationTicks)
-    if durationTicksVal = invalid and isValid(fallback)
-        durationTicksVal = toInt(fallback?.timeRange?.durationTicks)
-    end if
-    if durationTicksVal <> invalid and durationTicksVal < 0
-        durationTicksVal = 0
-    end if
-
-    if startTicksVal = invalid then startTicksVal = 0
-    if durationTicksVal = invalid then durationTicksVal = 0
-
     metadata["timeRange"] = {
         "timescale": timescaleVal
         "startTicks": startTicksVal
         "durationTicks": durationTicksVal
     }
 
-    return metadata
-end function
+    if rangeStartVal <> invalid then metadata["rangeStart"] = rangeStartVal
+    if rangeEndVal <> invalid then metadata["rangeEnd"] = rangeEndVal
 
-function lookupSegmentMetadata(playbackContext as object, contentType as string, format as object, rangeStart as dynamic) as dynamic
-    if not isValid(playbackContext) then return invalid
-    rangeKey = `${rangeStart ?? ""}`
-    if rangeKey = "" then rangeKey = `${toInt(rangeStart)}`
-    if rangeKey = "" then return invalid
-    byRange = getSegmentMetadataByRange(playbackContext, contentType, format, false)
-    if not IsAssociativeArray(byRange) then return invalid
-    if byRange.DoesExist(rangeKey)
-        return byRange.Lookup(rangeKey)
-    end if
-    return invalid
+    return metadata
 end function
 
 function isInit(contentType as string, format as object, requestByteRange as object, requestRef = invalid as dynamic) as boolean
@@ -2189,14 +2154,19 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                             bytes: segmentPayload
                                             startSegmentIndex: segmentStartIndex
                                             endSegmentIndex: segmentEndIndex
+                                            sequenceNumber: coverageMeta?.sequenceNumber
                                             startTimeMs: segmentStartTime
                                             durationMs: segmentDuration
                                             timescale: segmentTimescale
                                             startTicks: segmentStartTicks
                                             durationTicks: segmentDurationTicks
+                                            formatId: formatToFormatId(currentFormat)
                                         }
                                         if storeOptions.itag = invalid and isValid(currentFormat?.formatId)
                                             storeOptions.itag = currentFormat.formatId?.itag
+                                        end if
+                                        if storeOptions.sequenceNumber = invalid and isValid(segmentStartIndex)
+                                            storeOptions.sequenceNumber = segmentStartIndex
                                         end if
                                         if isInitSegmentRequest
                                             storeOptions.rangeStart = 0
