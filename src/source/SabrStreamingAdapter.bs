@@ -37,7 +37,7 @@ const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
 const PLAYER_TIME_STRATEGY_METADATA = "metadata"
 const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
-const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
+const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_METADATA
 
 function getHeaderByteRange(request as object) as object
     range = "bytes=0-"
@@ -581,11 +581,41 @@ function lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType a
     if targetStart = invalid then return result
 
     metadataByRange = getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
+    if GetInterface(metadataByRange, "ifAssociativeArray") = invalid or metadataByRange.Count() = 0
+        key = buildPlayerTimeIndexKey(contentType, currentFormat)
+        indexMap = globalSidxIndexMap()
+        if key <> "" and GetInterface(indexMap, "ifAssociativeArray") <> invalid and indexMap.DoesExist(key)
+            seedMetadataFromSidx(playbackContext, contentType, formatToKey(currentFormat), indexMap.Lookup(key))
+            metadataByRange = getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
+        end if
+    end if
     if GetInterface(metadataByRange, "ifAssociativeArray") = invalid or metadataByRange.Count() = 0 then return result
 
+    if isValid(m?.logs)
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata lookup ${buildPlayerTimeIndexKey(contentType, currentFormat)} entries=${metadataByRange.Count()}`)
+    end if
+
     exactKey = `${targetStart}`
+    meta = invalid
     if metadataByRange.DoesExist(exactKey)
         meta = metadataByRange.Lookup(exactKey)
+    else
+        smallerKey = invalid
+        for each key in metadataByRange
+            startVal = toInt(key)
+            if startVal = invalid then startVal = toInt(metadataByRange.Lookup(key)?.rangeStart)
+            if startVal <> invalid and startVal <= targetStart
+                if smallerKey = invalid or startVal > toInt(smallerKey)
+                    smallerKey = key
+                end if
+            end if
+        end for
+        if isValid(smallerKey)
+            meta = metadataByRange.Lookup(smallerKey)
+        end if
+    end if
+
+    if GetInterface(meta, "ifAssociativeArray") <> invalid
         predicted = predictPlayerTimeFromMetadata(meta, targetStart)
         if predicted <> invalid
             result["value"] = predicted
@@ -2666,9 +2696,9 @@ function createVideoPlaybackAbrRequest(request as object, contentType as string,
     if not isValid(bandwidthEstimate) and isValid(videoNode.streamingSegment) and isValid(videoNode.streamingSegment.segBitrateBps)
         bandwidthEstimate = videoNode.streamingSegment.segBitrateBps
     end if
-    if not isValid(bandwidthEstimate) and isValid(videoNode.segment) and isValid(videoNode.segment.bandwidth)
-        bandwidthEstimate = videoNode.segment.bandwidth
-    end if
+    ' if not isValid(bandwidthEstimate) and isValid(videoNode.segment) and isValid(videoNode.segment.bandwidth)
+    '     bandwidthEstimate = videoNode.segment.bandwidth
+    ' end if
     if not isValid(bandwidthEstimate) or bandwidthEstimate <= 0
         bandwidthEstimate = currentFormat?.bitrate ?? 0
     end if

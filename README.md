@@ -73,6 +73,43 @@ artifacts/                # Log and screenshot outputs from automation
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
 5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, store segment metadata via `SabrCacheManager`, and feed playable data back to the Roku video stack.
 
+## Player Time Strategies
+
+`SabrStreamingAdapter` supports multiple ways to translate a Roku byte-range request into the `playerTimeMs` value SABR expects. The active strategy is controlled by `playbackContext.playerTimeStrategy` (or the `m.top.playerTimeStrategy` override) and can be one of the following:
+
+| Strategy | Description |
+| --- | --- |
+| `sidx` | Parse the MP4 SIDX index (captured from SABR init segments) and translate the requested byte range to its start time/duration. Uses the raw SABR index; falls back to lower entry if the exact start isn’t found. |
+| `metadata` | Predict from segment metadata accumulated as SABR responses arrive (coverage start/end, start time, duration). Also seeds the metadata map from SIDX entries when no coverage exists yet. |
+| `hybrid` *(default)* | Try the SIDX path first; if unavailable, fall back to metadata; finally use historical counters (delivered duration, last requested time, etc.) as a safety net. |
+
+The strategy engine logs each decision in the telnet console (e.g., `Strategy hybrid sidxIndex=...`, `Resolved playerTimeMs=... source=...`) which makes it easier to audit how requests were computed.
+
+### Switching Strategies
+
+At runtime you can inject the desired mode before issuing segment requests:
+
+```brightscript
+' inside SabrStreamingAdapter or a setup routine
+m.top.playerTimeStrategy = "metadata" ' or "sidx", "hybrid"
+```
+
+For automated testing, the constant `DEFAULT_PLAYER_TIME_STRATEGY` (in `src/source/SabrStreamingAdapter.bs`) initializes the strategy when nothing else is specified.
+
+### Prediction Paths
+
+#### SIDX Lookups
+1. UMP init segments are parsed (`SabrUmpProcessor`) and SIDX entries stored per format.
+2. Each entry captures byte start/end, segment duration, and timeline timing in milliseconds.
+3. When a request arrives, the adapter finds the SIDX entry whose range matches (or precedes) the requested start and returns `startMs + offset`.
+
+#### Metadata Predictions
+1. Every successful SABR response carries coverage/start-time metadata which is cached per format/range.
+2. Future requests use the exact range when available, or interpolate from the closest prior segment.
+3. If no coverage exists yet, the SIDX entries are used to seed the metadata map so the prediction can still succeed.
+
+Both strategies ultimately write the resolved values back to `playbackContext` (`lastResolvedPlayerTimeMs` / `…Source`) for diagnostics and future fallbacks.
+
 ## Customizing the Demo
 - Swap in your own manifests under `src/assets/mpds/` and adjust `MainScene.bs` to load the file you want.
 - Update branding assets (splash, icons) in `src/assets/images/` and refresh `src/manifest` entries if sizes change.
