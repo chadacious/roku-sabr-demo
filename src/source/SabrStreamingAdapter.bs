@@ -132,15 +132,15 @@ function computeNextPlaybackTime(ranges as object, formatType as string) as dyna
         end if
     end if
 
-    if durationMs = invalid or durationMs < 0 then durationMs = 0
+    ' if durationMs = invalid or durationMs < 0 then durationMs = 0
 
-    if durationMs = 0
-        if formatType = "AUDIO"
-            durationMs = 9985
-        else if formatType = "VIDEO"
-            durationMs = 7000
-        end if
-    end if
+    ' if durationMs = 0
+    '     if formatType = "AUDIO"
+    '         durationMs = 9985
+    '     else if formatType = "VIDEO"
+    '         durationMs = 7000
+    '     end if
+    ' end if
 
     return startMs + durationMs
 end function
@@ -151,9 +151,9 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
     rangesByType["VIDEO"] = []
 
     state = {
-        formatToDiscard: invalid
-        rangesByType: rangesByType
-        playerTimeMs: invalid
+        "formatToDiscard": invalid
+        "rangesByType": rangesByType
+        "playerTimeMs": invalid
     }
 
     currentFormatKey = formatToKey(currentFormat)
@@ -205,6 +205,9 @@ function buildBufferedState(mediaIdHash as string, currentFormat as object, acti
         playerRanges = state.rangesByType.Lookup(requestedFormatType)
     end if
 
+    ' if activeFormats.videoFormat.itag = 160
+    '     stop
+    ' end if
     playerTimeCandidate = computeNextPlaybackTime(playerRanges, requestedFormatType)
     if playerTimeCandidate <> invalid and playerTimeCandidate >= 0
         state.playerTimeMs = playerTimeCandidate
@@ -460,63 +463,6 @@ function extractMediaIdHash(url as string) as dynamic
     return invalid
 end function
 
-' function generateSabrRequestNumber(playbackContext as object, contentType as string) as string
-'     ' Build a 17-digit request identifier that avoids audio/video collisions.
-'     ' We combine high-resolution timestamp digits with per-playback and global monotonic counters,
-'     ' then append a stream-type discriminator so simultaneously issued audio/video requests do not clash.
-'     if not isValid(playbackContext) then playbackContext = {}
-
-'     requestSequence = playbackContext.requestSequence
-'     if not isValid(requestSequence) then requestSequence = 0
-'     requestSequence = requestSequence + 1
-'     playbackContext["requestSequence"] = requestSequence
-
-'     if not isValid(m.sabrRequestNonce) then m.sabrRequestNonce = 0
-'     nonce = m.sabrRequestNonce + 1
-'     if nonce > 999999 then nonce = 1
-'     m.sabrRequestNonce = nonce
-
-'     timestampDigits = buildTimestampDigits()
-'     seqDigits = zeroPadDigits(requestSequence, 6)
-'     nonceDigits = zeroPadDigits(nonce, 6)
-
-'     combined = timestampDigits + seqDigits + nonceDigits
-'     if Len(combined) < 16
-'         combined = zeroPadLeftDigits(combined, 16)
-'     end if
-'     randomPart = Right(combined, 16)
-
-'     typeDiscriminator = contentType = "AUDIO" ? "1" : "0"
-'     requestId = `${randomPart}${typeDiscriminator}`
-
-'     lastRequestId = playbackContext.lastRequestNumber
-'     if requestId = lastRequestId
-'         alternateSeed = timestampDigits + zeroPadDigits(nonce + 1, 6) + zeroPadDigits(m.sabrRequestNonce + 7, 6)
-'         if Len(alternateSeed) < 18
-'             alternateSeed = zeroPadLeftDigits(alternateSeed, 18)
-'         end if
-'         requestId = `${Right(alternateSeed, 18)}${typeDiscriminator}`
-'     end if
-
-'     playbackContext["lastRequestNumber"] = requestId
-'     return requestId
-' end function
-
-' function buildTimestampDigits() as string
-'     dt = CreateObject("roDateTime")
-'     if GetInterface(dt, "ifDateTime") = invalid then return zeroPadLeftDigits("", 17)
-
-'     year = zeroPadDigits(dt.GetYear(), 4)
-'     month = zeroPadDigits(dt.GetMonth(), 2)
-'     day = zeroPadDigits(dt.GetDayOfMonth(), 2)
-'     hour = zeroPadDigits(dt.GetHours(), 2)
-'     minute = zeroPadDigits(dt.GetMinutes(), 2)
-'     second = zeroPadDigits(dt.GetSeconds(), 2)
-'     millis = zeroPadDigits(dt.GetMilliseconds(), 3)
-
-'     return year + month + day + hour + minute + second + millis
-' end function
-
 function zeroPadDigits(value as integer, width as integer) as string
     if IsString(value)
         strValue = value
@@ -534,19 +480,6 @@ function zeroPadDigits(value as integer, width as integer) as string
     end while
     return strValue
 end function
-
-' function zeroPadLeftDigits(value as string, width as integer) as string
-'     if not isValid(value) then value = ""
-'     if IsInteger(value)
-'         value = value.toStr()
-'     else if not IsString(value)
-'         value = Str(value).trim()
-'     end if
-'     while Len(value) < width
-'         value = "0" + value
-'     end while
-'     return value
-' end function
 
 sub ensureSabrInfrastructure()
     sabrCacheSetLogger(m.logs)
@@ -597,52 +530,6 @@ function buildSabrCacheKey(mediaIdHash as string, contentType as string, format 
 
     return joinWithPipe(keyParts)
 end function
-
-' function toSafeString(value as dynamic) as string
-'     if not isValid(value) then return ""
-'     if IsString(value)
-'         return value
-'     else if IsBoolean(value)
-'         return value = true ? "1" : "0"
-'     else if IsNumber(value)
-'         return Str(value).trim()
-'     else
-'         return Str(value).trim()
-'     end if
-' end function
-
-' function sabr_getGlobalAA(key as string) as dynamic
-'     if key = "" then return invalid
-'     section = CreateObject("roRegistrySection", "global")
-'     stored = section.Read(key)
-'     if not isValid(stored) or stored = "" then return invalid
-'     parsed = invalid
-'     try
-'         parsed = ParseJson(stored)
-'     catch e
-'         parsed = invalid
-'     end try
-'     if GetInterface(parsed, "ifAssociativeArray") = invalid then return invalid
-'     return parsed
-' end function
-
-' sub sabr_setGlobalAA(key as string, value as object)
-'     if key = "" then return
-'     section = CreateObject("roRegistrySection", "global")
-'     json = FormatJson(value)
-'     if not isValid(json) then json = "{}"
-'     section.Write(key, json)
-' end sub
-
-' function sabr_getGlobalInt(key as string) as integer
-'     if key = "" then return 0
-'     section = CreateObject("roRegistrySection", "global")
-'     strValue = section.Read(key)
-'     if not isValid(strValue) or strValue = ""
-'         return 0
-'     end if
-'     return strValue.toInt()
-' end function
 
 function buildPrefetchInfo(streamInfo as object, currentFormat as object, requestMetadataEntry as object) as object
     if not isValid(streamInfo) then return invalid
@@ -809,18 +696,6 @@ sub logCoverageDiagnostics(info as object)
     m.logs.printl(log_level_Type.DEBUG, `${logTag} Coverage diagnostics key=${cacheKey} requested=${requestedLabel} coverage=${coverageLabel} sequence=${coverage?.sequenceNumber ?? requested?.sequenceNumber ?? "?"}`)
 end sub
 
-' function sabr_buildLegacySegmentCacheKeyForRange(format as object, byteRange as object) as string
-'     if not isValid(format) then return ""
-'     startLabel = toSafeString(byteRange?.startRange)
-'     if startLabel = "" then startLabel = toSafeString(byteRange?.start)
-'     if startLabel = "" then return ""
-
-'     itagPart = toSafeString(format?.itag)
-'     xtagsPart = toSafeString(format?.xtags)
-
-'     return `${startLabel}-${itagPart}-${xtagsPart}`
-' end function
-
 function buildRepeatRequestKey(contentType as string, format as object, byteRange as object) as string
     if not isValid(byteRange) then return ""
     segmentKey = buildSegmentCacheKeyForRange(format, byteRange)
@@ -851,20 +726,6 @@ function toInt(value as dynamic) as dynamic
     end if
     return invalid
 end function
-
-' function sabr_toFloat(value as dynamic) as dynamic
-'     if not isValid(value) then return invalid
-'     if IsFloat(value) or IsDouble(value) then return value
-'     if IsInteger(value)
-'         return value * 1.0
-'     end if
-'     if IsString(value)
-'         trimmed = value.trim()
-'         if trimmed = "" then return invalid
-'         return val(trimmed)
-'     end if
-'     return invalid
-' end function
 
 function storeStreamInfoForFormat(playbackContext as object, contentType as string, format as object, streamInfo as object) as void
     if not isValid(playbackContext) then return
@@ -1134,58 +995,6 @@ function segmentDurationMs(metadata as dynamic) as dynamic
     end if
     return durationMs
 end function
-
-' function sabr_segmentNextStartMs(metadata as dynamic) as dynamic
-'     if not isValid(metadata) then return invalid
-'     startMs = sabr_segmentStartMs(metadata)
-'     if startMs = invalid then startMs = 0
-'     durationMs = sabr_segmentDurationMs(metadata)
-'     if durationMs = invalid or durationMs <= 0 then return startMs
-'     return startMs + durationMs
-' end function
-
-' function sabr_resolvePlayerTimeMs(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as integer
-'     if isInit(contentType, currentFormat, requestByteRange)
-'         return 0
-'     end if
-
-'     nextStart = invalid
-
-'     requestedStart = sabr_toInt(requestByteRange?.startRange)
-'     if requestedStart = invalid then requestedStart = sabr_toInt(requestByteRange?.start)
-'     if requestedStart <> invalid
-'         metadataByRange = sabr_getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
-'         candidate = sabr_lookupStartMsForRange(metadataByRange, requestedStart)
-'         if candidate <> invalid then nextStart = candidate
-'     end if
-
-'     initializedFormats = playbackContext.initializedFormats
-'     currentFormatKey = formatToKey(currentFormat)
-'     if currentFormatKey <> "" and initializedFormats.DoesExist(currentFormatKey)
-'         formatState = initializedFormats.Lookup(currentFormatKey)
-'         metadata = formatState?.lastSegmentMetadata
-'         if isValid(metadata)
-'             candidate = sabr_segmentNextStartMs(metadata)
-'             if candidate <> invalid then nextStart = candidate
-'         end if
-'     end if
-
-'     if nextStart = invalid or nextStart <= 0
-'         if contentType = "VIDEO"
-'             fallbackMetadata = playbackContext?.lastVideoSegmentMetadata
-'         else
-'             fallbackMetadata = playbackContext?.lastAudioSegmentMetadata
-'         end if
-'         if isValid(fallbackMetadata)
-'             candidate = sabr_segmentStartMs(fallbackMetadata)
-'             if candidate <> invalid then nextStart = candidate
-'         end if
-'     end if
-
-'     if nextStart = invalid
-'         estimatedMs = sabr_toInt(playbackContext?.estimatedPlayerTimeMs)
-'         if estimatedMs <> invalid then nextStart = estimatedMs
-'     end if
 
 function sabr_lookupRecentMetadataBySequence(playbackContext as object, format as object, sequenceNumber as dynamic, contentType = "" as string) as dynamic
     seqVal = toInt(sequenceNumber)
@@ -1464,49 +1273,6 @@ function roku_urlEncode(value as string) as string
     return encoder.Escape(value)
 end function
 
-' function getSabrDumpCounterBatch(batchId as string) as integer
-'     if batchId = "" then batchId = "default"
-'     counters = sabr_getGlobalAA("sabrDumpCounters")
-'     if not isValid(counters)
-'         counters = createObject("roAssociativeArray")
-'         sabr_setGlobalAA("sabrDumpCounters", counters)
-'     end if
-'     value = counters.Lookup(batchId)
-'     if not isValid(value)
-'         value = 0
-'         counters[batchId] = value
-'         sabr_setGlobalAA("sabrDumpCounters", counters)
-'     end if
-'     return value
-' end function
-
-' sub incrementSabrDumpCounterBatch(batchId as string)
-'     if batchId = "" then batchId = "default"
-'     counters = sabr_getGlobalAA("sabrDumpCounters")
-'     if not isValid(counters)
-'         counters = createObject("roAssociativeArray")
-'     end if
-'     value = counters.Lookup(batchId)
-'     if not isValid(value)
-'         value = 0
-'     end if
-'     value = value + 1
-'     counters[batchId] = value
-'     sabr_setGlobalAA("sabrDumpCounters", counters)
-' end sub
-
-' function nextSabrBatchCounter() as integer
-'     section = CreateObject("roRegistrySection", "global")
-'     strValue = section.Read("sabrBatchCounter")
-'     current = 0
-'     if isValid(strValue) and strValue <> ""
-'         current = strValue.toInt()
-'     end if
-'     current = current + 1
-'     section.Write("sabrBatchCounter", current.toStr())
-'     return current
-' end function
-
 sub deleteFileIfExists(path as dynamic)
     if not isValid(path) then return
     if not IsString(path) then return
@@ -1635,18 +1401,6 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         ok = false
         m.logs.printl(log_level_Type.WARN, `${requestLogTag} No matching format for itag: ${request.search.key}`)
     end if
-
-    '**
-    ' * If the player's current time is earlier than the last recorded time (e.g., the user seeks backward), we clear the initialized format metadata.
-    ' * This prevents the adapter from using stale data, which could lead to requesting segments that are ahead of the new playback position.
-    '*/
-    ' previousObserved = sabr_toFloat(playbackContext?.lastPlayerTimeSecs)
-    ' if previousObserved <> invalid
-    '     epsilon = 0.25
-    '     if videoNode.position + epsilon < previousObserved
-    '         playbackContext.initializedFormats = []
-    '     end if
-    ' end if
 
     activeFormats = getActiveFormats(currentFormat, sabr, playbackContext)
 
@@ -2553,18 +2307,6 @@ function createFullBufferRange(format as object) as object
         }
     }
 end function
-
-' function createPartialBufferRange(initializedFormat as dynamic) as dynamic
-'     metadata = initializedFormat?.lastSegmentMetadata
-'     if not isValid(metadata) then return invalid
-
-'     cacheManager = invalid
-'     if isValid(m.sabrCacheManager)
-'         cacheManager = m.sabrCacheManager
-'     end if
-
-'     return sabr_buildBufferedRangeFromMetadata(metadata, cacheManager)
-' end function
 
 function buildBufferedRangeFromMetadata(originalMetadata as dynamic) as dynamic
     if not isValid(originalMetadata) then return invalid
