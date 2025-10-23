@@ -1910,10 +1910,14 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                             fatalReason = ""
                             segmentInfo = invalid
                             umpResult = invalid
+                            segmentScanSummary = invalid
                             try
                                 sabrUmpProcessor = createSabrUmpProcessor(requestMetadata, m.logs)
                                 umpResult = sabrUmpProcessor.processChunk(sabrUmpResponse)
                                 segmentInfo = sabrUmpProcessor.getSegmentInfo()
+                                if sabrUmpProcessor.DoesExist("getSegmentScanSummary")
+                                    segmentScanSummary = sabrUmpProcessor.getSegmentScanSummary()
+                                end if
                             catch e
                                 fatalReason = e?.message ?? ""
                                 if fatalReason = "" then fatalReason = `${e}`
@@ -1933,6 +1937,21 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                             else
                                 if isValid(segmentInfo)
                                     m.logs.printl(log_level_Type.INFO, `${requestLogTag} Segment info available after processing: ${FormatJson(segmentInfo)}`)
+                                end if
+
+                                if GetInterface(segmentScanSummary?.segments, "ifArray") <> invalid
+                                    segmentCount = segmentScanSummary.segments.count()
+                                    matchedFlag = segmentScanSummary?.matched
+                                    if matchedFlag = invalid then matchedFlag = false
+                                    m.logs.printl(log_level_Type.INFO, `${requestLogTag} SABR scan summary segments=${segmentCount} matched=${matchedFlag}`)
+                                    for each scanEntry in segmentScanSummary.segments
+                                        headerLabel = sabr_valueToLabel(scanEntry?.headerId)
+                                        seqLabel = sabr_valueToLabel(scanEntry?.sequenceNumber)
+                                        startLabel = sabr_valueToLabel(scanEntry?.start)
+                                        matchedLabel = scanEntry?.matched
+                                        if matchedLabel = invalid then matchedLabel = false
+                                        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} SABR scan header=${headerLabel} seq=${seqLabel} start=${startLabel} matched=${matchedLabel}`)
+                                    end for
                                 end if
 
                                 playbackContext["lastSabrStreamInfo"] = requestMetadata.streamInfo
@@ -1956,6 +1975,8 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     end if
                                 end if
                                 requestMetadataEntry.streamInfo = requestMetadata.streamInfo
+
+
 
                                 if redirectTriggered
                                     if redirectDepth >= 3

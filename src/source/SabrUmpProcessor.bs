@@ -54,12 +54,15 @@ function createSabrUmpProcessor(requestMetadata as object, logs = invalid) as ob
         _pendingResult: invalid
         _requestSatisfied: false
         _processedPartTypes: []
+        _segmentScan: []
+        _segmentMatched: false
     }
 
     processor.processChunk = function(chunkBytes as object) as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_processChunk(ctx, chunkBytes) : end function
     processor.getSegmentInfo = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getSegmentInfo(ctx) : end function
     processor.getPendingSegmentsSummary = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getPendingSegmentsSummary(ctx) : end function
     processor.getProcessedPartTypes = function() as object : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getProcessedPartTypes(ctx) : end function
+    processor.getSegmentScanSummary = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getSegmentScanSummary(ctx) : end function
 
     ' Provide access helpers for the closures above.
     processor._self = processor
@@ -97,6 +100,8 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
 
     ctx._pendingResult = invalid
     ctx._processedPartTypes = []
+    ctx._segmentScan = []
+    ctx._segmentMatched = false
 
     while offset < totalLength
         partTypeInfo = sabr_ump_readVarint(buffer, offset)
@@ -159,6 +164,20 @@ function sabr_ump_getSegmentInfo(ctx as object) as dynamic
         return ctx._partialSegments.Lookup(key)
     end if
     return invalid
+end function
+
+function sabr_ump_getSegmentScanSummary(ctx as object) as dynamic
+    segments = ctx?._segmentScan
+    if GetInterface(segments, "ifArray") = invalid
+        segments = []
+    end if
+    matchedFlag = false
+    if ctx?._segmentMatched = true then matchedFlag = true
+    summary = {
+        segments: segments
+        matched: matchedFlag
+    }
+    return summary
 end function
 
 function sabr_ump_getPendingSegmentsSummary(ctx as object) as object
@@ -586,6 +605,20 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
         mediaHeader: segment.mediaHeader
     })
 
+    seqNumber = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
+    scanEntry = {
+        headerId: segment.headerId
+        start: headerStartVal
+        end: segmentEndVal
+        sequenceNumber: seqNumber
+        matched: false
+    }
+    if GetInterface(ctx._segmentScan, "ifArray") = invalid
+        ctx._segmentScan = []
+    end if
+    ctx._segmentScan.push(scanEntry)
+    scanIndex = ctx._segmentScan.count() - 1
+
     if ctx.requestMetadata?.isInit = true and segment.mediaHeader?.isInitSeg = true and isValid(ctx.requestMetadata.format)
         sabr_ump_runInitDiagnostics(ctx, segmentData, segment.mediaHeader, ctx.requestMetadata.format)
 
@@ -707,6 +740,11 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
             return invalid
         end if
     end if
+
+    if scanIndex >= 0 and GetInterface(ctx._segmentScan, "ifArray") <> invalid and scanIndex < ctx._segmentScan.count()
+        ctx._segmentScan[scanIndex].matched = true
+    end if
+    ctx._segmentMatched = true
 
     ctx._requestSatisfied = true
 
