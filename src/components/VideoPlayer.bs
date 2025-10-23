@@ -8,6 +8,7 @@ sub init()
     m.videoNode = m.top.findNode("videoNode")
     m.titleBackground = m.top.findNode("titleBackground")
     m.titleLabel = m.top.findNode("titleLabel")
+    m.top.focusable = true
 end sub
 
 function getVideoNodeRef() as object
@@ -37,6 +38,7 @@ sub setVideo(data as object)
 
     m.videoNode.content = content
     m.videoNode.control = "play"
+    m.videoNode.setFocus(true)
 
 end sub
 
