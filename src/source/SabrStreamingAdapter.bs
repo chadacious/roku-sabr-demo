@@ -2077,11 +2077,19 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
         }
 
         if cacheEntry?.path <> ""
+            playerTimeForDelivery = toInt(requestMetadataEntry?.playerTimeMs)
+            if playerTimeForDelivery = invalid or playerTimeForDelivery < 0
+                playerTimeForDelivery = toInt(playbackContext?.lastResolvedPlayerTimeMs)
+            end if
+            if playerTimeForDelivery = invalid or playerTimeForDelivery < 0
+                playerTimeForDelivery = toInt(playbackContext?.lastRequestedPlayerTimeMs)
+            end if
             sabrCacheMarkDeliveredByPath(cacheEntry.path, "cache-hit-response", {
                 contentType: contentType,
                 itag: currentFormat?.itag,
                 trackId: currentFormat?.audioTrackId,
-                playerTimeMs: requestMetadataEntry?.playerTimeMs
+                mediaIdHash: mediaIdHash,
+                playerTimeMs: playerTimeForDelivery
             })
         end if
 
@@ -2523,6 +2531,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                                 contentType: contentType,
                                                 itag: currentFormat?.itag,
                                                 trackId: currentFormat?.audioTrackId,
+                                                mediaIdHash: mediaIdHash,
                                                 playerTimeMs: playerTimeForStore
                                             })
                                         end if
