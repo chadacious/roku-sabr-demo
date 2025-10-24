@@ -1029,6 +1029,7 @@ end function
 sub ensureSabrInfrastructure()
     sabrCacheSetLogger(m.logs)
     sabrCacheEnsureBasePath()
+    sabrCacheRunMaintenance("")
     if not isValid(m.sabrRequestMetadataManager)
         m.sabrRequestMetadataManager = createSabrRequestMetadataManager()
     end if
@@ -2075,6 +2076,15 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
             }
         }
 
+        if cacheEntry?.path <> ""
+            sabrCacheMarkDeliveredByPath(cacheEntry.path, "cache-hit-response", {
+                contentType: contentType,
+                itag: currentFormat?.itag,
+                trackId: currentFormat?.audioTrackId,
+                playerTimeMs: requestMetadataEntry?.playerTimeMs
+            })
+        end if
+
         response = buildSabrResponseForPlayer(requestMetadataEntry, cachedResult, currentFormat, requestByteRange, contentType)
         prefetchInfo = buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
         maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
@@ -2324,6 +2334,7 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                     end if
 
                                     if cacheKey <> "" and isValid(segmentPayload) and segmentPayload.count() > 0 and isValid(response?.status) and response.status >= 200 and response.status < 300
+                                        storagePath = ""
                                         if not isInitSegmentRequest
                                             coverageMeta = createObject("roAssociativeArray")
                                             coverage = invalid
@@ -2507,6 +2518,14 @@ function sabrHandleRequest(request as object, contentType as string, mediaIdHash
                                             end if
                                         end if
                                         m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cached SABR response under key: ${cacheKey}`)
+                                        if deliveredSegment = true and storagePath <> ""
+                                            sabrCacheMarkDeliveredByPath(storagePath, "direct-response", {
+                                                contentType: contentType,
+                                                itag: currentFormat?.itag,
+                                                trackId: currentFormat?.audioTrackId,
+                                                playerTimeMs: playerTimeForStore
+                                            })
+                                        end if
                                     end if
 
                                     if isValid(metadataManager)
