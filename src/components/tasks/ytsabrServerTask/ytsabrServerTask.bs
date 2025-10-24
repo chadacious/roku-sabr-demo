@@ -117,7 +117,7 @@ function process_request(request as object, connection as object, port as object
     if request.path.inStr("/sabr/") > -1 then
         m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Intercepted SABR request: ${request.path}`)
 
-        mediaIdHash = extractMediaIdHash(request.path)
+        mediaIdHash = sabr_extractMediaIdHash(request.path)
         if mediaIdHash = invalid then
             m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Could not extract mediaIdHash from URL: ${request.path} on ${connection.getID()}`)
             status = send_http_reply(connection, "400", "text/plain", "Bad Request - could not extract mediaIdHash")
@@ -148,7 +148,7 @@ function process_request(request as object, connection as object, port as object
             m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         end if
         sabrResponse = invalid
-        sabrResponse = sabrHandleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
+        sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
 
         if isValid(sabrResponse)
             responseBody = sabrResponse.body

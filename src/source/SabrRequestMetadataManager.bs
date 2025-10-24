@@ -2,7 +2,7 @@
 
 import "pkg:/source/isItem.bs"
 
-function createSabrRequestMetadataManager() as object
+function sabr_createRequestMetadataManager() as object
     manager = {
         "entries": createObject("roAssociativeArray")
         "lastCleanup": sabr_metadata_timestamp()

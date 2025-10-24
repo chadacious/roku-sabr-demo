@@ -35,10 +35,10 @@ const UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY = 59
 const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
 ' Usage: call from SabrStreamingAdapter once you receive sabrUmpResponse bytes.
-'   processor = createSabrUmpProcessor(requestMetadata, logs)
+'   processor = sabr_ump_createProcessor(requestMetadata, logs)
 '   result = processor.processChunk(sabrUmpResponse)
 ' The processor keeps incremental state so you can feed additional chunks if needed.
-function createSabrUmpProcessor(requestMetadata as object, logs = invalid) as object
+function sabr_ump_createProcessor(requestMetadata as object, logs = invalid) as object
     processor = {
         "requestMetadata": requestMetadata
         "logs": logs
@@ -92,7 +92,7 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
         incoming = fileBytes
     end if
 
-    appendBytes(ctx._pendingBytes, incoming)
+    sabr_ump_appendBytes(ctx._pendingBytes, incoming)
 
     buffer = ctx._pendingBytes
     offset = 0
@@ -122,7 +122,7 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
             exit while
         end if
 
-        partData = sliceByteArray(buffer, offset, partSize)
+        partData = sabr_ump_sliceByteArray(buffer, offset, partSize)
         offset = offset + partSize
 
         part = {
@@ -151,7 +151,7 @@ function sabr_ump_finalizeChunkProcessing(ctx as object, buffer as object, offse
 
     leftover = totalLength - offset
     if leftover > 0
-        ctx._pendingBytes = sliceByteArray(buffer, offset, leftover)
+        ctx._pendingBytes = sabr_ump_sliceByteArray(buffer, offset, leftover)
     else
         ctx._pendingBytes = createObject("roByteArray")
     end if
@@ -471,8 +471,8 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
         sabr_ump_debugDumpPart(ctx, label, part.data, mediaHeader)
     end if
 
-    targetKey = formatToKey(ctx.requestMetadata?.format)
-    segmentKey = formatInitializationKey(mediaHeader)
+    targetKey = sabr_formatToKey(ctx.requestMetadata?.format)
+    segmentKey = sabr_ump_formatInitializationKey(mediaHeader)
     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Raw MediaHeader: ${FormatJson(mediaHeader)}`)
     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Evaluating media header; segmentKey='${segmentKey}' targetKey='${targetKey}' isSABR=${ctx.requestMetadata?.isSABR}`)
     sabr_ump_logPartDetails(ctx, "media_header", part.data, mediaHeader)
@@ -525,7 +525,7 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     if part.data.count() = 0 then return invalid
 
     headerId = part.data[0]
-    payload = sliceByteArray(part.data, 1, part.data.count() - 1)
+    payload = sabr_ump_sliceByteArray(part.data, 1, part.data.count() - 1)
     key = str(headerId)
 
     if ctx._partialSegments.doesExist(key)
@@ -572,7 +572,7 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
 
     segment = ctx._partialSegments.Lookup(key)
 
-    segmentData = concatenateChunks(segment.bufferedChunks)
+    segmentData = sabr_ump_concatenateChunks(segment.bufferedChunks)
     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Completed segment for header ${headerId}; chunks=${segment.bufferedChunks.count()} bytes=${segmentData.count()}`)
 
     headerStartVal = sabr_ump_toInt(segment.mediaHeader?.startRange)
@@ -692,7 +692,7 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
             initStore.sequenceNumber = startSeqVal
         end if
 
-        cacheResult = sabrCacheStoreSegment(initStore)
+        cacheResult = sabr_cacheStoreSegment(initStore)
         cachedInit = cacheResult?.path ?? ""
         if cachedInit <> "" and cachedInit.InStr("/") >= 0
             partsInit = cachedInit.Split("/")
@@ -834,7 +834,7 @@ sub sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segment
         end if
     end if
 
-    cacheResult = sabrCacheStoreSegment(storeOptions)
+    cacheResult = sabr_cacheStoreSegment(storeOptions)
     cachedName = cacheResult?.path ?? ""
     if cachedName <> "" and cachedName.InStr("/") >= 0
         nameParts = cachedName.Split("/")
@@ -980,7 +980,7 @@ function sabr_ump_inferVarintLength(firstByte as integer) as integer
     return 5
 end function
 
-function appendBytes(target as object, source as object) as void
+function sabr_ump_appendBytes(target as object, source as object) as void
     if not isValid(target) then return
     if not isValid(source) then return
 
@@ -992,7 +992,7 @@ function appendBytes(target as object, source as object) as void
     end for
 end function
 
-function sliceByteArray(buffer as object, startIndex as integer, length as integer) as object
+function sabr_ump_sliceByteArray(buffer as object, startIndex as integer, length as integer) as object
     result = createObject("roByteArray")
     if length <= 0 then return result
 
@@ -1013,12 +1013,12 @@ function sliceByteArray(buffer as object, startIndex as integer, length as integ
     return result
 end function
 
-function concatenateChunks(chunks as object) as object
+function sabr_ump_concatenateChunks(chunks as object) as object
     output = createObject("roByteArray")
     if not isValid(chunks) then return output
 
     for each chunk in chunks
-        appendBytes(output, chunk)
+        sabr_ump_appendBytes(output, chunk)
     end for
 
     return output
@@ -1121,7 +1121,7 @@ function sabr_ump_resolveInitClipRange(ctx as object) as dynamic
 
     if not isValid(startValue) or not isValid(endValue) then return invalid
 
-    formatKey = formatToKey(format)
+    formatKey = sabr_formatToKey(format)
     sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Using metadata init clip ${startValue}-${endValue} for format ${formatKey}`)
 
     return {
@@ -1132,7 +1132,7 @@ function sabr_ump_resolveInitClipRange(ctx as object) as dynamic
 end function
 
 function sabr_ump_fetchInitMetadata(ctx as object, format as object) as dynamic
-    formatKey = formatToKey(format)
+    formatKey = sabr_formatToKey(format)
     if formatKey = "" then return invalid
 
     if ctx._initMetadataByKey.doesExist(formatKey)
@@ -1155,7 +1155,7 @@ function sabr_ump_formatMetadataKey(metadata as object) as string
     formatId = metadata?.formatId
     if not isValid(formatId) then formatId = metadata?.format_id
     if not isValid(formatId) then return ""
-    return formatToKey({ "itag": formatId?.itag, "xtags": formatId?.xtags })
+    return sabr_formatToKey({ "itag": formatId?.itag, "xtags": formatId?.xtags })
 end function
 
 function sabr_ump_extractRange(range as dynamic) as dynamic
@@ -1251,7 +1251,7 @@ sub sabr_ump_uploadSingleFile(ctx as object, baseUrl as string, fullPath as stri
     formatRef = ctx.requestMetadata?.format
     formatKeyRaw = ""
     if isValid(formatRef)
-        formatKeyRaw = formatToKey(formatRef)
+        formatKeyRaw = sabr_formatToKey(formatRef)
     end if
     sanitizedFormat = sabr_ump_sanitizeForFilename(formatKeyRaw)
     if sanitizedFormat <> "" then suffixParts.push(`fmt-${sanitizedFormat}`)
@@ -1405,7 +1405,7 @@ sub sabr_ump_debugUploadByteArray(ctx as object, fileName as string, content as 
     if isText = true
         bytes.FromAsciiString(content)
     else
-        appendBytes(bytes, content)
+        sabr_ump_appendBytes(bytes, content)
     end if
     bytes.WriteFile(tmpPath)
     sabr_ump_uploadSingleFile(ctx, baseUrl, tmpPath, fileName)
@@ -1537,13 +1537,13 @@ sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as o
     cacheKey = sabr_ump_buildCacheKey(ctx, mediaHeader, invalid, invalid, true)
     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Init diagnostics: boxes=${FormatJson(types)} size=${bytes.count()} cacheKey=${cacheKey}`)
 
-    if not findInArray(types, "ftyp")
+    if not sabr_ump_findInArray(types, "ftyp")
         sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing ftyp box")
     end if
-    if not findInArray(types, "moov")
+    if not sabr_ump_findInArray(types, "moov")
         sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing moov box")
     end if
-    if not findInArray(types, "sidx")
+    if not sabr_ump_findInArray(types, "sidx")
         sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing sidx box")
     end if
 
@@ -1553,7 +1553,7 @@ sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as o
         end if
     end for
 
-    shouldAbort = (not findInArray(types, "ftyp")) or (not findInArray(types, "moov")) or (not findInArray(types, "sidx"))
+    shouldAbort = (not sabr_ump_findInArray(types, "ftyp")) or (not sabr_ump_findInArray(types, "moov")) or (not sabr_ump_findInArray(types, "sidx"))
     if shouldAbort
         sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: aborting due to malformed init segment")
         sabr_ump_dumpTmpFiles(ctx)
@@ -1860,7 +1860,7 @@ function sabr_ump_readFourCC(bytes as object, offset as integer) as string
     return result
 end function
 
-function findInArray(arr as object, value as string) as boolean
+function sabr_ump_findInArray(arr as object, value as string) as boolean
     if not isValid(arr) then return false
     for each item in arr
         if IsString(item)
@@ -1886,7 +1886,7 @@ function sabr_ump_toInt(value as dynamic) as dynamic
     return invalid
 end function
 
-function formatInitializationKey(mediaHeader as dynamic) as string
+function sabr_ump_formatInitializationKey(mediaHeader as dynamic) as string
     if not isValid(mediaHeader) then return ""
     parts = []
     if isValid(mediaHeader.itag) then parts.push(`${mediaHeader.itag}`)

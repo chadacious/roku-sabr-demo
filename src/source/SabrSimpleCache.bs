@@ -13,28 +13,28 @@ const SABR_CACHE_PENDING_RANGE_DISTANCE = 400000
 const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
 const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
 
-sub sabrCacheSetLogger(logs as dynamic)
-    m.sabrCacheLogger = logs
+sub sabr_cacheSetLogger(logs as dynamic)
+    m.sabr_cacheLogger = logs
 end sub
 
-function sabrCacheLogger() as dynamic
-    return m?.sabrCacheLogger
+function sabr_cacheLogger() as dynamic
+    return m?.sabr_cacheLogger
 end function
 
-sub sabrCacheLog(level as integer, message as string)
-    logs = sabrCacheLogger()
+sub sabr_cacheLog(level as integer, message as string)
+    logs = sabr_cacheLogger()
     if IsAssociativeArray(logs)
         logs.printl(level, message)
     end if
 end sub
 
-function sabrCacheCurrentTimestampMs() as integer
+function sabr_cacheCurrentTimestampMs() as integer
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function
 
-function sabrCacheNormalizeNumber(value as dynamic) as dynamic
+function sabr_cacheNormalizeNumber(value as dynamic) as dynamic
     if IsInteger(value)
         return value
     else if IsFloat(value) or IsDouble(value)
@@ -49,11 +49,11 @@ function sabrCacheNormalizeNumber(value as dynamic) as dynamic
     return invalid
 end function
 
-function sabrCacheEnsureBasePath() as string
+function sabr_cacheEnsureBasePath() as string
     fs = CreateObject("roFileSystem")
     if not fs.Exists(SABR_CACHE_BASE_DIR)
         success = fs.CreateDirectory(SABR_CACHE_BASE_DIR)
-        logObj = sabrCacheLogger()
+        logObj = sabr_cacheLogger()
         if success <> true and IsAssociativeArray(logObj)
             logObj.printl(log_level_Type.WARN, `[SabrCache] Failed to create cache directory ${SABR_CACHE_BASE_DIR}`)
         end if
@@ -61,7 +61,7 @@ function sabrCacheEnsureBasePath() as string
     return SABR_CACHE_BASE_DIR
 end function
 
-function sabrCacheSanitize(value as dynamic) as string
+function sabr_cacheSanitize(value as dynamic) as string
     if not isValid(value) then return ""
     str = ""
     if IsString(value)
@@ -88,16 +88,16 @@ function sabrCacheSanitize(value as dynamic) as string
     return result
 end function
 
-function sabrCacheMetadataTable() as object
-    table = m?.sabrCacheMetadataTable
+function sabr_cacheMetadataTable() as object
+    table = m?.sabr_cacheMetadataTable
     if not IsAssociativeArray(table)
         table = {}
-        m.sabrCacheMetadataTable = table
+        m.sabr_cacheMetadataTable = table
     end if
     return table
 end function
 
-sub sabrCacheRememberMetadata(fileName as string, metadata as object)
+sub sabr_cacheRememberMetadata(fileName as string, metadata as object)
     if not IsString(fileName) then return
     if fileName = "" then return
     if not IsAssociativeArray(metadata) then return
@@ -113,34 +113,34 @@ sub sabrCacheRememberMetadata(fileName as string, metadata as object)
             exit for
         end if
     end for
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     if not meaningful
         if table.DoesExist(fileName)
             table.Delete(fileName)
         end if
         return
     end if
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     table[fileName] = metadata
 end sub
 
-function sabrCacheLookupMetadata(fileName as string) as dynamic
+function sabr_cacheLookupMetadata(fileName as string) as dynamic
     if not IsString(fileName) then return invalid
     if fileName = "" then return invalid
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     if table.DoesExist(fileName)
         return table.Lookup(fileName)
     end if
     return invalid
 end function
 
-sub sabrCachePruneMetadata(activeNames as object)
+sub sabr_cachePruneMetadata(activeNames as object)
     if not IsArray(activeNames)
-        m.sabrCacheMetadataTable = {}
+        m.sabr_cacheMetadataTable = {}
         return
     end if
 
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     cleaned = {}
     for each name in activeNames
         if IsString(name) and name <> ""
@@ -149,10 +149,10 @@ sub sabrCachePruneMetadata(activeNames as object)
             end if
         end if
     end for
-    m.sabrCacheMetadataTable = cleaned
+    m.sabr_cacheMetadataTable = cleaned
 end sub
 
-function sabrCacheExtractFileName(path as string) as string
+function sabr_cacheExtractFileName(path as string) as string
     if not IsString(path) then return ""
     if path = "" then return ""
     parts = path.Split("/")
@@ -160,26 +160,26 @@ function sabrCacheExtractFileName(path as string) as string
     return parts[parts.count() - 1]
 end function
 
-function sabrCacheBuildFilename(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string, isInitSegment = false as boolean, rangeStart = invalid as dynamic, rangeEnd = invalid as dynamic) as string
+function sabr_cacheBuildFilename(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string, isInitSegment = false as boolean, rangeStart = invalid as dynamic, rangeEnd = invalid as dynamic) as string
     parts = []
-    parts.push(sabrCacheSanitize(mediaIdHash))
-    parts.push(sabrCacheSanitize(contentType))
-    parts.push(`itag${sabrCacheSanitize(itag)}`)
-    trackClean = sabrCacheSanitize(trackId)
+    parts.push(sabr_cacheSanitize(mediaIdHash))
+    parts.push(sabr_cacheSanitize(contentType))
+    parts.push(`itag${sabr_cacheSanitize(itag)}`)
+    trackClean = sabr_cacheSanitize(trackId)
     if trackClean <> "" then parts.push(`track${trackClean}`)
     if isInitSegment
         parts.push("init")
     else
         parts.push("seg")
-        parts.push(sabrCacheSanitize(rangeStart))
-        parts.push(sabrCacheSanitize(rangeEnd))
+        parts.push(sabr_cacheSanitize(rangeStart))
+        parts.push(sabr_cacheSanitize(rangeEnd))
     end if
     name = parts.Join("-") + ".bin"
-    base = sabrCacheEnsureBasePath()
+    base = sabr_cacheEnsureBasePath()
     return `${base}/${name}`
 end function
 
-function sabrCacheParseEntry(fileName as string) as object
+function sabr_cacheParseEntry(fileName as string) as object
     if Right(fileName, 4) <> ".bin" then return invalid
     core = Left(fileName, Len(fileName) - 4)
     parts = core.Split("-")
@@ -235,9 +235,9 @@ function sabrCacheParseEntry(fileName as string) as object
     end if
 
     entry["fileName"] = fileName
-    entry["path"] = `${sabrCacheEnsureBasePath()}/${fileName}`
+    entry["path"] = `${sabr_cacheEnsureBasePath()}/${fileName}`
 
-    extra = sabrCacheLookupMetadata(fileName)
+    extra = sabr_cacheLookupMetadata(fileName)
     if IsAssociativeArray(extra)
         if extra.DoesExist("startSegmentIndex") then entry["startSegmentIndex"] = extra.Lookup("startSegmentIndex")
         if extra.DoesExist("endSegmentIndex") then entry["endSegmentIndex"] = extra.Lookup("endSegmentIndex")
@@ -253,27 +253,27 @@ function sabrCacheParseEntry(fileName as string) as object
     return entry
 end function
 
-function sabrCacheListEntries(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string) as object
-    base = sabrCacheEnsureBasePath()
+function sabr_cacheListEntries(mediaIdHash as string, contentType as string, itag as dynamic, trackId = "" as string) as object
+    base = sabr_cacheEnsureBasePath()
     fs = CreateObject("roFileSystem")
     names = fs.GetDirectoryListing(base)
     results = []
     if not IsArray(names) then return results
 
-    sabrCachePruneMetadata(names)
+    sabr_cachePruneMetadata(names)
 
-    targetMedia = sabrCacheSanitize(mediaIdHash)
-    targetType = sabrCacheSanitize(contentType)
-    targetItag = sabrCacheSanitize(itag)
-    targetTrack = sabrCacheSanitize(trackId)
+    targetMedia = sabr_cacheSanitize(mediaIdHash)
+    targetType = sabr_cacheSanitize(contentType)
+    targetItag = sabr_cacheSanitize(itag)
+    targetTrack = sabr_cacheSanitize(trackId)
 
     for each name in names
-        entry = sabrCacheParseEntry(name)
+        entry = sabr_cacheParseEntry(name)
         if not IsAssociativeArray(entry) then continue for
-        entryMedia = sabrCacheSanitize(entry.mediaIdHash)
-        entryType = sabrCacheSanitize(entry.contentType)
-        entryItag = sabrCacheSanitize(entry.itag)
-        entryTrack = sabrCacheSanitize(entry.trackId)
+        entryMedia = sabr_cacheSanitize(entry.mediaIdHash)
+        entryType = sabr_cacheSanitize(entry.contentType)
+        entryItag = sabr_cacheSanitize(entry.itag)
+        entryTrack = sabr_cacheSanitize(entry.trackId)
         if entryMedia <> targetMedia then continue for
         if entryType <> targetType then continue for
         if entryItag <> targetItag then continue for
@@ -284,12 +284,12 @@ function sabrCacheListEntries(mediaIdHash as string, contentType as string, itag
     return results
 end function
 
-function sabrCacheStoreSegment(options as object) as object
+function sabr_cacheStoreSegment(options as object) as object
     if not IsAssociativeArray(options) then return invalid
     bytes = options?.bytes
     if GetInterface(bytes, "ifByteArray") = invalid then return invalid
 
-    path = sabrCacheBuildFilename(
+    path = sabr_cacheBuildFilename(
         options?.mediaIdHash,
         options?.contentType,
         options?.itag,
@@ -299,7 +299,7 @@ function sabrCacheStoreSegment(options as object) as object
         options?.rangeEnd
     )
 
-    base = sabrCacheEnsureBasePath()
+    base = sabr_cacheEnsureBasePath()
     fs = CreateObject("roFileSystem")
     if not fs.Exists(base)
         fs.CreateDirectory(base)
@@ -308,13 +308,13 @@ function sabrCacheStoreSegment(options as object) as object
     success = bytes.writeFile(path)
     if success <> true then return invalid
 
-    fileName = sabrCacheExtractFileName(path)
+    fileName = sabr_cacheExtractFileName(path)
     extra = {}
     if isValid(options?.contentType) then extra.contentType = options.contentType
     if isValid(options?.itag) then extra.itag = options.itag
     if isValid(options?.trackId) then extra.trackId = options.trackId
     if isValid(options?.mediaIdHash) then extra.mediaIdHash = options.mediaIdHash
-    nowMs = sabrCacheCurrentTimestampMs()
+    nowMs = sabr_cacheCurrentTimestampMs()
     if isValid(options?.startSegmentIndex)
         extra.startSegmentIndex = options.startSegmentIndex
     end if
@@ -351,16 +351,16 @@ function sabrCacheStoreSegment(options as object) as object
     extra.storedAtMs = nowMs
     extra.lastAccessMs = nowMs
     extra.delivered = false
-    sabrCacheRememberMetadata(fileName, extra)
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] stored file=${fileName} size=${bytes.count()} storedAt=${nowMs}`)
+    sabr_cacheRememberMetadata(fileName, extra)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] stored file=${fileName} size=${bytes.count()} storedAt=${nowMs}`)
 
     if IsString(options?.mediaIdHash) and options.mediaIdHash <> ""
         m.sabrCacheActiveMediaId = options.mediaIdHash
     end if
 
-    sabrCacheRunMaintenance(path)
+    sabr_cacheRunMaintenance(path)
 
-    sabrCacheLogSnapshot("store", path)
+    sabr_cacheLogSnapshot("store", path)
     return {
         "path": path
         "rangeStart": options?.rangeStart
@@ -368,9 +368,9 @@ function sabrCacheStoreSegment(options as object) as object
     }
 end function
 
-function sabrCacheLoadSegment(params as object) as object
+function sabr_cacheLoadSegment(params as object) as object
     if not IsAssociativeArray(params) then return invalid
-    entries = sabrCacheListEntries(params?.mediaIdHash, params?.contentType, params?.itag, params?.trackId ?? "")
+    entries = sabr_cacheListEntries(params?.mediaIdHash, params?.contentType, params?.itag, params?.trackId ?? "")
     if entries.count() = 0 then return invalid
 
     requestedStart = Val(params?.requestedStart)
@@ -435,7 +435,7 @@ function sabrCacheLoadSegment(params as object) as object
     bytes = CreateObject("roByteArray")
     if not bytes.readFile(best.path) then return invalid
 
-    sabrCacheRecordAccess(best)
+    sabr_cacheRecordAccess(best)
 
     coverageStart = best?.rangeStart
     coverageEnd = best?.rangeEnd
@@ -444,7 +444,7 @@ function sabrCacheLoadSegment(params as object) as object
         coverageEnd = bytes.count() - 1
     end if
 
-    sabrCacheLogSnapshot("load", best.path)
+    sabr_cacheLogSnapshot("load", best.path)
 
     result = invalid
 
@@ -501,53 +501,53 @@ function sabrCacheLoadSegment(params as object) as object
 
     if not IsAssociativeArray(result) then return invalid
 
-    sabrCacheMarkDelivered(best)
-    sabrCacheRunMaintenance(best.path)
+    sabr_cacheMarkDelivered(best)
+    sabr_cacheRunMaintenance(best.path)
     return result
 end function
 
-sub sabrCacheRecordAccess(entry as object)
+sub sabr_cacheRecordAccess(entry as object)
     if not IsAssociativeArray(entry) then return
     fileName = entry?.fileName
     if not IsString(fileName) or fileName = "" then return
 
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     metadata = table.Lookup(fileName)
     if not IsAssociativeArray(metadata)
         metadata = {}
     end if
 
-    timestamp = sabrCacheCurrentTimestampMs()
+    timestamp = sabr_cacheCurrentTimestampMs()
     metadata["lastAccessMs"] = timestamp
     if not metadata.DoesExist("storedAtMs") or not isValid(metadata.storedAtMs)
         fs = CreateObject("roFileSystem")
-        metadata["storedAtMs"] = Int(sabrCacheExtractModifiedTicks(fs, entry?.path))
+        metadata["storedAtMs"] = Int(sabr_cacheExtractModifiedTicks(fs, entry?.path))
     end if
     table[fileName] = metadata
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] access file=${fileName} lastAccessMs=${metadata.lastAccessMs}`)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] access file=${fileName} lastAccessMs=${metadata.lastAccessMs}`)
 end sub
 
-sub sabrCacheMarkDelivered(entry as object)
+sub sabr_cacheMarkDelivered(entry as object)
     if not IsAssociativeArray(entry) then return
     fileName = entry?.fileName
     if not IsString(fileName) or fileName = "" then return
 
-    table = sabrCacheMetadataTable()
+    table = sabr_cacheMetadataTable()
     metadata = table.Lookup(fileName)
     if not IsAssociativeArray(metadata)
         metadata = {}
     end if
 
-    timestamp = sabrCacheCurrentTimestampMs()
+    timestamp = sabr_cacheCurrentTimestampMs()
     metadata["delivered"] = true
     metadata["deliveredAtMs"] = timestamp
     metadata["lastAccessMs"] = timestamp
     if not metadata.DoesExist("storedAtMs") or not isValid(metadata.storedAtMs)
         fs = CreateObject("roFileSystem")
-        metadata["storedAtMs"] = Int(sabrCacheExtractModifiedTicks(fs, entry?.path))
+        metadata["storedAtMs"] = Int(sabr_cacheExtractModifiedTicks(fs, entry?.path))
     end if
     table[fileName] = metadata
-    sabrCacheUpdateDeliveryProgress(entry, metadata)
+    sabr_cacheUpdateDeliveryProgress(entry, metadata)
     mediaId = entry?.mediaIdHash
     if mediaId = invalid or mediaId = ""
         mediaId = metadata?.mediaIdHash
@@ -555,13 +555,13 @@ sub sabrCacheMarkDelivered(entry as object)
     if IsString(mediaId) and mediaId <> ""
         m.sabrCacheActiveMediaId = mediaId
     end if
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] delivered file=${fileName} deliveredAt=${metadata.deliveredAtMs}`)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] delivered file=${fileName} deliveredAt=${metadata.deliveredAtMs}`)
 end sub
 
-sub sabrCacheMarkDeliveredByPath(path as string, reason as string, extra = invalid as dynamic)
+sub sabr_cacheMarkDeliveredByPath(path as string, reason as string, extra = invalid as dynamic)
     if not IsString(path) or path = "" then return
-    fileName = sabrCacheExtractFileName(path)
-    entry = sabrCacheParseEntry(fileName)
+    fileName = sabr_cacheExtractFileName(path)
+    entry = sabr_cacheParseEntry(fileName)
     if not IsAssociativeArray(entry)
         entry = {
             "fileName": fileName
@@ -574,128 +574,128 @@ sub sabrCacheMarkDeliveredByPath(path as string, reason as string, extra = inval
         for each key in extra
             entry[key] = extra[key]
         end for
-        mediaHint = sabrCacheSanitize(extra?.mediaIdHash)
+        mediaHint = sabr_cacheSanitize(extra?.mediaIdHash)
         if mediaHint <> ""
             entry["mediaIdHash"] = mediaHint
             m.sabrCacheActiveMediaId = mediaHint
         end if
     end if
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] mark-delivered path=${fileName} reason=${reason}`)
-    sabrCacheMarkDelivered(entry)
-    sabrCacheRunMaintenance(path)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] mark-delivered path=${fileName} reason=${reason}`)
+    sabr_cacheMarkDelivered(entry)
+    sabr_cacheRunMaintenance(path)
 end sub
 
-function sabrCacheDeliveryProgress() as object
-    progress = m?.sabrCacheDeliveryProgress
+function sabr_cacheDeliveryProgress() as object
+    progress = m?.sabr_cacheDeliveryProgress
     if not IsAssociativeArray(progress)
         progress = {}
-        m.sabrCacheDeliveryProgress = progress
+        m.sabr_cacheDeliveryProgress = progress
     end if
     return progress
 end function
 
-function sabrCacheEnsureDeliveryProgressKey(contentType as dynamic, itag as dynamic, trackId as dynamic) as object
-    key = `${sabrCacheSanitize(contentType)}|${sabrCacheSanitize(itag)}|${sabrCacheSanitize(trackId)}`
+function sabr_cacheEnsureDeliveryProgressKey(contentType as dynamic, itag as dynamic, trackId as dynamic) as object
+    key = `${sabr_cacheSanitize(contentType)}|${sabr_cacheSanitize(itag)}|${sabr_cacheSanitize(trackId)}`
     if key = "||" then key = "unknown|none|main"
-    progress = sabrCacheDeliveryProgress()
+    progress = sabr_cacheDeliveryProgress()
     info = progress.Lookup(key)
     if not IsAssociativeArray(info)
         info = {}
         progress[key] = info
-        m.sabrCacheDeliveryProgress = progress
+        m.sabr_cacheDeliveryProgress = progress
     end if
     return info
 end function
 
-function sabrCacheBuildDeliveryKey(entry as object) as string
+function sabr_cacheBuildDeliveryKey(entry as object) as string
     if not IsAssociativeArray(entry) then return ""
-    typeKey = sabrCacheSanitize(entry?.contentType)
+    typeKey = sabr_cacheSanitize(entry?.contentType)
     if typeKey = "" then typeKey = "unknown"
-    itagKey = sabrCacheSanitize(entry?.itag)
+    itagKey = sabr_cacheSanitize(entry?.itag)
     if itagKey = "" then itagKey = "none"
-    trackKey = sabrCacheSanitize(entry?.trackId)
+    trackKey = sabr_cacheSanitize(entry?.trackId)
     if trackKey = "" then trackKey = "main"
     return `${typeKey}|${itagKey}|${trackKey}`
 end function
 
-function sabrCacheExtractSequence(entry as object, metadata as object) as dynamic
-    seqVal = sabrCacheNormalizeNumber(metadata?.sequenceNumber)
-    if seqVal = invalid then seqVal = sabrCacheNormalizeNumber(metadata?.startSegmentIndex)
+function sabr_cacheExtractSequence(entry as object, metadata as object) as dynamic
+    seqVal = sabr_cacheNormalizeNumber(metadata?.sequenceNumber)
+    if seqVal = invalid then seqVal = sabr_cacheNormalizeNumber(metadata?.startSegmentIndex)
     if seqVal = invalid and IsAssociativeArray(entry)
-        seqVal = sabrCacheNormalizeNumber(entry?.sequenceNumber)
-        if seqVal = invalid then seqVal = sabrCacheNormalizeNumber(entry?.startSegmentIndex)
+        seqVal = sabr_cacheNormalizeNumber(entry?.sequenceNumber)
+        if seqVal = invalid then seqVal = sabr_cacheNormalizeNumber(entry?.startSegmentIndex)
     end if
     return seqVal
 end function
 
-sub sabrCacheUpdateDeliveryProgress(entry as object, metadata as object)
-    progress = sabrCacheDeliveryProgress()
-    key = sabrCacheBuildDeliveryKey(entry)
+sub sabr_cacheUpdateDeliveryProgress(entry as object, metadata as object)
+    progress = sabr_cacheDeliveryProgress()
+    key = sabr_cacheBuildDeliveryKey(entry)
     if key = "" then return
-    info = sabrCacheEnsureDeliveryProgressKey(entry?.contentType, entry?.itag, entry?.trackId)
+    info = sabr_cacheEnsureDeliveryProgressKey(entry?.contentType, entry?.itag, entry?.trackId)
 
-    seqVal = sabrCacheExtractSequence(entry, metadata)
+    seqVal = sabr_cacheExtractSequence(entry, metadata)
     if seqVal <> invalid
-        lastSeq = sabrCacheNormalizeNumber(info?.lastSequence)
+        lastSeq = sabr_cacheNormalizeNumber(info?.lastSequence)
         if lastSeq = invalid or seqVal > lastSeq
             info.lastSequence = seqVal
         end if
     end if
 
-    rangeStart = sabrCacheNormalizeNumber(metadata?.rangeStart)
+    rangeStart = sabr_cacheNormalizeNumber(metadata?.rangeStart)
     if rangeStart = invalid and IsAssociativeArray(entry)
-        rangeStart = sabrCacheNormalizeNumber(entry?.rangeStart)
+        rangeStart = sabr_cacheNormalizeNumber(entry?.rangeStart)
     end if
     if rangeStart <> invalid
-        lastRange = sabrCacheNormalizeNumber(info?.lastRangeStart)
+        lastRange = sabr_cacheNormalizeNumber(info?.lastRangeStart)
         if lastRange = invalid or rangeStart > lastRange
             info.lastRangeStart = rangeStart
         end if
     end if
 
-    deliveredAt = sabrCacheNormalizeNumber(metadata?.deliveredAtMs)
+    deliveredAt = sabr_cacheNormalizeNumber(metadata?.deliveredAtMs)
     if deliveredAt = invalid
-        deliveredAt = sabrCacheCurrentTimestampMs()
+        deliveredAt = sabr_cacheCurrentTimestampMs()
     end if
     info.lastDeliveredAtMs = deliveredAt
-    info.updatedAtMs = sabrCacheCurrentTimestampMs()
+    info.updatedAtMs = sabr_cacheCurrentTimestampMs()
 
-    startTimeMs = sabrCacheNormalizeNumber(metadata?.startTimeMs)
+    startTimeMs = sabr_cacheNormalizeNumber(metadata?.startTimeMs)
     if startTimeMs = invalid and IsAssociativeArray(metadata?.timeRange)
-        ticks = sabrCacheNormalizeNumber(metadata.timeRange?.startTicks)
-        timescale = sabrCacheNormalizeNumber(metadata.timeRange?.timescale)
+        ticks = sabr_cacheNormalizeNumber(metadata.timeRange?.startTicks)
+        timescale = sabr_cacheNormalizeNumber(metadata.timeRange?.timescale)
         if ticks <> invalid and timescale <> invalid and timescale > 0
             startTimeMs = Int((ticks * 1000) / timescale)
         end if
     end if
     if startTimeMs = invalid and IsAssociativeArray(entry)
-        startTimeMs = sabrCacheNormalizeNumber(entry?.startTimeMs)
+        startTimeMs = sabr_cacheNormalizeNumber(entry?.startTimeMs)
     end if
     if startTimeMs <> invalid
         info.lastPlayerTimeMs = startTimeMs
     end if
 
     progress[key] = info
-    m.sabrCacheDeliveryProgress = progress
+    m.sabr_cacheDeliveryProgress = progress
 end sub
 
-function sabrCacheShouldDeferDeliveredRemoval(entry as object, metadata as object, nowMs as integer) as boolean
+function sabr_cacheShouldDeferDeliveredRemoval(entry as object, metadata as object, nowMs as integer) as boolean
     if not IsAssociativeArray(metadata) then return false
     if metadata?.delivered <> true then return false
 
-    deliveredAt = sabrCacheNormalizeNumber(metadata?.deliveredAtMs)
+    deliveredAt = sabr_cacheNormalizeNumber(metadata?.deliveredAtMs)
     if deliveredAt <> invalid and nowMs - deliveredAt < SABR_CACHE_DELIVERED_MIN_AGE_MS
         return true
     end if
 
-    key = sabrCacheBuildDeliveryKey(entry)
+    key = sabr_cacheBuildDeliveryKey(entry)
     if key = "" then return false
-    progress = sabrCacheDeliveryProgress()
+    progress = sabr_cacheDeliveryProgress()
     info = progress.Lookup(key)
     if not IsAssociativeArray(info) then return false
 
-    seqVal = sabrCacheExtractSequence(entry, metadata)
-    lastSeq = sabrCacheNormalizeNumber(info?.lastSequence)
+    seqVal = sabr_cacheExtractSequence(entry, metadata)
+    lastSeq = sabr_cacheNormalizeNumber(info?.lastSequence)
     if seqVal <> invalid and lastSeq <> invalid
         diffSeq = lastSeq - seqVal
         if diffSeq < SABR_CACHE_DELIVERED_SEQUENCE_GUARD
@@ -703,8 +703,8 @@ function sabrCacheShouldDeferDeliveredRemoval(entry as object, metadata as objec
         end if
     end if
 
-    rangeStart = sabrCacheNormalizeNumber(metadata?.rangeStart)
-    lastRange = sabrCacheNormalizeNumber(info?.lastRangeStart)
+    rangeStart = sabr_cacheNormalizeNumber(metadata?.rangeStart)
+    lastRange = sabr_cacheNormalizeNumber(info?.lastRangeStart)
     if rangeStart <> invalid and lastRange <> invalid
         diffRange = lastRange - rangeStart
         if diffRange >= 0 and diffRange < SABR_CACHE_DELIVERED_RANGE_GUARD
@@ -715,16 +715,16 @@ function sabrCacheShouldDeferDeliveredRemoval(entry as object, metadata as objec
     return false
 end function
 
-function sabrCacheShouldCullPending(entry as object, metadata as object) as boolean
+function sabr_cacheShouldCullPending(entry as object, metadata as object) as boolean
     if not IsAssociativeArray(metadata) then return false
-    key = sabrCacheBuildDeliveryKey(entry)
+    key = sabr_cacheBuildDeliveryKey(entry)
     if key = "" then return false
-    progress = sabrCacheDeliveryProgress()
+    progress = sabr_cacheDeliveryProgress()
     info = progress.Lookup(key)
     if not IsAssociativeArray(info) then return false
 
-    seqVal = sabrCacheExtractSequence(entry, metadata)
-    lastSeq = sabrCacheNormalizeNumber(info?.lastSequence)
+    seqVal = sabr_cacheExtractSequence(entry, metadata)
+    lastSeq = sabr_cacheNormalizeNumber(info?.lastSequence)
     if seqVal <> invalid and lastSeq <> invalid
         diffSeq = lastSeq - seqVal
         if diffSeq > SABR_CACHE_PENDING_SEQUENCE_DISTANCE
@@ -732,11 +732,11 @@ function sabrCacheShouldCullPending(entry as object, metadata as object) as bool
         end if
     end if
 
-    rangeStart = sabrCacheNormalizeNumber(metadata?.rangeStart)
+    rangeStart = sabr_cacheNormalizeNumber(metadata?.rangeStart)
     if rangeStart = invalid and IsAssociativeArray(entry)
-        rangeStart = sabrCacheNormalizeNumber(entry?.rangeStart)
+        rangeStart = sabr_cacheNormalizeNumber(entry?.rangeStart)
     end if
-    lastRange = sabrCacheNormalizeNumber(info?.lastRangeStart)
+    lastRange = sabr_cacheNormalizeNumber(info?.lastRangeStart)
     if rangeStart <> invalid and lastRange <> invalid
         diffRange = lastRange - rangeStart
         if diffRange > SABR_CACHE_PENDING_RANGE_DISTANCE
@@ -744,14 +744,14 @@ function sabrCacheShouldCullPending(entry as object, metadata as object) as bool
         end if
     end if
 
-    playerTimeMs = sabrCacheNormalizeNumber(metadata?.playerTimeMs)
+    playerTimeMs = sabr_cacheNormalizeNumber(metadata?.playerTimeMs)
     if playerTimeMs = invalid and not IsAssociativeArray(metadata?.startTimeMs)
-        playerTimeMs = sabrCacheNormalizeNumber(metadata?.startTimeMs)
+        playerTimeMs = sabr_cacheNormalizeNumber(metadata?.startTimeMs)
     end if
     if playerTimeMs = invalid and IsAssociativeArray(entry)
-        playerTimeMs = sabrCacheNormalizeNumber(entry?.startTimeMs)
+        playerTimeMs = sabr_cacheNormalizeNumber(entry?.startTimeMs)
     end if
-    lastPlayerMs = sabrCacheNormalizeNumber(info?.lastPlayerTimeMs)
+    lastPlayerMs = sabr_cacheNormalizeNumber(info?.lastPlayerTimeMs)
     if playerTimeMs <> invalid and lastPlayerMs <> invalid
         diffMs = lastPlayerMs - playerTimeMs
         if diffMs > SABR_CACHE_PENDING_PLAYER_TIME_MS
@@ -762,26 +762,26 @@ function sabrCacheShouldCullPending(entry as object, metadata as object) as bool
     return false
 end function
 
-sub sabrCacheRunMaintenance(activePath as string)
-    base = sabrCacheEnsureBasePath()
+sub sabr_cacheRunMaintenance(activePath as string)
+    base = sabr_cacheEnsureBasePath()
     fs = CreateObject("roFileSystem")
     names = fs.GetDirectoryListing(base)
     if not IsArray(names) then return
 
-    nowMs = sabrCacheCurrentTimestampMs()
-    table = sabrCacheMetadataTable()
+    nowMs = sabr_cacheCurrentTimestampMs()
+    table = sabr_cacheMetadataTable()
     removedAny = false
     removedCount = 0
     focusPath = ""
     remaining = []
     totalBytes = 0
 
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] maintenance start total=${names.count()} activePath=${activePath}`)
-    sabrCacheLogPendingEntries(table, base, "start")
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] maintenance start total=${names.count()} activePath=${activePath}`)
+    sabr_cacheLogPendingEntries(table, base, "start")
 
     for each name in names
         path = `${base}/${name}`
-        entryInfo = sabrCacheParseEntry(name)
+        entryInfo = sabr_cacheParseEntry(name)
         if not IsAssociativeArray(entryInfo)
             entryInfo = {
                 "fileName": name
@@ -809,12 +809,12 @@ sub sabrCacheRunMaintenance(activePath as string)
         table[name] = metadata
 
         delivered = metadata?.delivered = true
-        storedAtMs = sabrCacheNormalizeNumber(metadata?.storedAtMs)
-        deliveredAtMs = sabrCacheNormalizeNumber(metadata?.deliveredAtMs)
-        lastTouchMs = sabrCacheNormalizeNumber(metadata?.lastAccessMs)
+        storedAtMs = sabr_cacheNormalizeNumber(metadata?.storedAtMs)
+        deliveredAtMs = sabr_cacheNormalizeNumber(metadata?.deliveredAtMs)
+        lastTouchMs = sabr_cacheNormalizeNumber(metadata?.lastAccessMs)
 
         if storedAtMs = invalid or storedAtMs <= 0
-            storedAtMs = Int(sabrCacheExtractModifiedTicks(fs, path))
+            storedAtMs = Int(sabr_cacheExtractModifiedTicks(fs, path))
             metadata["storedAtMs"] = storedAtMs
             table[name] = metadata
         end if
@@ -831,14 +831,14 @@ sub sabrCacheRunMaintenance(activePath as string)
         shouldRemove = false
         removalReason = ""
         if delivered
-            if sabrCacheShouldDeferDeliveredRemoval(entryInfo, metadata, nowMs)
-                sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=recent-delivery`)
+            if sabr_cacheShouldDeferDeliveredRemoval(entryInfo, metadata, nowMs)
+                sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=recent-delivery`)
             else
                 shouldRemove = true
                 removalReason = "delivered"
             end if
         else
-            if sabrCacheShouldCullPending(entryInfo, metadata)
+            if sabr_cacheShouldCullPending(entryInfo, metadata)
                 shouldRemove = true
                 removalReason = "orphan-early"
             else
@@ -860,18 +860,18 @@ sub sabrCacheRunMaintenance(activePath as string)
 
         if shouldRemove and activePath <> "" and path = activePath and delivered = false
             shouldRemove = false
-            sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=active-request`)
+            sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=active-request`)
         end if
 
         if shouldRemove
-            focus = sabrCacheFinalizeRemoval(fs, base, table, entryInfo, metadata, removalReason)
+            focus = sabr_cacheFinalizeRemoval(fs, base, table, entryInfo, metadata, removalReason)
             if focus <> ""
                 removedAny = true
                 removedCount = removedCount + 1
                 focusPath = focus
             end if
         else
-            sizeVal = sabrCacheExtractSize(fs, path)
+            sizeVal = sabr_cacheExtractSize(fs, path)
             info = {
                 "entry": entryInfo,
                 "metadata": metadata,
@@ -893,13 +893,13 @@ sub sabrCacheRunMaintenance(activePath as string)
         end if
     end for
 
-    activeMedia = sabrCacheSanitize(m?.sabrCacheActiveMediaId)
+    activeMedia = sabr_cacheSanitize(m?.sabrCacheActiveMediaId)
     if activeMedia <> ""
         for idx = remaining.count() - 1 to 0 step -1
             info = remaining[idx]
-            entryMedia = sabrCacheSanitize(info.entry?.mediaIdHash)
+            entryMedia = sabr_cacheSanitize(info.entry?.mediaIdHash)
             if entryMedia <> "" and entryMedia <> activeMedia
-                focus = sabrCacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "foreign-media")
+                focus = sabr_cacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "foreign-media")
                 if focus <> ""
                     removedAny = true
                     removedCount = removedCount + 1
@@ -924,7 +924,7 @@ sub sabrCacheRunMaintenance(activePath as string)
                 end if
             end for
             info = remaining[oldestIdx]
-            focus = sabrCacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "quota")
+            focus = sabr_cacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "quota")
             if focus <> ""
                 removedAny = true
                 removedCount = removedCount + 1
@@ -937,23 +937,23 @@ sub sabrCacheRunMaintenance(activePath as string)
 
     if removedAny
         updated = fs.GetDirectoryListing(base)
-        sabrCachePruneMetadata(updated)
-        sabrCacheLogSnapshot("cleanup", focusPath)
+        sabr_cachePruneMetadata(updated)
+        sabr_cacheLogSnapshot("cleanup", focusPath)
         entriesCount = 0
         if IsArray(updated)
             entriesCount = updated.count()
         end if
-        sabrCacheLog(log_level_Type.INFO, `[SabrCache] maintenance removed=${removedCount} remaining=${entriesCount}`)
+        sabr_cacheLog(log_level_Type.INFO, `[SabrCache] maintenance removed=${removedCount} remaining=${entriesCount}`)
     else
-        sabrCacheLog(log_level_Type.DEBUG, "[SabrCache] maintenance removed=0")
+        sabr_cacheLog(log_level_Type.DEBUG, "[SabrCache] maintenance removed=0")
     end if
-    sabrCacheLogPendingEntries(table, base, "end")
+    sabr_cacheLogPendingEntries(table, base, "end")
 end sub
 
-sub sabrCacheLogPendingEntries(table as object, base as string, phase as string)
+sub sabr_cacheLogPendingEntries(table as object, base as string, phase as string)
     if not IsAssociativeArray(table) then return
 
-    nowMs = sabrCacheCurrentTimestampMs()
+    nowMs = sabr_cacheCurrentTimestampMs()
     pendingLabels = []
     deliveredLabels = []
 
@@ -977,9 +977,9 @@ sub sabrCacheLogPendingEntries(table as object, base as string, phase as string)
         lastMs = invalid
         deliveredMs = invalid
         if IsAssociativeArray(metadata)
-            storedMs = sabrCacheNormalizeNumber(metadata?.storedAtMs)
-            lastMs = sabrCacheNormalizeNumber(metadata?.lastAccessMs)
-            deliveredMs = sabrCacheNormalizeNumber(metadata?.deliveredAtMs)
+            storedMs = sabr_cacheNormalizeNumber(metadata?.storedAtMs)
+            lastMs = sabr_cacheNormalizeNumber(metadata?.lastAccessMs)
+            deliveredMs = sabr_cacheNormalizeNumber(metadata?.deliveredAtMs)
         end if
 
         ageStored = invalid
@@ -1014,18 +1014,18 @@ sub sabrCacheLogPendingEntries(table as object, base as string, phase as string)
         end if
     end for
 
-    labelPending = sabrCacheBuildSample(pendingLabels)
-    labelDelivered = sabrCacheBuildSample(deliveredLabels)
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] state phase=${phase} total=${total} pending=${pendingCount} delivered=${deliveredCount}`)
+    labelPending = sabr_cacheBuildSample(pendingLabels)
+    labelDelivered = sabr_cacheBuildSample(deliveredLabels)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] state phase=${phase} total=${total} pending=${pendingCount} delivered=${deliveredCount}`)
     if pendingCount > 0
-        sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] pending sample (${pendingLabels.count()} total) -> ${labelPending}`)
+        sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] pending sample (${pendingLabels.count()} total) -> ${labelPending}`)
     end if
     if deliveredCount > 0
-        sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] delivered sample (${deliveredLabels.count()} total) -> ${labelDelivered}`)
+        sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] delivered sample (${deliveredLabels.count()} total) -> ${labelDelivered}`)
     end if
 end sub
 
-function sabrCacheBuildSample(items as object) as string
+function sabr_cacheBuildSample(items as object) as string
     if not IsArray(items) then return ""
     maxItems = 10
     summary = ""
@@ -1047,14 +1047,14 @@ function sabrCacheBuildSample(items as object) as string
     return summary
 end function
 
-function sabrCacheFinalizeRemoval(fs as object, base as string, table as object, entry as object, metadata as object, reason as string) as string
+function sabr_cacheFinalizeRemoval(fs as object, base as string, table as object, entry as object, metadata as object, reason as string) as string
     if not IsAssociativeArray(entry) then return ""
     fileName = entry?.fileName
     path = entry?.path
     if not IsString(fileName) or fileName = "" then return ""
     if not IsString(reason) or reason = "" then reason = "unspecified"
 
-    sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] removing file=${fileName} reason=${reason}`)
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] removing file=${fileName} reason=${reason}`)
 
     success = true
     if GetInterface(fs, "ifFileSystem") <> invalid and IsString(path) and path <> ""
@@ -1085,16 +1085,16 @@ function sabrCacheFinalizeRemoval(fs as object, base as string, table as object,
                 idxCount = idxCount + 1
             end for
         end if
-        sabrCacheLog(log_level_Type.DEBUG, `[SabrCache] post-delete verification file=${fileName} exists=${confirmExists} sampleEntries=${listingLabel}`)
-        sabrCacheLogPendingEntries(table, base, "post-delete")
+        sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] post-delete verification file=${fileName} exists=${confirmExists} sampleEntries=${listingLabel}`)
+        sabr_cacheLogPendingEntries(table, base, "post-delete")
     else if success = false
-        sabrCacheLog(log_level_Type.WARN, `[SabrCache] failed to delete file=${fileName}`)
+        sabr_cacheLog(log_level_Type.WARN, `[SabrCache] failed to delete file=${fileName}`)
     end if
 
     return focus
 end function
 
-function sabrCacheExtractSize(fs as object, path as string) as integer
+function sabr_cacheExtractSize(fs as object, path as string) as integer
     if GetInterface(fs, "ifFileSystem") = invalid then return 0
     info = fs.Stat(path)
     if not IsAssociativeArray(info) then return 0
@@ -1112,7 +1112,7 @@ function sabrCacheExtractSize(fs as object, path as string) as integer
     return 0
 end function
 
-function sabrCacheExtractModifiedTicks(fs as object, path as string) as double
+function sabr_cacheExtractModifiedTicks(fs as object, path as string) as double
     if fs = invalid then return 0.0
     info = fs.Stat(path)
     if not IsAssociativeArray(info) then return 0.0
@@ -1139,11 +1139,11 @@ function sabrCacheExtractModifiedTicks(fs as object, path as string) as double
     return 0.0
 end function
 
-sub sabrCacheLogSnapshot(reason as string, focusPath as string)
-    logs = sabrCacheLogger()
+sub sabr_cacheLogSnapshot(reason as string, focusPath as string)
+    logs = sabr_cacheLogger()
     if not IsAssociativeArray(logs) then return
 
-    base = sabrCacheEnsureBasePath()
+    base = sabr_cacheEnsureBasePath()
     fs = CreateObject("roFileSystem")
     entries = fs.GetDirectoryListing(base)
     if not IsArray(entries) then return
@@ -1171,7 +1171,7 @@ sub sabrCacheLogSnapshot(reason as string, focusPath as string)
         bytes = CreateObject("roByteArray")
         sizeLabel = "?"
         if bytes.readFile(path)
-            sizeLabel = sabrCache_formatSize(bytes.count())
+            sizeLabel = sabr_cacheFormatSize(bytes.count())
         end if
         label = `${file}(${sizeLabel})`
         if summary = ""
@@ -1190,7 +1190,7 @@ sub sabrCacheLogSnapshot(reason as string, focusPath as string)
     logs.printl(log_level_Type.DEBUG, `[SabrCache] snapshot reason=${reason} focus=${focusLabel} -> ${summary}`)
 end sub
 
-function sabrCache_formatSize(sizeValue as dynamic) as string
+function sabr_cacheFormatSize(sizeValue as dynamic) as string
     sizeNum = 0
     if IsInteger(sizeValue) or IsFloat(sizeValue) or IsDouble(sizeValue)
         sizeNum = sizeValue
