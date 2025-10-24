@@ -50,7 +50,7 @@ sub loadFileToString(msg as object)
 
     m.logs.printl(log_level_Type.INFO, `[LOAD_FILE_TO_STRING] String cache write result: ${result.len()} bytes`)
 
-    sendUIMessage({ type: "FILE_LOADED_TO_STRING", fileData: result })
+    sendUIMessage({ "type": "FILE_LOADED_TO_STRING", "fileData": result })
 
 end sub
 
@@ -58,7 +58,7 @@ sub cacheStringToFile(msg as object)
     params = msg.getData()
     content = params.content
     path = params.path
-    result = { status: "error", message: "", uri: invalid }
+    result = { "status": "error", "message": "", "uri": invalid }
 
     m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] Starting string cache write: ${path}`)
 
@@ -83,14 +83,14 @@ sub cacheStringToFile(msg as object)
     end if
 
     if writeFile(path, content)
-        result.status = "ok"
-        result.uri = path
+        result["status"] = "ok"
+        result["uri"] = path
     else
-        result.message = `[cacheStringToFile] Failed to write string file: ${path}`
+        result["message"] = `[cacheStringToFile] Failed to write string file: ${path}`
     end if
 
     m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] String cache write result: ${FormatJson(result)}`)
 
-    sendUIMessage({ type: "CACHED_STRING_TO_FILE", result: result })
+    sendUIMessage({ "type": "CACHED_STRING_TO_FILE", "result": result })
 
 end sub

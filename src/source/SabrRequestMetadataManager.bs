@@ -1,11 +1,13 @@
 ' Tracks SABR request metadata keyed by request number (rn).
 
+import "pkg:/source/isItem.bs"
+
 function createSabrRequestMetadataManager() as object
     manager = {
-        entries: createObject("roAssociativeArray")
-        lastCleanup: sabr_metadata_timestamp()
-        entryMaxAgeMs: 3 * 60 * 1000
-        cleanupIntervalMs: 30 * 1000
+        "entries": createObject("roAssociativeArray")
+        "lastCleanup": sabr_metadata_timestamp()
+        "entryMaxAgeMs": 3 * 60 * 1000
+        "cleanupIntervalMs": 30 * 1000
     }
 
     manager.store = function(self as object, requestNumber as string, metadata as object) as void
@@ -26,14 +28,14 @@ sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as obje
     if not isValid(metadata) then return
 
     ctx.entries[requestNumber] = {
-        storedAt: sabr_metadata_timestamp()
-        data: metadata
+        "storedAt": sabr_metadata_timestamp()
+        "data": metadata
     }
 
     now = sabr_metadata_timestamp()
     if now - ctx.lastCleanup > ctx.cleanupIntervalMs
         sabr_metadata_cleanup(ctx)
-        ctx.lastCleanup = now
+        ctx["lastCleanup"] = now
     end if
 end sub
 
@@ -64,6 +66,6 @@ end sub
 
 function sabr_metadata_timestamp() as integer
     dt = CreateObject("roDateTime")
-    if GetInterface(dt, "ifDateTime") = invalid then return 0
+    if not IsDateTime(dt) then return 0
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function

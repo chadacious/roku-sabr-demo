@@ -1,13 +1,15 @@
+import "pkg:/source/isItem.bs"
+
 function create_new_request()
-    return { state: 0
-        headers: {}
-        method: ""
-        body_size: 0
-        search: {}
-        read_data: read_http
-        pathBytes: createobject("roByteArray")
-        buffer: createobject("roByteArray")
-        body: createobject("roByteArray")
+    return { "state": 0
+        "headers": {}
+        "method": ""
+        "body_size": 0
+        "search": {}
+        "read_data": read_http
+        "pathBytes": createobject("roByteArray")
+        "buffer": createobject("roByteArray")
+        "body": createobject("roByteArray")
     }
 end function
 
@@ -214,10 +216,11 @@ sub munge_search(request as object)
 end sub
 
 function parse_url(s as string)
-    url = { path: "/"
-        hostname: ""
-        port: 0
-    protocol: "" }
+    url = { "path": "/"
+        "hostname": ""
+        "port": 0
+        "protocol": ""
+    }
     bytes = createobject("roByteArray")
     bytes.fromAsciiString(s)
     state = 0
@@ -265,14 +268,6 @@ end function
 '4) Header name
 '5) Header value
 '6) Data
-
-' function list_concat_with_newlines(chunks as object)
-'     output = ""
-'     For Each chunk in chunks
-'         output = output + chunk + chr(10)
-'     end for
-'     return output
-' end function
 
 ' ***************************************************
 ' Handle building responses Below here
@@ -353,7 +348,7 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
         packet = `${packet}${key}: ${headers[key]}${chr(13)}${chr(10)}`
         ' end if
     next
-    if GetInterface(headers, "ifAssociativeArray") <> invalid
+    if IsAssociativeArray(headers)
         rangeHeader = headers.Lookup("Content-Range")
         if not isValid(rangeHeader) then rangeHeader = headers.Lookup("content-range")
         if not isValid(rangeHeader)
@@ -404,53 +399,6 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
     ' if isValid(port)
     '     loop_wait = 0
     '     while not connection.IsWritable() or connection.GetCountSendBuf() > 0
-    '         ' loggers.printl(log_level_Type.VERBOSE, `Connection: Waiting ${BUFFER_SLEEP.toStr()}ms to reduce buffer. Remaining: ${str(connection.GetCountSendBuf())} isWritable: ${connection.IsWritable()}`)
-    '         msg = wait(BUFFER_SLEEP, port) ' Use wait instead of sleep to process events
-    '         if msg <> invalid then
-    '             if type(msg) = "roSocketEvent" and msg.GetSocketID() = connection.GetID() then
-    '                 loggers.printl(log_level_Type.VERBOSE, `Processed socket event during wait: writable=${connection.IsWritable().toStr()} send buffer: ${str(connection.GetCountSendBuf())}`)
-    '             else
-    '                 ' Ignore or handle other messages if needed (e.g., new connections)
-    '             end if
-    '         end if
-    '         if loop_wait > BUFFER_LOOP_LIMIT then
-    '             exit while
-    '         end if
-    '         loop_wait++
-    '     end while
-    ' end if
-    ' end while
-    ' if isValid(port) then connection.NotifyWritable(false)
     loggers.printl(log_level_Type.INFO, `sent status: ${reply.Count()} - ${connection.GetCountSendBuf()}`)
     return reply.Count() - connection.GetCountSendBuf()
 end function
-
-' function send_http_redirect(connection as object, response_code_line as string, location as string)
-'     loggers = logger()
-'     reply = createobject("roByteArray")
-'     packet = "HTTP/1.1 " + response_code_line + chr(13) + chr(10)
-'     packet = packet + "Location: " + location + chr(13) + chr(10)
-'     loggers.printl(log_level_Type.INFO, "Preparing to HTTP reply with:" + chr(13) + chr(10) + packet)
-'     reply.fromAsciiString(packet + chr(13) + chr(10))
-'     loggers.printl(log_level_Type.INFO, "Entire response size: " + str(reply.count()))
-'     status = connection.send(reply, 0, reply.Count())
-'     loggers.printl(log_level_Type.INFO, "sent status: " + str(status))
-'     return status
-' end function
-
-' function send_http_post(connection as object, content_type as string, url as object, data as string)
-'     post = createobject("roByteArray")
-'     payload = createobject("roByteArray")
-'     packet = "POST " + url.path + " HTTP/1.1" + chr(13) + chr(10)
-'     packet = packet + "HOST " + url.hostname + chr(13) + chr(10) '  192.168.119.195:4012
-'     packet = packet + "Connection: keep-alive" + chr(13) + chr(10)
-'     packet = packet + "Content-Length: 2" + chr(13) + chr(10)
-'     packet = packet + "Content-Type: " + content_type + chr(13) + chr(10)
-'     packet = packet + "Accept: */*" + chr(13) + chr(10) + chr(13) + chr(10)
-'     print "preparing to send: "packet + data
-'     post.fromAsciiString(packet)
-'     payload.FromBase64String(data)
-'     post.append(payload)
-'     status = connection.send(post, 0, post.Count())
-'     return status
-' end function

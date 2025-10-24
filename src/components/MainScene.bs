@@ -14,7 +14,7 @@ sub init()
     m.utilsTask.control = "RUN"
     m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
 
-    m.videoConfig = { title: "Sample YouTube SABR Video", "playbackPositionMs": 0 }
+    m.videoConfig = { "title": "Sample YouTube SABR Video", "playbackPositionMs": 0 }
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
     loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
 
@@ -58,13 +58,13 @@ sub prepareManifest(manifest as string)
         m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected DASH manifest`)
     end if
 
-    manifest = extractPlaybackContext(m.top, m.videoPlayer.callFunc("getVideoNodeRef"), { manifest: manifest, manifestType: manifestType, mediaId: "sample-media-id", playbackPositionMs: 0 })
+    manifest = extractPlaybackContext(m.top, m.videoPlayer.callFunc("getVideoNodeRef"), { "manifest": manifest, "manifestType": manifestType, "mediaId": "sample-media-id", "playbackPositionMs": 0 })
 
     m.videoConfig["manifestPath"] = "tmp:/currentManifest.mpd"
     m.videoConfig["manifestType"] = manifestType
 
     ' store the manifest
-    m.utilsTask.CACHE_STRING_TO_FILE = { content: manifest, path: m.videoConfig.manifestPath }
+    m.utilsTask.CACHE_STRING_TO_FILE = { "content": manifest, "path": m.videoConfig.manifestPath }
 
 end sub
 
@@ -142,9 +142,9 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                             "hasAudioParts": hasAudioParts,
                         }
                         fileName = `tmp:/${mediaIdHash}/playbackContext.json`
-                        m.utilsTask.CACHE_STRING_TO_FILE = { content: playbackContext, path: fileName }
+                        m.utilsTask.CACHE_STRING_TO_FILE = { "content": playbackContext, "path": fileName }
                         fileName = `tmp:/${mediaIdHash}/sabrPayload.json`
-                        m.utilsTask.CACHE_STRING_TO_FILE = { content: jsonPayload, path: fileName }
+                        m.utilsTask.CACHE_STRING_TO_FILE = { "content": jsonPayload, "path": fileName }
                         m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Stored playbackContext to file: ${fileName}`)
                     else
                         m.logs.printl(log_level_Type.WARN, `[${TAG}] SDUIPlayer: Cannot store playbackContext as video mediaId is missing or invalid`)
@@ -197,5 +197,5 @@ function replaceSabrBaseUrlsByContentType(manifest as string, contentType as str
         end if
     end while
 
-    return { manifest: manifest, replaced: searchIndex > 0 }
+    return { "manifest": manifest, "replaced": searchIndex > 0 }
 end function
