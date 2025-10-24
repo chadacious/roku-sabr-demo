@@ -2234,7 +2234,34 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             end if
                             try
                                 sabrUmpProcessor = sabr_ump_createProcessor(requestMetadata, m.logs)
-                                umpResult = sabrUmpProcessor.processChunk(sabrUmpResponse)
+                                umpResult = invalid
+                                pendingResult = invalid
+                                bytesRemaining = sabrUmpResponse.count()
+                                chunkOffset = 0
+                                chunkSize = 32 * 1024
+                                if chunkSize <= 0 then chunkSize = bytesRemaining
+                                while chunkOffset < bytesRemaining
+                                    windowSize = chunkSize
+                                    if chunkOffset + windowSize > bytesRemaining
+                                        windowSize = bytesRemaining - chunkOffset
+                                    end if
+                                    chunk = sabr_ump_sliceByteArray(sabrUmpResponse, chunkOffset, windowSize)
+                                    chunkOffset = chunkOffset + windowSize
+                                    pendingResult = sabrUmpProcessor.processChunk(chunk)
+                                    if isValid(pendingResult) and pendingResult.done = true
+                                        umpResult = pendingResult
+                                        exit while
+                                    end if
+                                end while
+
+                                ' If loop finished without marking done, flush remainder to ensure final result.
+                                if not isValid(umpResult)
+                                    pendingResult = sabr_umpProcessor.processChunk(createObject("roByteArray"))
+                                    if isValid(pendingResult) and pendingResult.done = true
+                                        umpResult = pendingResult
+                                    end if
+                                end if
+
                                 segmentInfo = sabrUmpProcessor.getSegmentInfo()
                                 if sabrUmpProcessor.DoesExist("getSegmentScanSummary")
                                     segmentScanSummary = sabrUmpProcessor.getSegmentScanSummary()

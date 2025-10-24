@@ -16,10 +16,17 @@ sub init()
     m.logs.printl(log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
     m.sabrPayloads = {}
     m.contentType = invalid
+    m.fetchWorker = invalid
+    m.fetchWorkerObserved = false
+    m.fetchPending = {}
+    m.connectionFetchMap = {}
+    m.fetchSequence = 0
+    m.port = invalid
 end sub
 
 sub YtsabrServer()
     port = CreateObject("roMessagePort")
+    m.port = port
     tcp = createobject("roStreamSocket")
     tcp.setMessagePort(port)
     tcp_bind_addr = CreateObject("roSocketAddress")
@@ -35,10 +42,31 @@ sub YtsabrServer()
     end if
     m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] address is ${tcp_bind_addr.getAddress()}`)
 
+    ensureFetchWorker(port)
+
     while(true)
-        msg = wait(0, port)
+        handledResponse = false
+        msg = invalid
+
+        if m.fetchWorker <> invalid
+            pendingResponse = m.fetchWorker.fetchResponse
+            if IsAssociativeArray(pendingResponse)
+                processFetchResponse(pendingResponse)
+                m.fetchWorker.fetchResponse = invalid
+                handledResponse = true
+            end if
+        end if
+
+        if handledResponse = false
+            msg = wait(10, port)
+            if msg = invalid then
+                continue while
+            end if
+        end if
+        if handledResponse = true
+            continue while
+        end if
         msgType = type(msg)
-        ' if msgType <> "Invalid" then m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] got something ${msgType}`)
         if msgType = "roSocketEvent"
             try
                 if msg.getSocketID() = tcp.getID()
@@ -61,6 +89,7 @@ sub YtsabrServer()
                             ' What a terrible way to indicate it
                             m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
                             connection.close()
+                            cancelPendingFetchForConnection(connection)
                             m.sockets[Stri(msg.getSocketID())] = invalid
                         else
                             'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
@@ -75,6 +104,8 @@ sub YtsabrServer()
                 m.logs.printl(log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling")
                 m.logs.printl(log_level_Type.WARN, FormatJson(e))
             end try
+        else if msgType = "roSGNodeEvent"
+            handleNodeEvent(msg)
         end if
     end while
 end sub
@@ -147,34 +178,37 @@ function process_request(request as object, connection as object, port as object
             sabrPayload = m.sabrPayloads[mediaIdHash]
             m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         end if
-        sabrResponse = invalid
-        sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
-
-        if isValid(sabrResponse)
-            responseBody = sabrResponse.body
-            if not isValid(responseBody)
-                responseBody = CreateObject("roByteArray")
-            end if
-            responseHeaders = sabrResponse.headers
-            if not isValid(responseHeaders)
-                responseHeaders = CreateObject("roAssociativeArray")
-            end if
-            statusCode = sabrResponse.status
-            if not isValid(statusCode)
-                statusCode = 204
-            end if
-            if responseHeaders.DoesExist("Content-Length") = false
-                responseHeaders["Content-Length"] = responseBody.count().toStr()
-            end if
-            if responseHeaders.DoesExist("Content-Type") = false
-                responseHeaders["Content-Type"] = "text/plain"
-            end if
-            if responseHeaders.DoesExist("Connection") = false
-                responseHeaders["Connection"] = "close"
-            end if
-            status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody)
+        if enqueueFetchRequest(request, connection, mediaIdHash, sabrPayload)
+            status = "ASYNC"
         else
-            status = send_http_reply(connection, "204", "text/plain", "")
+            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
+
+            if isValid(sabrResponse)
+                responseBody = sabrResponse.body
+                if not isValid(responseBody)
+                    responseBody = CreateObject("roByteArray")
+                end if
+                responseHeaders = sabrResponse.headers
+                if not isValid(responseHeaders)
+                    responseHeaders = CreateObject("roAssociativeArray")
+                end if
+                statusCode = sabrResponse.status
+                if not isValid(statusCode)
+                    statusCode = 204
+                end if
+                if responseHeaders.DoesExist("Content-Length") = false
+                    responseHeaders["Content-Length"] = responseBody.count().toStr()
+                end if
+                if responseHeaders.DoesExist("Content-Type") = false
+                    responseHeaders["Content-Type"] = "text/plain"
+                end if
+                if responseHeaders.DoesExist("Connection") = false
+                    responseHeaders["Connection"] = "close"
+                end if
+                status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody)
+            else
+                status = send_http_reply(connection, "204", "text/plain", "")
+            end if
         end if
     else
         m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`)
@@ -183,3 +217,261 @@ function process_request(request as object, connection as object, port as object
     m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Status: ${status}`)
     return false ' false = Keep-alive
 end function
+
+sub ensureFetchWorker(port as object)
+    if m.fetchWorker = invalid
+        m.fetchWorker = CreateObject("roSGNode", "sabrFetchWorkerTask")
+        if m.fetchWorker <> invalid
+            m.fetchWorker.id = `sabrFetchWorker-${m.contentType}`
+            m.fetchWorker.contentType = m.top.contentType
+            if isValid(m.top.utilsTask) then m.fetchWorker.utilsTask = m.top.utilsTask
+            if isValid(m.top.videoNode) then m.fetchWorker.videoNode = m.top.videoNode
+            if isValid(m.top.debugUploadUrl) then m.fetchWorker.debugUploadUrl = m.top.debugUploadUrl
+            m.fetchWorker.requestQueue = []
+            m.fetchWorker.fetchResponse = invalid
+            if not m.fetchWorkerObserved
+                m.fetchWorker.observeField("fetchResponse", port)
+                m.fetchWorkerObserved = true
+            end if
+            m.fetchWorker.control = "RUN"
+        end if
+    else
+        if m.fetchWorker.id = invalid or m.fetchWorker.id = ""
+            m.fetchWorker.id = `sabrFetchWorker-${m.contentType}`
+        end if
+        if isValid(m.top.utilsTask) and m.fetchWorker.utilsTask = invalid
+            m.fetchWorker.utilsTask = m.top.utilsTask
+        end if
+        if isValid(m.top.videoNode) and m.fetchWorker.videoNode = invalid
+            m.fetchWorker.videoNode = m.top.videoNode
+        end if
+        if isValid(m.top.debugUploadUrl) and m.fetchWorker.debugUploadUrl <> m.top.debugUploadUrl
+            m.fetchWorker.debugUploadUrl = m.top.debugUploadUrl
+        end if
+        if not m.fetchWorkerObserved
+            m.fetchWorker.observeField("fetchResponse", port)
+            m.fetchWorkerObserved = true
+        end if
+    end if
+end sub
+
+function enqueueFetchRequest(request as object, connection as object, mediaIdHash as string, sabrPayload as object) as boolean
+    ensureFetchWorker(m.port)
+    if m.fetchWorker = invalid then return false
+    if connection = invalid then return false
+
+    fetchId = m.fetchSequence + 1
+    m.fetchSequence = fetchId
+
+    requestPayload = serializeRequestForWorker(request)
+    if not IsAssociativeArray(requestPayload) then return false
+
+    entry = {
+        "connection": connection
+        "request": requestPayload
+        "mediaIdHash": mediaIdHash
+    }
+    key = Stri(fetchId)
+    m.fetchPending[key] = entry
+    connKey = Stri(connection.getID())
+    m.connectionFetchMap[connKey] = fetchId
+
+    payload = {
+        "fetchId": fetchId
+        "request": requestPayload
+        "mediaIdHash": mediaIdHash
+        "sabrPayload": sabrPayload
+        "contentType": m.contentType
+        "debugUploadUrl": m.top.debugUploadUrl
+    }
+
+    queuePayload = []
+    existingQueue = m.fetchWorker.requestQueue
+    if IsArray(existingQueue)
+        for each item in existingQueue
+            queuePayload.push(item)
+        end for
+    end if
+    queuePayload.push(payload)
+    m.fetchWorker.requestQueue = queuePayload
+    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Dispatched fetch ${fetchId} for ${mediaIdHash}`)
+    return true
+end function
+
+function serializeRequestForWorker(request as object) as object
+    if not IsAssociativeArray(request) then return invalid
+
+    headers = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(request.headers)
+        for each headerKey in request.headers
+            headers[headerKey] = request.headers[headerKey]
+        end for
+    end if
+
+    searchParams = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(request.search)
+        for each paramKey in request.search
+            searchParams[paramKey] = request.search[paramKey]
+        end for
+    end if
+
+    payload = {
+        "path": request.path
+        "method": request.method
+        "headers": headers
+        "search": searchParams
+        "bodySize": request.body_size
+        "b64Body": request.b64Body
+    }
+    return payload
+end function
+
+sub handleNodeEvent(msg as object)
+    node = msg.GetNode()
+    if node = invalid then return
+
+    nodeMatches = false
+    nodeType = Type(node)
+    if nodeType = "roSGNode"
+        nodeMatches = (node = m.fetchWorker)
+    else if nodeType = "roString"
+        nodeMatches = (LCase(node) = LCase(m.fetchWorker.id))
+    end if
+
+    if nodeMatches = false then return
+
+    field = msg.GetField()
+    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Node event ${field} (${nodeType}) from fetch worker`)
+    if field = "fetchResponse"
+        responsePayload = m.fetchWorker.fetchResponse
+        if IsAssociativeArray(responsePayload)
+            processFetchResponse(responsePayload)
+        end if
+        m.fetchWorker.fetchResponse = invalid
+    end if
+end sub
+
+sub processFetchResponse(responsePayload as object)
+    fetchId = responsePayload?.fetchId
+    key = Stri(fetchId)
+    pending = m.fetchPending.Lookup(key)
+    if pending = invalid
+        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Received response for unknown fetch ${fetchId}`)
+        return
+    end if
+
+    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Processing fetch response ${fetchId}`)
+
+    connection = pending.connection
+    if connection = invalid
+        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Connection missing for fetch ${fetchId}`)
+        cleanupFetch(fetchId, pending)
+        return
+    end if
+
+    errorInfo = responsePayload?.error
+    status = invalid
+
+    if isValid(errorInfo)
+        message = errorInfo?.message ?? "SABR request failed"
+        status = send_http_reply(connection, "500", "text/plain", message)
+    else
+        responseInfo = responsePayload?.response
+        if isValid(responseInfo)
+            body = invalid
+            bodyPath = responseInfo?.bodyPath
+            responseHeaders = responseInfo?.headers
+            if not IsAssociativeArray(responseHeaders)
+                responseHeaders = CreateObject("roAssociativeArray")
+            end if
+            statusCode = responseInfo?.status
+            if IsString(statusCode)
+                statusCode = Val(statusCode)
+            else if not IsInteger(statusCode)
+                statusCode = 204
+            end if
+
+            responseError = responseInfo?.error
+            if isValid(responseError)
+                errorMessage = responseError?.message ?? "Internal worker error"
+                status = send_http_reply(connection, "500", "text/plain", errorMessage)
+                cleanupFetch(fetchId, pending)
+                return
+            end if
+
+            if isValid(bodyPath) and bodyPath <> ""
+                ba = CreateObject("roByteArray")
+                if ba.readFile(bodyPath)
+                    body = ba
+                else
+                    m.logs.printl(log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] Failed to read body file ${bodyPath}`)
+                end if
+            end if
+
+            if body = invalid
+                fallbackBody = responseInfo?.body
+                if GetInterface(fallbackBody, "ifByteArray") <> invalid
+                    body = fallbackBody
+                end if
+            end if
+
+            if body = invalid
+                body = CreateObject("roByteArray")
+            end if
+
+            if responseHeaders.DoesExist("Content-Length") = false
+                responseHeaders["Content-Length"] = body.count().toStr()
+            end if
+            if responseHeaders.DoesExist("Content-Type") = false
+                responseHeaders["Content-Type"] = "text/plain"
+            end if
+            if responseHeaders.DoesExist("Connection") = false
+                responseHeaders["Connection"] = "close"
+            end if
+
+            status = send_http_reply_raw(connection, statusCode, responseHeaders, body)
+
+            if isValid(bodyPath) and bodyPath <> ""
+                fs = CreateObject("roFileSystem")
+                if fs <> invalid and fs.Exists(bodyPath)
+                    fs.Delete(bodyPath)
+                end if
+            end if
+        else
+            status = send_http_reply(connection, "204", "text/plain", "")
+        end if
+    end if
+
+    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Completed fetch ${fetchId} with status ${status}`)
+    cleanupFetch(fetchId, pending)
+end sub
+
+sub cleanupFetch(fetchId as integer, pending as object)
+    key = Stri(fetchId)
+    if m.fetchPending.DoesExist(key)
+        m.fetchPending.Delete(key)
+    end if
+
+    connection = pending?.connection
+    if connection <> invalid
+        connKey = Stri(connection.getID())
+        if m.connectionFetchMap.DoesExist(connKey)
+            m.connectionFetchMap.Delete(connKey)
+        end if
+        connection.close()
+        m.sockets[connKey] = invalid
+    end if
+end sub
+
+sub cancelPendingFetchForConnection(connection as object)
+    if connection = invalid then return
+    connKey = Stri(connection.getID())
+    if not m.connectionFetchMap.DoesExist(connKey) then return
+    fetchId = m.connectionFetchMap.Lookup(connKey)
+    key = Stri(fetchId)
+    if m.fetchPending.DoesExist(key)
+        m.fetchPending.Delete(key)
+    end if
+    m.connectionFetchMap.Delete(connKey)
+    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Cancelled pending fetch ${fetchId} for closed connection ${connKey}`)
+end sub

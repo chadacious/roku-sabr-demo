@@ -1,0 +1,219 @@
+import "pkg:/source/logger.bs"
+import "pkg:/source/SabrStreamingAdapter.bs"
+
+sub init()
+    m.logs = logger()
+    m.port = CreateObject("roMessagePort")
+    m.queue = []
+    m.top.functionName = "processRequests"
+    m.top.observeField("requestQueue", m.port)
+    m.top.requestQueue = []
+    m.top.fetchResponse = invalid
+    m.logs.printl(log_level_Type.INFO, "[SabrFetchWorker] Initialized fetch worker task")
+end sub
+
+sub processRequests()
+    while true
+        if m.queue.count() = 0
+            msg = wait(0, m.port)
+            if type(msg) = "roSGNodeEvent"
+                field = msg.GetField()
+                if field = "requestQueue"
+                    enqueuePendingRequests()
+                end if
+            end if
+        end if
+
+        if m.queue.count() > 0
+            requestInfo = m.queue.shift()
+            if isValid(requestInfo)
+                handleFetch(requestInfo)
+            end if
+        end if
+    end while
+end sub
+
+sub enqueuePendingRequests()
+    pending = m.top.requestQueue
+    if not IsArray(pending) or pending.count() = 0 then return
+
+    for each entry in pending
+        if isValid(entry)
+            m.queue.push(entry)
+        end if
+    end for
+
+    ' Clear the queue field so subsequent writes trigger a new event.
+    m.top.requestQueue = []
+end sub
+
+sub handleFetch(entry as object)
+    fetchId = entry?.fetchId
+    contentType = entry?.contentType
+    if not isValid(contentType) or contentType = ""
+        contentType = m.top.contentType
+    end if
+
+    responsePayload = {
+        "fetchId": fetchId
+        "contentType": contentType
+        "mediaIdHash": entry?.mediaIdHash
+    }
+
+    if not isValid(fetchId)
+        responsePayload["error"] = {
+            "message": "Invalid fetch request id"
+        }
+        publishResponse(responsePayload)
+        return
+    end if
+
+    requestData = entry?.request
+    sabrPayload = entry?.sabrPayload
+    if not IsAssociativeArray(requestData) or not IsAssociativeArray(sabrPayload)
+        responsePayload["error"] = {
+            "message": "Malformed fetch request payload"
+        }
+        publishResponse(responsePayload)
+        return
+    end if
+
+    result = invalid
+    errorInfo = invalid
+    responseInfo = invalid
+
+    try
+        requestEnvelope = buildRequestForAdapter(requestData)
+        if not IsAssociativeArray(requestEnvelope)
+            errorInfo = {
+                "message": "Unable to rehydrate request for SABR adapter"
+            }
+        else
+            if not isValid(m.top.utilsTask)
+                errorInfo = {
+                    "message": "Fetch worker missing utilsTask reference"
+                }
+            else if not isValid(m.top.videoNode)
+                errorInfo = {
+                    "message": "Fetch worker missing videoNode reference"
+                }
+            else
+                ' Ensure adapter sees the latest debug upload URL and content type overrides.
+                if isValid(entry?.debugUploadUrl) and entry.debugUploadUrl <> ""
+                    m.top.debugUploadUrl = entry.debugUploadUrl
+                end if
+
+                result = sabr_handleRequest(
+                    requestEnvelope,
+                    contentType,
+                    entry?.mediaIdHash,
+                    sabrPayload,
+                    m.top.videoNode
+                )
+                responseInfo = buildWorkerResponsePayload(result, entry, fetchId, contentType)
+            end if
+        end if
+    catch e
+        errorInfo = {
+            "message": e?.message ?? "SABR fetch worker encountered an exception"
+            "details": FormatJson(e)
+        }
+    end try
+
+    if isValid(errorInfo)
+        responsePayload["error"] = errorInfo
+    else
+        responsePayload["response"] = responseInfo
+    end if
+
+    publishResponse(responsePayload)
+end sub
+
+function buildWorkerResponsePayload(result as object, entry as object, fetchId as integer, contentType as string) as object
+    responseInfo = {
+        "status": result?.status
+        "headers": result?.headers
+        "bodyLength": 0
+        "bodyPath": ""
+        "contentType": contentType
+    }
+
+    body = result?.body
+    bodyInterface = GetInterface(body, "ifByteArray")
+    bodyCount = 0
+    if bodyInterface <> invalid
+        bodyCount = body.count()
+    end if
+    responseInfo["bodyLength"] = bodyCount
+
+    if bodyInterface <> invalid and bodyCount > 0
+        tmpPath = buildWorkerBodyPath(entry, fetchId, contentType)
+        if tmpPath <> ""
+            if body.writeFile(tmpPath)
+                responseInfo["bodyPath"] = tmpPath
+            else
+                responseInfo["error"] = {
+                    "message": "Failed to persist response body to tmp file"
+                    "path": tmpPath
+                }
+            end if
+        end if
+    end if
+
+    if responseInfo["headers"] = invalid
+        responseInfo["headers"] = {}
+    end if
+
+    return responseInfo
+end function
+
+function buildWorkerBodyPath(entry as object, fetchId as integer, contentType as string) as string
+    mediaIdHash = entry?.mediaIdHash
+    if not IsString(mediaIdHash) or mediaIdHash = ""
+        mediaIdHash = "unknown"
+    end if
+    sanitizedHash = mediaIdHash
+    dirPath = `tmp:/${sanitizedHash}`
+    fs = CreateObject("roFileSystem")
+    if fs = invalid then return ""
+    if not fs.Exists(dirPath)
+        fs.CreateDirectory(dirPath)
+    end if
+    fileName = `worker-${LCase(contentType)}-${fetchId}.bin`
+    return `${dirPath}/${fileName}`
+end function
+
+function buildRequestForAdapter(data as object) as object
+    requestObj = {
+        "path": data?.path
+        "method": data?.method
+        "headers": CreateObject("roAssociativeArray")
+        "search": CreateObject("roAssociativeArray")
+        "body_size": data?.bodySize
+        "b64Body": data?.b64Body
+    }
+
+    headers = data?.headers
+    if IsAssociativeArray(headers)
+        for each key in headers
+            requestObj.headers[key] = headers[key]
+        end for
+    end if
+
+    searchParams = data?.search
+    if IsAssociativeArray(searchParams)
+        for each key in searchParams
+            requestObj.search[key] = searchParams[key]
+        end for
+    end if
+
+    return requestObj
+end function
+
+sub publishResponse(responsePayload as object)
+    ' Assign a fresh associative array to trigger field observers.
+    if not IsAssociativeArray(responsePayload)
+        responsePayload = { "error": { "message": "Unexpected response payload type" } }
+    end if
+    m.top.fetchResponse = responsePayload
+end sub
