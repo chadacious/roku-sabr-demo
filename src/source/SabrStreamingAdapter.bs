@@ -1857,6 +1857,11 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     sabrAbrUrl = ""
     playbackContext = invalid
     response = invalid
+    requestTimer = invalid
+    requestLogTag = `[YTSABR-${contentType}]`
+    if isValid(m?.logs)
+        requestTimer = m.logs.mark()
+    end if
 
     ' load the playbackContext.json file from tmp:/${mediaIdHash}/playbackContext.json
     fileContent = getFile(`tmp:/${mediaIdHash}/playbackContext.json`)
@@ -2130,6 +2135,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         protoBytes = invalid
         protoFilePath = ""
         responseFilePath = ""
+        encodeTimer = invalid
+        if isValid(m?.logs)
+            encodeTimer = m.logs.mark()
+        end if
         try
             m.logs.printl(log_level_Type.INFO, `${requestLogTag} Encoding SABR proto for itag: ${currentFormat.itag}`)
             ' m.logs.printl(log_level_Type.VERBOSE, FormatJson(sabrRequestJson))
@@ -2157,6 +2166,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             ok = false
             m.logs.printl(log_level_Type.WARN, `${requestLogTag} Error encoding SABR proto: ${e.message}`)
         end try
+        if encodeTimer <> invalid
+            m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Proto encode duration`, encodeTimer, -1)
+        end if
 
         ' prepare the SABR request now
         if ok and IsValid(protoBytes)
@@ -2177,7 +2189,14 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 }
 
                 m.logs.printl(log_level_Type.INFO, `[RELAY] Performing proxied request to: ${FormatJson(sabrAbrUrl)}`)
+                requestSpan = invalid
+                if isValid(m?.logs)
+                    requestSpan = m.logs.mark()
+                end if
                 res = makeRequest(sabrRequest)
+                if requestSpan <> invalid
+                    m.logs.printTime(log_level_Type.INFO, `${requestLogTag} SABR proxy round-trip`, requestSpan, -1)
+                end if
                 if not isValid(res?.status) 
                     ok = false
                     m.logs.printl(log_level_Type.WARN, `${requestLogTag} No response status from SABR UMP request`)
@@ -2209,6 +2228,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             segmentInfo = invalid
                             umpResult = invalid
                             segmentScanSummary = invalid
+                            processTimer = invalid
+                            if isValid(m?.logs)
+                                processTimer = m.logs.mark()
+                            end if
                             try
                                 sabrUmpProcessor = sabr_ump_createProcessor(requestMetadata, m.logs)
                                 umpResult = sabrUmpProcessor.processChunk(sabrUmpResponse)
@@ -2221,6 +2244,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 if fatalReason = "" then fatalReason = `${e}`
                                 if fatalReason = "" then fatalReason = "SABR init processing failed"
                             end try
+                            if processTimer <> invalid
+                                m.logs.printTime(log_level_Type.INFO, `${requestLogTag} UMP processing duration`, processTimer, -1)
+                            end if
 
                             if fatalReason <> ""
                                 playbackContext["sabrFatalError"] = {
@@ -2504,6 +2530,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                             storeOptions["rangeStart"] = 0
                                             storeOptions["rangeEnd"] = segmentPayload.count() - 1
                                         end if
+                                        storeTimer = invalid
+                                        if isValid(m?.logs)
+                                            storeTimer = m.logs.mark()
+                                        end if
                                         storeResult = sabr_cacheStoreSegment(storeOptions)
                                         storagePath = storeResult?.path ?? storagePath
                                         storageLabel = storagePath
@@ -2514,16 +2544,19 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Coverage stored path=${storageLabel} requested=${requestedRangeLabel} coverage=${coverageStartLabel}-${coverageEndLabel} bytes=${segmentPayload.count()} itag=${currentFormat?.itag}`)
                                         requestMetadataEntry["cacheKey"] = storagePath
                                         cacheKey = storagePath
-                                            deliveredSegment = true
-                                            sabr_logCoverageDiagnostics({
-                                                "logTag": requestLogTag
-                                                "cacheKey": storageLabel
-                                                "requested": requestMetadataEntry.byteRange
-                                                "coverage": coverageMeta
-                                            })
-                                            if isValid(requestMetadata.streamInfo) and IsAssociativeArray(requestMetadata.streamInfo)
-                                                requestMetadata.streamInfo["deliveredCoverage"] = coverageMeta
-                                            end if
+                                        if storeTimer <> invalid
+                                            m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Cache store duration`, storeTimer, -1)
+                                        end if
+                                        deliveredSegment = true
+                                        sabr_logCoverageDiagnostics({
+                                            "logTag": requestLogTag
+                                            "cacheKey": storageLabel
+                                            "requested": requestMetadataEntry.byteRange
+                                            "coverage": coverageMeta
+                                        })
+                                        if isValid(requestMetadata.streamInfo) and IsAssociativeArray(requestMetadata.streamInfo)
+                                            requestMetadata.streamInfo["deliveredCoverage"] = coverageMeta
+                                        end if
                                         end if
                                         m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cached SABR response under key: ${cacheKey}`)
                                         if deliveredSegment = true and storagePath <> ""
@@ -2614,7 +2647,18 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} SIDX map snapshot ${FormatJson(playbackContext.sidxIndexByFormat)}`)
     end if
     ' m.logs.printl(log_level_Type.VERBOSE, FormatJson(playbackContext))
+    contextStoreTimer = invalid
+    if isValid(m?.logs)
+        contextStoreTimer = m.logs.mark()
+    end if
     writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
+    if contextStoreTimer <> invalid
+        m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Playback context persisted`, contextStoreTimer, -1)
+    end if
+
+    if requestTimer <> invalid
+        m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Total request duration`, requestTimer, -1)
+    end if
 
     return response
 

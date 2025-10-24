@@ -11,3 +11,5 @@ minor_version=0
 build_version=0
 requires_a_dev_id=false
 bs_lib_version=1.0.0
+
+log_level=VERBOSE

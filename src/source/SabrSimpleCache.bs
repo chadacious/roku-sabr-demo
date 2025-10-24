@@ -768,6 +768,12 @@ sub sabr_cacheRunMaintenance(activePath as string)
     names = fs.GetDirectoryListing(base)
     if not IsArray(names) then return
 
+    loggerRef = sabr_cacheLogger()
+    maintenanceTimer = invalid
+    if isValid(loggerRef)
+        maintenanceTimer = loggerRef.mark()
+    end if
+
     nowMs = sabr_cacheCurrentTimestampMs()
     table = sabr_cacheMetadataTable()
     removedAny = false
@@ -933,6 +939,11 @@ sub sabr_cacheRunMaintenance(activePath as string)
             totalBytes = totalBytes - info.size
             remaining.Delete(oldestIdx)
         end while
+    end if
+
+    if maintenanceTimer <> invalid
+        summaryLabel = `[SabrCache] maintenance duration removed=${removedCount} remaining=${remaining.count()} bytes=${totalBytes}`
+        loggerRef.printTime(log_level_Type.INFO, summaryLabel, maintenanceTimer, -1)
     end if
 
     if removedAny
