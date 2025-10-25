@@ -8,8 +8,12 @@ sub init()
     m.top.functionName = "processRequests"
     m.top.observeField("requestQueue", m.port)
     m.top.requestQueue = []
-    m.top.fetchResponse = invalid
+    m.top.fetchEvents = []
+    m.segmentDelivered = {}
     m.logs.printl(log_level_Type.INFO, "[SabrFetchWorker] Initialized fetch worker task")
+    m.currentFetchId = invalid
+    m.currentFetchEntry = invalid
+    m.currentFetchContentType = ""
 end sub
 
 sub processRequests()
@@ -43,7 +47,6 @@ sub enqueuePendingRequests()
         end if
     end for
 
-    ' Clear the queue field so subsequent writes trigger a new event.
     m.top.requestQueue = []
 end sub
 
@@ -54,65 +57,72 @@ sub handleFetch(entry as object)
         contentType = m.top.contentType
     end if
 
-    responsePayload = {
-        "fetchId": fetchId
-        "contentType": contentType
-        "mediaIdHash": entry?.mediaIdHash
-    }
-
     if not isValid(fetchId)
-        responsePayload["error"] = {
-            "message": "Invalid fetch request id"
-        }
-        publishResponse(responsePayload)
+        queueWorkerEvent({
+            "type": "error"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "error": { "message": "Invalid fetch request id" }
+        })
         return
     end if
 
     requestData = entry?.request
     sabrPayload = entry?.sabrPayload
     if not IsAssociativeArray(requestData) or not IsAssociativeArray(sabrPayload)
-        responsePayload["error"] = {
-            "message": "Malformed fetch request payload"
-        }
-        publishResponse(responsePayload)
+        queueWorkerEvent({
+            "type": "error"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "error": { "message": "Malformed fetch request payload" }
+        })
         return
     end if
 
+    if not isValid(m.top.utilsTask) or not isValid(m.top.videoNode)
+        queueWorkerEvent({
+            "type": "error"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "error": { "message": "Fetch worker missing dependencies" }
+        })
+        return
+    end if
+
+    requestEnvelope = buildRequestForAdapter(requestData)
+    if not IsAssociativeArray(requestEnvelope)
+        queueWorkerEvent({
+            "type": "error"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "error": { "message": "Unable to rehydrate request for SABR adapter" }
+        })
+        return
+    end if
+
+    key = Stri(fetchId)
+    m.segmentDelivered[key] = false
+    m.currentFetchId = fetchId
+    m.currentFetchEntry = entry
+    m.currentFetchContentType = contentType
+    segmentCallback = function(segmentData as object)
+        try
+            worker_onSegmentReady(segmentData)
+        catch e
+            message = e?.message ?? "unknown"
+            m.logs.printl(log_level_Type.WARN, `[SabrFetchWorker] Segment callback error fetch=${m.currentFetchId}: ${message}`)
+        end try
+    end function
+
     result = invalid
     errorInfo = invalid
-    responseInfo = invalid
 
     try
-        requestEnvelope = buildRequestForAdapter(requestData)
-        if not IsAssociativeArray(requestEnvelope)
-            errorInfo = {
-                "message": "Unable to rehydrate request for SABR adapter"
-            }
-        else
-            if not isValid(m.top.utilsTask)
-                errorInfo = {
-                    "message": "Fetch worker missing utilsTask reference"
-                }
-            else if not isValid(m.top.videoNode)
-                errorInfo = {
-                    "message": "Fetch worker missing videoNode reference"
-                }
-            else
-                ' Ensure adapter sees the latest debug upload URL and content type overrides.
-                if isValid(entry?.debugUploadUrl) and entry.debugUploadUrl <> ""
-                    m.top.debugUploadUrl = entry.debugUploadUrl
-                end if
-
-                result = sabr_handleRequest(
-                    requestEnvelope,
-                    contentType,
-                    entry?.mediaIdHash,
-                    sabrPayload,
-                    m.top.videoNode
-                )
-                responseInfo = buildWorkerResponsePayload(result, entry, fetchId, contentType)
-            end if
-        end if
+        result = sabr_handleRequest(requestEnvelope, contentType, entry?.mediaIdHash, sabrPayload, m.top.videoNode, 0, segmentCallback)
     catch e
         errorInfo = {
             "message": e?.message ?? "SABR fetch worker encountered an exception"
@@ -120,67 +130,202 @@ sub handleFetch(entry as object)
         }
     end try
 
-    if isValid(errorInfo)
-        responsePayload["error"] = errorInfo
-    else
-        responsePayload["response"] = responseInfo
+    m.currentFetchId = invalid
+    m.currentFetchEntry = invalid
+    m.currentFetchContentType = ""
+
+    deliveredFlag = false
+    if m.segmentDelivered.DoesExist(key)
+        deliveredFlag = m.segmentDelivered.Lookup(key) = true
+        m.segmentDelivered.Delete(key)
     end if
 
-    publishResponse(responsePayload)
+    if isValid(errorInfo)
+        queueWorkerEvent({
+            "type": "error"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "error": errorInfo
+        })
+        return
+    end if
+
+    if not isValid(result)
+        queueWorkerEvent({
+            "type": "final"
+            "fetchId": fetchId
+            "contentType": contentType
+            "mediaIdHash": entry?.mediaIdHash
+            "response": {
+                "status": 204
+                "headers": CreateObject("roAssociativeArray")
+                "bodyPath": ""
+                "bodyLength": 0
+                "deliveredViaCallback": deliveredFlag
+            }
+            "deliveredViaCallback": deliveredFlag
+        })
+        return
+    end if
+
+    descriptor = buildResponseDescriptor(result, fetchId, entry, contentType, deliveredFlag <> true and result?.deliveredViaCallback <> true, "final")
+    descriptor["deliveredViaCallback"] = (result?.deliveredViaCallback = true) or deliveredFlag
+    m.logs.printl(log_level_Type.INFO, `[SabrFetchWorker] Final response fetch=${fetchId} deliveredViaCallback=${descriptor["deliveredViaCallback"]}`)
+
+    queueWorkerEvent({
+        "type": "final"
+        "fetchId": fetchId
+        "contentType": contentType
+        "mediaIdHash": entry?.mediaIdHash
+        "response": descriptor
+        "deliveredViaCallback": descriptor["deliveredViaCallback"]
+    })
 end sub
 
-function buildWorkerResponsePayload(result as object, entry as object, fetchId as integer, contentType as string) as object
-    responseInfo = {
-        "status": result?.status
-        "headers": result?.headers
-        "bodyLength": 0
-        "bodyPath": ""
+sub handleSegmentReady(fetchId as integer, entry as object, segmentData as object, contentType as string)
+    if not IsAssociativeArray(segmentData) then return
+    responseObj = segmentData?.response
+    if not IsAssociativeArray(responseObj) then return
+
+    descriptor = buildResponseDescriptor(responseObj, fetchId, entry, contentType, true, "segment")
+    descriptor["deliveredViaCallback"] = true
+
+    queueWorkerEvent({
+        "type": "segment"
+        "fetchId": fetchId
         "contentType": contentType
+        "mediaIdHash": entry?.mediaIdHash
+        "response": descriptor
+    })
+
+    m.segmentDelivered[Stri(fetchId)] = true
+end sub
+
+sub worker_onSegmentReady(segmentData as object)
+    fetchId = m.currentFetchId
+    entry = m.currentFetchEntry
+    contentType = m.currentFetchContentType
+    if fetchId = invalid or not IsAssociativeArray(entry)
+        m.logs.printl(log_level_Type.WARN, "[SabrFetchWorker] Segment callback received without active fetch context")
+        return
+    end if
+    segmentResponse = segmentData?.response
+    rangeInfo = segmentResponse?.headers?.Lookup("Content-Range")
+    if not isValid(rangeInfo) then rangeInfo = ""
+    sizeInfo = 0
+    if GetInterface(segmentResponse?.fullBody, "ifByteArray") <> invalid
+        sizeInfo = segmentResponse.fullBody.count()
+    else if GetInterface(segmentResponse?.body, "ifByteArray") <> invalid
+        sizeInfo = segmentResponse.body.count()
+    end if
+    m.logs.printl(log_level_Type.INFO, `[SabrFetchWorker] Segment ready fetch=${fetchId} range=${rangeInfo} bytes=${sizeInfo}`)
+    handleSegmentReady(fetchId, entry, segmentData, contentType)
+end sub
+
+sub queueWorkerEvent(event as object)
+    if not IsAssociativeArray(event) then return
+    events = []
+    existing = m.top.fetchEvents
+    if IsArray(existing)
+        for each item in existing
+            events.push(item)
+        end for
+    end if
+    events.push(event)
+    m.top.fetchEvents = events
+end sub
+
+function buildResponseDescriptor(response as object, fetchId as integer, entry as object, contentType as string, allowBody as boolean, label as string) as object
+    descriptor = {
+        "status": 204
+        "headers": fetchWorkerCloneHeaders(response?.headers)
+        "bodyPath": ""
+        "bodyLength": 0
     }
 
-    body = result?.body
-    bodyInterface = GetInterface(body, "ifByteArray")
-    bodyCount = 0
-    if bodyInterface <> invalid
-        bodyCount = body.count()
+    statusCode = response?.status
+    if IsString(statusCode)
+        statusCode = Val(statusCode)
+    else if not IsInteger(statusCode)
+        statusCode = 204
     end if
-    responseInfo["bodyLength"] = bodyCount
+    descriptor["status"] = statusCode
 
-    if bodyInterface <> invalid and bodyCount > 0
-        tmpPath = buildWorkerBodyPath(entry, fetchId, contentType)
-        if tmpPath <> ""
-            if body.writeFile(tmpPath)
-                responseInfo["bodyPath"] = tmpPath
-            else
-                responseInfo["error"] = {
-                    "message": "Failed to persist response body to tmp file"
-                    "path": tmpPath
-                }
+    if allowBody
+        body = response?.fullBody
+        if GetInterface(body, "ifByteArray") = invalid
+            body = response?.body
+        end if
+        if GetInterface(body, "ifByteArray") <> invalid
+            descriptor["bodyLength"] = body.count()
+            path = buildWorkerBodyPath(entry, fetchId, contentType, label)
+            if path <> ""
+                if body.writeFile(path)
+                    descriptor["bodyPath"] = path
+                else
+                    descriptor["error"] = {
+                        "message": `Failed to persist response body for fetch ${fetchId}`
+                        "path": path
+                    }
+                end if
             end if
+        end if
+    else
+        body = response?.fullBody
+        if GetInterface(body, "ifByteArray") = invalid
+            body = response?.body
+        end if
+        if GetInterface(body, "ifByteArray") <> invalid
+            descriptor["bodyLength"] = body.count()
         end if
     end if
 
-    if responseInfo["headers"] = invalid
-        responseInfo["headers"] = {}
-    end if
-
-    return responseInfo
+    return descriptor
 end function
 
-function buildWorkerBodyPath(entry as object, fetchId as integer, contentType as string) as string
+function fetchWorkerCloneHeaders(headers as object) as object
+    clone = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(headers)
+        for each key in headers
+            clone[key] = headers[key]
+        end for
+    end if
+    return clone
+end function
+
+function buildWorkerBodyPath(entry as object, fetchId as integer, contentType as string, suffix as string) as string
     mediaIdHash = entry?.mediaIdHash
     if not IsString(mediaIdHash) or mediaIdHash = ""
         mediaIdHash = "unknown"
     end if
-    sanitizedHash = mediaIdHash
-    dirPath = `tmp:/${sanitizedHash}`
+    dirPart = sanitizePathPart(mediaIdHash)
     fs = CreateObject("roFileSystem")
     if fs = invalid then return ""
+    dirPath = `tmp:/${dirPart}`
     if not fs.Exists(dirPath)
         fs.CreateDirectory(dirPath)
     end if
-    fileName = `worker-${LCase(contentType)}-${fetchId}.bin`
+    fileName = `worker-${sanitizePathPart(LCase(contentType))}-${fetchId}-${sanitizePathPart(LCase(suffix))}.bin`
     return `${dirPath}/${fileName}`
+end function
+
+function sanitizePathPart(value as string) as string
+    if not IsString(value) then return "segment"
+    cleaned = ""
+    total = Len(value)
+    for i = 1 to total
+        ch = Mid(value, i, 1)
+        ascii = Asc(ch)
+        isAlphaNum = (ascii >= 48 and ascii <= 57) or (ascii >= 65 and ascii <= 90) or (ascii >= 97 and ascii <= 122)
+        if isAlphaNum
+            cleaned = cleaned + LCase(ch)
+        else if ch = "-" or ch = "_"
+            cleaned = cleaned + ch
+        end if
+    end for
+    if cleaned = "" then cleaned = "segment"
+    return cleaned
 end function
 
 function buildRequestForAdapter(data as object) as object
@@ -209,11 +354,3 @@ function buildRequestForAdapter(data as object) as object
 
     return requestObj
 end function
-
-sub publishResponse(responsePayload as object)
-    ' Assign a fresh associative array to trigger field observers.
-    if not IsAssociativeArray(responsePayload)
-        responsePayload = { "error": { "message": "Unexpected response payload type" } }
-    end if
-    m.top.fetchResponse = responsePayload
-end sub

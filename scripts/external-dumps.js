@@ -16,11 +16,27 @@ async function prepareExternalDumpDirectories() {
 
 async function resetDirectory(targetPath) {
     try {
-        await fs.promises.rm(targetPath, { recursive: true, force: true });
+        await fs.promises.mkdir(targetPath, { recursive: true });
     } catch (err) {
-        console.warn(`[test] Failed to clear ${targetPath}: ${err.message}`);
+        console.warn(`[test] Failed to ensure ${targetPath}: ${err.message}`);
+        return;
     }
-    await fs.promises.mkdir(targetPath, { recursive: true });
+    try {
+        const entries = await fs.promises.readdir(targetPath, { withFileTypes: true });
+        for (const entry of entries) {
+            const entryPath = path.join(targetPath, entry.name);
+            if (entry.isDirectory()) {
+                continue;
+            }
+            try {
+                await fs.promises.rm(entryPath, { force: true });
+            } catch (err) {
+                console.warn(`[test] Failed to remove ${entryPath}: ${err.message}`);
+            }
+        }
+    } catch (err) {
+        console.warn(`[test] Failed to enumerate ${targetPath}: ${err.message}`);
+    }
 }
 
 function writeLogFiles(targetPaths, contents) {

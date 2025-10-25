@@ -1,5 +1,47 @@
 import "pkg:/source/isItem.bs"
 
+function http_sanitizePathPart(value as string) as string
+    if not IsString(value) then value = ""
+    cleaned = ""
+    total = Len(value)
+    for i = 1 to total
+        ch = Mid(value, i, 1)
+        ascii = Asc(ch)
+        isDigit = ascii >= 48 and ascii <= 57
+        isLower = ascii >= 97 and ascii <= 122
+        isUpper = ascii >= 65 and ascii <= 90
+        if isDigit or isLower or isUpper
+            cleaned = cleaned + LCase(ch)
+        else if ch = "-" or ch = "_"
+            cleaned = cleaned + ch
+        end if
+    end for
+    if cleaned = "" then cleaned = "segment"
+    return cleaned
+end function
+
+function http_hexPreview(data as object, limit as integer) as string
+    if GetInterface(data, "ifByteArray") = invalid then return ""
+    total = data.Count()
+    if limit > total then limit = total
+    if limit <= 0 then return ""
+    digits = "0123456789abcdef"
+    preview = ""
+    for i = 0 to limit - 1
+        byteVal = data[i]
+        hi = byteVal \ 16
+        lo = byteVal Mod 16
+        if hi > 15 then hi = 15
+        if hi < 0 then hi = 0
+        if lo > 15 then lo = 15
+        if lo < 0 then lo = 0
+        hexPair = Mid(digits, hi + 1, 1) + Mid(digits, lo + 1, 1)
+        if preview <> "" then preview = preview + " "
+        preview = preview + hexPair
+    end for
+    return preview
+end function
+
 function create_new_request()
     return { "state": 0
         "headers": {}
@@ -15,6 +57,7 @@ end function
 
 function read_http(request as object, connection as object)
     length = connection.getCountRcvBuf()
+    if length <= 0 then return false
     'print "Processing message on socket: " ; connection.getID() ; " of length " ; length
     if request.state < 6 or request.body_handler <> invalid then
         request.buffer[length - 1] = 0
@@ -324,6 +367,19 @@ end function
 function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid)
     loggers = logger()
     reply = createobject("roByteArray")
+
+    rangeHeader = invalid
+    itagHeader = invalid
+    if GetInterface(data, "ifByteArray") = invalid
+        if IsString(data)
+            tmpBytes = CreateObject("roByteArray")
+            tmpBytes.FromAsciiString(data)
+            data = tmpBytes
+        else
+            data = CreateObject("roByteArray")
+        end if
+    end if
+
     ' date = createobject("roDateTime")
     ' months = ["placeholder", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     ' month_name = months[date.getMonth()]
@@ -365,6 +421,56 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             else
                 loggers.printl(log_level_Type.INFO, `[HTTP] Reply range=${rangeHeader} status=${response_code} length=${data.Count()}`)
             end if
+        end if
+    end if
+
+    if GetInterface(data, "ifByteArray") <> invalid and data.Count() > 0
+        safeItag = "itag"
+        itagLabel = ""
+        if isValid(itagHeader) and itagHeader <> ""
+            itagLabel = `${itagHeader}`
+            safeItag = http_sanitizePathPart(itagLabel)
+        end if
+        safeRangeStart = "start"
+        safeRangeEnd = "end"
+        rangeLabel = ""
+        if isValid(rangeHeader) and rangeHeader <> ""
+            rangeLabel = `${rangeHeader}`
+            rangeParts = rangeLabel.Split(" ")
+            rangeCore = rangeParts.count() > 1 ? rangeParts[1] : rangeParts[0]
+            slashParts = rangeCore.Split("/")
+            spanPart = slashParts[0]
+            spanPart = spanPart.Trim()
+            if Len(spanPart) >= 5 and LCase(Left(spanPart, 5)) = "bytes"
+                spanPart = Mid(spanPart, 6).Trim()
+            end if
+            dashParts = spanPart.Split("-")
+            if dashParts.count() > 0 and dashParts[0] <> ""
+                safeRangeStart = http_sanitizePathPart(`${dashParts[0]}`)
+            end if
+            if dashParts.count() > 1 and dashParts[1] <> ""
+                safeRangeEnd = http_sanitizePathPart(`${dashParts[1]}`)
+            end if
+        end if
+        dt = CreateObject("roDateTime")
+        timestamp = StrI(dt.AsSeconds())
+        fs = CreateObject("roFileSystem")
+        if fs <> invalid
+            dumpDir = "tmp:/http-replies"
+            if not fs.Exists(dumpDir)
+                fs.CreateDirectory(dumpDir)
+            end if
+            fileName = `http-${safeItag}-${safeRangeStart}-${safeRangeEnd}-${timestamp}.bin`
+            dumpPath = `${dumpDir}/${fileName}`
+            if data.writeFile(dumpPath)
+                loggers.printl(log_level_Type.INFO, `[HTTP] Saved reply body to ${dumpPath}`)
+            else
+                loggers.printl(log_level_Type.WARN, `[HTTP] Failed to save reply body to ${dumpPath}`)
+            end if
+        end if
+        previewHex = http_hexPreview(data, 32)
+        if previewHex <> ""
+            loggers.printl(log_level_Type.DEBUG, `[HTTP] Reply preview itag=${itagLabel} range=${rangeLabel} hex=${previewHex}`)
         end if
     end if
     loggers.printl(log_level_Type.INFO, `Preparing to HTTP reply with:${chr(13)}${chr(10)}${packet}${chr(13)}${chr(10)}Raw data length: ${str(data.Count())}`)

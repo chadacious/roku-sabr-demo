@@ -90,6 +90,9 @@ async function main() {
         await logStream.waitFor(/VideoPlayer\] setVideo/, 10000);
         await pause(1500);
 
+        console.log("[test] Waiting for playback position log ...");
+        await logStream.waitFor(/VideoPlayer\] position=\d+ms/, 20000);
+
         console.log("[test] Waiting for SABR outcome logs (errors or repeats) ...");
         try {
             await logStream.waitFor(/Repeated SABR requests detected/, 60000);

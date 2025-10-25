@@ -16,12 +16,15 @@ sub init()
     m.logs.printl(log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
     m.sabrPayloads = {}
     m.contentType = invalid
-    m.fetchWorker = invalid
-    m.fetchWorkerObserved = false
     m.fetchPending = {}
     m.connectionFetchMap = {}
     m.fetchSequence = 0
     m.port = invalid
+    m.workerPool = []
+    m.workerState = {}
+    m.requestQueue = []
+    m.inFlightSignatures = {}
+    m.workerPoolEnabled = true
 end sub
 
 sub YtsabrServer()
@@ -42,30 +45,18 @@ sub YtsabrServer()
     end if
     m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] address is ${tcp_bind_addr.getAddress()}`)
 
-    ensureFetchWorker(port)
+    ensureWorkerPool(port)
 
     while(true)
-        handledResponse = false
-        msg = invalid
-
-        if m.fetchWorker <> invalid
-            pendingResponse = m.fetchWorker.fetchResponse
-            if IsAssociativeArray(pendingResponse)
-                processFetchResponse(pendingResponse)
-                m.fetchWorker.fetchResponse = invalid
-                handledResponse = true
-            end if
-        end if
-
-        if handledResponse = false
-            msg = wait(10, port)
-            if msg = invalid then
-                continue while
-            end if
-        end if
-        if handledResponse = true
+        if processFetchWorkerEvents()
             continue while
         end if
+
+        msg = wait(0, port)
+        if msg = invalid then
+            continue while
+        end if
+
         msgType = type(msg)
         if msgType = "roSocketEvent"
             try
@@ -104,11 +95,28 @@ sub YtsabrServer()
                 m.logs.printl(log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling")
                 m.logs.printl(log_level_Type.WARN, FormatJson(e))
             end try
-        else if msgType = "roSGNodeEvent"
-            handleNodeEvent(msg)
         end if
     end while
 end sub
+
+function processFetchWorkerEvents() as boolean
+    processed = false
+    if not IsArray(m.workerPool) then return false
+    for each worker in m.workerPool
+        if worker = invalid then continue for
+        events = worker.fetchEvents
+        if IsArray(events) and events.count() > 0
+            for each event in events
+                if not IsAssociativeArray(event) then continue for
+                event["workerId"] = worker.id
+                processFetchEvent(event)
+                processed = true
+            end for
+            worker.fetchEvents = []
+        end if
+    end for
+    return processed
+end function
 
 sub handle_tcp(connection as object, port as object)
     request = m.connections[Stri(connection.getID())]
@@ -203,7 +211,7 @@ function process_request(request as object, connection as object, port as object
                     responseHeaders["Content-Type"] = "text/plain"
                 end if
                 if responseHeaders.DoesExist("Connection") = false
-                    responseHeaders["Connection"] = "close"
+                    responseHeaders["Connection"] = "keep-alive"
                 end if
                 status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody)
             else
@@ -218,83 +226,455 @@ function process_request(request as object, connection as object, port as object
     return false ' false = Keep-alive
 end function
 
-sub ensureFetchWorker(port as object)
-    if m.fetchWorker = invalid
-        m.fetchWorker = CreateObject("roSGNode", "sabrFetchWorkerTask")
-        if m.fetchWorker <> invalid
-            m.fetchWorker.id = `sabrFetchWorker-${m.contentType}`
-            m.fetchWorker.contentType = m.top.contentType
-            if isValid(m.top.utilsTask) then m.fetchWorker.utilsTask = m.top.utilsTask
-            if isValid(m.top.videoNode) then m.fetchWorker.videoNode = m.top.videoNode
-            if isValid(m.top.debugUploadUrl) then m.fetchWorker.debugUploadUrl = m.top.debugUploadUrl
-            m.fetchWorker.requestQueue = []
-            m.fetchWorker.fetchResponse = invalid
-            if not m.fetchWorkerObserved
-                m.fetchWorker.observeField("fetchResponse", port)
-                m.fetchWorkerObserved = true
-            end if
-            m.fetchWorker.control = "RUN"
-        end if
-    else
-        if m.fetchWorker.id = invalid or m.fetchWorker.id = ""
-            m.fetchWorker.id = `sabrFetchWorker-${m.contentType}`
-        end if
-        if isValid(m.top.utilsTask) and m.fetchWorker.utilsTask = invalid
-            m.fetchWorker.utilsTask = m.top.utilsTask
-        end if
-        if isValid(m.top.videoNode) and m.fetchWorker.videoNode = invalid
-            m.fetchWorker.videoNode = m.top.videoNode
-        end if
-        if isValid(m.top.debugUploadUrl) and m.fetchWorker.debugUploadUrl <> m.top.debugUploadUrl
-            m.fetchWorker.debugUploadUrl = m.top.debugUploadUrl
-        end if
-        if not m.fetchWorkerObserved
-            m.fetchWorker.observeField("fetchResponse", port)
-            m.fetchWorkerObserved = true
-        end if
+sub ensureWorkerPool(port as object)
+    if not IsArray(m.workerPool)
+        m.workerPool = []
     end if
+    targetSize = 3
+    current = m.workerPool.count()
+    while current < targetSize
+        worker = CreateObject("roSGNode", "sabrFetchWorkerTask")
+        if worker = invalid then exit while
+        workerId = `sabrFetchWorker-${m.contentType}-${current}`
+        worker.id = workerId
+        worker.contentType = m.top.contentType
+        if isValid(m.top.utilsTask) then worker.utilsTask = m.top.utilsTask
+        if isValid(m.top.videoNode) then worker.videoNode = m.top.videoNode
+        if isValid(m.top.debugUploadUrl) then worker.debugUploadUrl = m.top.debugUploadUrl
+        worker.requestQueue = []
+        worker.fetchEvents = []
+        worker.control = "RUN"
+        m.workerPool.push(worker)
+        state = {
+            "status": "idle"
+            "fetchId": invalid
+        }
+        m.workerState[workerId] = state
+        current = current + 1
+    end while
+    dispatchPendingRequests()
 end sub
 
-function enqueueFetchRequest(request as object, connection as object, mediaIdHash as string, sabrPayload as object) as boolean
-    ensureFetchWorker(m.port)
-    if m.fetchWorker = invalid then return false
-    if connection = invalid then return false
+sub dispatchPendingRequests()
+    if not IsArray(m.workerPool) then return
+    if not IsArray(m.requestQueue) or m.requestQueue.count() = 0 then return
+    for each worker in m.workerPool
+        workerId = worker.id
+        state = m.workerState.Lookup(workerId)
+        if not IsAssociativeArray(state) then state = { "status": "idle", "fetchId": invalid }
+        if state.status = "busy" then continue for
+        if m.requestQueue.count() = 0 then exit for
+        entry = m.requestQueue[0]
+        m.requestQueue.delete(0)
+        startWorkerFetch(worker, entry)
+    end for
+end sub
 
-    fetchId = m.fetchSequence + 1
-    m.fetchSequence = fetchId
+sub startWorkerFetch(worker as object, entry as object)
+    if worker = invalid then return
+    if not IsAssociativeArray(entry) then return
 
-    requestPayload = serializeRequestForWorker(request)
-    if not IsAssociativeArray(requestPayload) then return false
-
-    entry = {
-        "connection": connection
-        "request": requestPayload
-        "mediaIdHash": mediaIdHash
-    }
-    key = Stri(fetchId)
-    m.fetchPending[key] = entry
-    connKey = Stri(connection.getID())
-    m.connectionFetchMap[connKey] = fetchId
+    fetchId = entry.fetchId
+    if fetchId = invalid then return
 
     payload = {
         "fetchId": fetchId
-        "request": requestPayload
-        "mediaIdHash": mediaIdHash
-        "sabrPayload": sabrPayload
-        "contentType": m.contentType
+        "request": entry.requestPayload
+        "mediaIdHash": entry.mediaIdHash
+        "sabrPayload": entry.sabrPayload
+        "contentType": entry.contentType
         "debugUploadUrl": m.top.debugUploadUrl
     }
 
     queuePayload = []
-    existingQueue = m.fetchWorker.requestQueue
+    existingQueue = worker.requestQueue
     if IsArray(existingQueue)
         for each item in existingQueue
             queuePayload.push(item)
         end for
     end if
     queuePayload.push(payload)
-    m.fetchWorker.requestQueue = queuePayload
-    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Dispatched fetch ${fetchId} for ${mediaIdHash}`)
+    worker.requestQueue = queuePayload
+    worker.fetchEvents = []
+
+    workerId = worker.id
+    state = {
+        "status": "busy"
+        "fetchId": fetchId
+    }
+    m.workerState[workerId] = state
+
+    key = Stri(fetchId)
+    entry.workerId = workerId
+    m.fetchPending[key] = entry
+end sub
+
+function buildRequestSignature(request as object) as string
+    if not IsAssociativeArray(request) then return ""
+    method = LCase(`${request?.method ?? ""}`)
+    path = LCase(`${request?.path ?? ""}`)
+    rangeHeader = ""
+    headers = request?.headers
+    if IsAssociativeArray(headers)
+        if headers.DoesExist("Range") then rangeHeader = `${headers.Range}`
+        if rangeHeader = "" and headers.DoesExist("range") then rangeHeader = `${headers.range}`
+    end if
+    searchKey = ""
+    search = request?.search
+    if IsAssociativeArray(search)
+        if search.DoesExist("key") then searchKey = `${search.key}`
+    end if
+    bodyHash = `${request?.b64Body ?? ""}`
+    return `${method}|${path}|${searchKey}|${rangeHeader}|${bodyHash}`
+end function
+
+sub processFetchEvent(event as object)
+    if not IsAssociativeArray(event) then return
+    eventType = LCase(`${event?.type ?? ""}`)
+    if eventType = "segment"
+        handleFetchSegmentEvent(event)
+    else if eventType = "final"
+        handleFetchFinalEvent(event)
+    else if eventType = "error"
+        handleFetchErrorEvent(event)
+    else
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Unrecognized fetch event type ${eventType}`)
+    end if
+end sub
+
+sub handleFetchSegmentEvent(event as object)
+    fetchId = event?.fetchId
+    descriptor = event?.response
+    key = Stri(fetchId)
+    pending = m.fetchPending.Lookup(key)
+    if pending = invalid
+        cleanupDescriptorFile(descriptor)
+        return
+    end if
+
+    if pending.workerId = invalid and event?.workerId <> invalid
+        pending.workerId = event.workerId
+    end if
+
+    errorInfo = descriptor?.error
+    if IsAssociativeArray(errorInfo)
+        message = errorInfo?.message ?? "SABR request failed"
+        deliverErrorToConnection(pending.connection, fetchId, message)
+        if IsArray(pending.waiters)
+            for i = pending.waiters.count() - 1 to 0 step -1
+                deliverErrorToConnection(pending.waiters[i], fetchId, message)
+                pending.waiters.delete(i)
+            end for
+        end if
+        cleanupDescriptorFile(descriptor)
+        cleanupFetch(fetchId, pending)
+        return
+    end if
+
+    headers = ensureResponseHeaders(descriptor?.headers)
+    statusCode = ensureStatusCode(descriptor?.status)
+    body = loadResponseBody(descriptor)
+    bodyLength = 0
+    if GetInterface(body, "ifByteArray") <> invalid
+        bodyLength = body.count()
+    end if
+
+    if headers.DoesExist("Content-Length") = false
+        headers["Content-Length"] = StrI(bodyLength)
+    end if
+    if headers.DoesExist("Content-Type") = false
+        headers["Content-Type"] = "text/plain"
+    end if
+
+    rangeHeader = ""
+    if headers.DoesExist("Content-Range") then rangeHeader = headers["Content-Range"]
+    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${pending.contentType}] Segment response fetch=${fetchId} range=${rangeHeader} bytes=${bodyLength}`)
+
+    pending.segmentStatus = statusCode
+    pending.segmentHeaders = headers
+    pending.segmentBody = body
+    waiterCountBefore = 0
+    if IsArray(pending.waiters)
+        waiterCountBefore = pending.waiters.count()
+    end if
+    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${pending.contentType}] Cached segment fetch=${fetchId} bytes=${bodyLength} waitersWaiting=${waiterCountBefore}`)
+
+    deliverResponseToConnection(pending.connection, fetchId, statusCode, headers, body)
+    pending.connection = invalid
+
+    if IsArray(pending.waiters)
+        for each waiterConn in pending.waiters
+            deliverResponseToConnection(waiterConn, fetchId, statusCode, ensureResponseHeaders(headers), body)
+        end for
+        pending.waiters = []
+    end if
+
+    cleanupDescriptorFile(descriptor)
+    pending.delivered = true
+    m.fetchPending[key] = pending
+end sub
+
+sub handleFetchFinalEvent(event as object)
+    fetchId = event?.fetchId
+    descriptor = event?.response
+    deliveredFlag = event?.deliveredViaCallback = true
+    key = Stri(fetchId)
+    pending = m.fetchPending.Lookup(key)
+    if pending = invalid
+        cleanupDescriptorFile(descriptor)
+        return
+    end if
+
+    connection = pending.connection
+    if pending.workerId = invalid and event?.workerId <> invalid
+        pending.workerId = event.workerId
+    end if
+
+    errorInfo = descriptor?.error
+    if IsAssociativeArray(errorInfo)
+        message = errorInfo?.message ?? "SABR request failed"
+        deliverErrorToConnection(connection, fetchId, message)
+        cleanupDescriptorFile(descriptor)
+        cleanupFetch(fetchId, pending)
+        return
+    end if
+
+    headers = ensureResponseHeaders(descriptor?.headers)
+    statusCode = ensureStatusCode(descriptor?.status)
+    body = loadResponseBody(descriptor)
+    bodyLength = 0
+    if GetInterface(body, "ifByteArray") <> invalid
+        bodyLength = body.count()
+    end if
+    if headers.DoesExist("Content-Length") = false
+        headers["Content-Length"] = StrI(bodyLength)
+    end if
+    if headers.DoesExist("Content-Type") = false
+        headers["Content-Type"] = "text/plain"
+    end if
+
+    if deliveredFlag <> true and connection <> invalid
+        m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${pending.contentType}] Final response fetch=${fetchId} via direct send`)
+        deliverResponseToConnection(connection, fetchId, statusCode, headers, body)
+        connection = invalid
+        pending.connection = invalid
+    end if
+
+    if deliveredFlag = true
+        m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${pending.contentType}] Final response fetch=${fetchId} already delivered via segment`)
+    end if
+
+    if IsArray(pending.waiters) and pending.waiters.count() > 0
+        waiterHeaders = headers
+        waiterStatus = statusCode
+        waiterBody = body
+        if deliveredFlag = true and IsAssociativeArray(pending) and GetInterface(pending?.segmentBody, "ifByteArray") <> invalid
+            waiterHeaders = ensureResponseHeaders(pending.segmentHeaders)
+            waiterStatus = ensureStatusCode(pending.segmentStatus)
+            waiterBody = pending.segmentBody
+        end if
+        waiterCount = pending.waiters.count()
+        waiterBytes = 0
+        if GetInterface(waiterBody, "ifByteArray") <> invalid
+            waiterBytes = waiterBody.count()
+        end if
+        deliverySource = "final-body"
+        if deliveredFlag = true
+            deliverySource = "cached-segment"
+        end if
+        m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${pending.contentType}] Final fanout fetch=${fetchId} waiters=${waiterCount} bytes=${waiterBytes} source=${deliverySource}`)
+        for each waiterConn in pending.waiters
+            deliverResponseToConnection(waiterConn, fetchId, waiterStatus, ensureResponseHeaders(waiterHeaders), waiterBody)
+        end for
+        pending.waiters = []
+    end if
+
+    if deliveredFlag <> true
+        pending.segmentStatus = statusCode
+        pending.segmentHeaders = headers
+        pending.segmentBody = body
+        stagedBytes = 0
+        if GetInterface(body, "ifByteArray") <> invalid
+            stagedBytes = body.count()
+        end if
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${pending.contentType}] Staged final body for fetch=${fetchId} bytes=${stagedBytes}`)
+    end if
+    pending.delivered = true
+
+    cleanupDescriptorFile(descriptor)
+    cleanupFetch(fetchId, pending)
+end sub
+
+sub handleFetchErrorEvent(event as object)
+    fetchId = event?.fetchId
+    key = Stri(fetchId)
+    pending = m.fetchPending.Lookup(key)
+    errorInfo = event?.error
+    message = errorInfo?.message ?? "SABR request failed"
+    if pending <> invalid
+        connection = pending.connection
+        if connection <> invalid
+            status = send_http_reply(connection, "500", "text/plain", message)
+            removeConnectionMapping(connection)
+            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Completed fetch ${fetchId} with status ${status}`)
+        end if
+        cleanupFetch(fetchId, pending)
+    else
+        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Error event for unknown fetch ${fetchId}: ${message}`)
+    end if
+end sub
+
+sub deliverResponseToConnection(connection as object, fetchId as integer, statusCode as integer, headers as object, body as object)
+    if connection = invalid then return
+    status = send_http_reply_raw(connection, statusCode, headers, body)
+    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Completed fetch ${fetchId} with status ${status}`)
+    removeConnectionMapping(connection)
+end sub
+
+sub deliverErrorToConnection(connection as object, fetchId as integer, message as string)
+    if connection = invalid then return
+    status = send_http_reply(connection, "500", "text/plain", message)
+    m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Error response for fetch ${fetchId} status=${status} message=${message}`)
+    removeConnectionMapping(connection)
+end sub
+
+sub removeConnectionMapping(connection as object)
+    if connection = invalid then return
+    connKey = Stri(connection.getID())
+    if m.connectionFetchMap.DoesExist(connKey)
+        m.connectionFetchMap.Delete(connKey)
+    end if
+    if m.sockets.DoesExist(connKey)
+        m.sockets[connKey] = invalid
+    end if
+    if connection.IsConnected()
+        connection.close()
+    end if
+end sub
+
+function loadResponseBody(descriptor as object) as object
+    body = CreateObject("roByteArray")
+    if not IsAssociativeArray(descriptor) then return body
+    bodyPath = descriptor?.bodyPath
+    if IsString(bodyPath) and bodyPath <> ""
+        ba = CreateObject("roByteArray")
+        if ba.readFile(bodyPath)
+            return ba
+        end if
+    end if
+    fallback = descriptor?.body
+    if GetInterface(fallback, "ifByteArray") <> invalid
+        return fallback
+    end if
+    return body
+end function
+
+function ensureResponseHeaders(headers as object) as object
+    result = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(headers)
+        for each key in headers
+            result[key] = headers[key]
+        end for
+    end if
+    if result.DoesExist("Connection") = false
+        result["Connection"] = "keep-alive"
+    end if
+    return result
+end function
+
+function ensureStatusCode(value as dynamic) as integer
+    if IsString(value)
+        return Val(value)
+    else if IsInteger(value)
+        return value
+    else
+        return 204
+    end if
+end function
+
+sub cleanupDescriptorFile(descriptor as object)
+    if not IsAssociativeArray(descriptor) then return
+    bodyPath = descriptor?.bodyPath
+    if not IsString(bodyPath) or bodyPath = "" then return
+    fs = CreateObject("roFileSystem")
+    if fs <> invalid and fs.Exists(bodyPath)
+        fs.Delete(bodyPath)
+    end if
+end sub
+
+function enqueueFetchRequest(request as object, connection as object, mediaIdHash as string, sabrPayload as object) as boolean
+    if m.workerPoolEnabled <> true
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Worker pool disabled; executing request synchronously`)
+        return false
+    end if
+    ensureWorkerPool(m.port)
+    if not IsArray(m.workerPool) or m.workerPool.count() = 0 then return false
+    if connection = invalid then return false
+
+    requestPayload = serializeRequestForWorker(request)
+    if not IsAssociativeArray(requestPayload) then return false
+
+    signature = buildRequestSignature(requestPayload)
+    if signature = "" then signature = `sig-${m.fetchSequence}`
+
+    if m.inFlightSignatures.DoesExist(signature)
+        existingFetchId = m.inFlightSignatures.Lookup(signature)
+        key = Stri(existingFetchId)
+        pending = m.fetchPending.Lookup(key)
+        if pending <> invalid
+            deliveredAlready = pending?.delivered = true
+            cachedBody = pending?.segmentBody
+            if deliveredAlready and GetInterface(cachedBody, "ifByteArray") <> invalid
+                cachedHeaders = ensureResponseHeaders(pending?.segmentHeaders)
+                cachedStatus = ensureStatusCode(pending?.segmentStatus)
+                deliverResponseToConnection(connection, existingFetchId, cachedStatus, cachedHeaders, cachedBody)
+                m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Served cached segment for fetch ${existingFetchId} signature=${signature}`)
+                return true
+            end if
+            if not IsArray(pending.waiters)
+                pending.waiters = []
+            end if
+            pending.waiters.push(connection)
+            connKeyWait = Stri(connection.getID())
+            m.connectionFetchMap[connKeyWait] = existingFetchId
+            m.fetchPending[key] = pending
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Attached waiter to fetch ${existingFetchId} signature=${signature}`)
+            return true
+        else
+            m.inFlightSignatures.Delete(signature)
+        end if
+    end if
+
+    fetchId = m.fetchSequence + 1
+    m.fetchSequence = fetchId
+
+    entry = {
+        "fetchId": fetchId
+        "connection": connection
+        "waiters": []
+        "requestPayload": requestPayload
+        "mediaIdHash": mediaIdHash
+        "sabrPayload": sabrPayload
+        "contentType": m.contentType
+        "delivered": false
+        "signature": signature
+        "workerId": invalid
+    }
+
+    key = Stri(fetchId)
+    m.fetchPending[key] = entry
+    connKey = Stri(connection.getID())
+    m.connectionFetchMap[connKey] = fetchId
+    if signature <> ""
+        m.inFlightSignatures[signature] = fetchId
+    end if
+
+    if not IsArray(m.requestQueue)
+        m.requestQueue = []
+    end if
+    m.requestQueue.push(entry)
+    dispatchPendingRequests()
+    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Queued fetch ${fetchId} signature=${signature}`)
     return true
 end function
 
@@ -326,141 +706,44 @@ function serializeRequestForWorker(request as object) as object
     return payload
 end function
 
-sub handleNodeEvent(msg as object)
-    node = msg.GetNode()
-    if node = invalid then return
-
-    nodeMatches = false
-    nodeType = Type(node)
-    if nodeType = "roSGNode"
-        nodeMatches = (node = m.fetchWorker)
-    else if nodeType = "roString"
-        nodeMatches = (LCase(node) = LCase(m.fetchWorker.id))
-    end if
-
-    if nodeMatches = false then return
-
-    field = msg.GetField()
-    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Node event ${field} (${nodeType}) from fetch worker`)
-    if field = "fetchResponse"
-        responsePayload = m.fetchWorker.fetchResponse
-        if IsAssociativeArray(responsePayload)
-            processFetchResponse(responsePayload)
-        end if
-        m.fetchWorker.fetchResponse = invalid
-    end if
-end sub
-
-sub processFetchResponse(responsePayload as object)
-    fetchId = responsePayload?.fetchId
-    key = Stri(fetchId)
-    pending = m.fetchPending.Lookup(key)
-    if pending = invalid
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Received response for unknown fetch ${fetchId}`)
-        return
-    end if
-
-    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Processing fetch response ${fetchId}`)
-
-    connection = pending.connection
-    if connection = invalid
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Connection missing for fetch ${fetchId}`)
-        cleanupFetch(fetchId, pending)
-        return
-    end if
-
-    errorInfo = responsePayload?.error
-    status = invalid
-
-    if isValid(errorInfo)
-        message = errorInfo?.message ?? "SABR request failed"
-        status = send_http_reply(connection, "500", "text/plain", message)
-    else
-        responseInfo = responsePayload?.response
-        if isValid(responseInfo)
-            body = invalid
-            bodyPath = responseInfo?.bodyPath
-            responseHeaders = responseInfo?.headers
-            if not IsAssociativeArray(responseHeaders)
-                responseHeaders = CreateObject("roAssociativeArray")
-            end if
-            statusCode = responseInfo?.status
-            if IsString(statusCode)
-                statusCode = Val(statusCode)
-            else if not IsInteger(statusCode)
-                statusCode = 204
-            end if
-
-            responseError = responseInfo?.error
-            if isValid(responseError)
-                errorMessage = responseError?.message ?? "Internal worker error"
-                status = send_http_reply(connection, "500", "text/plain", errorMessage)
-                cleanupFetch(fetchId, pending)
-                return
-            end if
-
-            if isValid(bodyPath) and bodyPath <> ""
-                ba = CreateObject("roByteArray")
-                if ba.readFile(bodyPath)
-                    body = ba
-                else
-                    m.logs.printl(log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] Failed to read body file ${bodyPath}`)
-                end if
-            end if
-
-            if body = invalid
-                fallbackBody = responseInfo?.body
-                if GetInterface(fallbackBody, "ifByteArray") <> invalid
-                    body = fallbackBody
-                end if
-            end if
-
-            if body = invalid
-                body = CreateObject("roByteArray")
-            end if
-
-            if responseHeaders.DoesExist("Content-Length") = false
-                responseHeaders["Content-Length"] = body.count().toStr()
-            end if
-            if responseHeaders.DoesExist("Content-Type") = false
-                responseHeaders["Content-Type"] = "text/plain"
-            end if
-            if responseHeaders.DoesExist("Connection") = false
-                responseHeaders["Connection"] = "close"
-            end if
-
-            status = send_http_reply_raw(connection, statusCode, responseHeaders, body)
-
-            if isValid(bodyPath) and bodyPath <> ""
-                fs = CreateObject("roFileSystem")
-                if fs <> invalid and fs.Exists(bodyPath)
-                    fs.Delete(bodyPath)
-                end if
-            end if
-        else
-            status = send_http_reply(connection, "204", "text/plain", "")
-        end if
-    end if
-
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Completed fetch ${fetchId} with status ${status}`)
-    cleanupFetch(fetchId, pending)
-end sub
 
 sub cleanupFetch(fetchId as integer, pending as object)
     key = Stri(fetchId)
+    if pending = invalid and m.fetchPending.DoesExist(key)
+        pending = m.fetchPending.Lookup(key)
+    end if
+
+    signature = pending?.signature
+    if signature <> "" and m.inFlightSignatures.DoesExist(signature)
+        m.inFlightSignatures.Delete(signature)
+    end if
+
     if m.fetchPending.DoesExist(key)
         m.fetchPending.Delete(key)
     end if
 
+    if IsArray(pending?.waiters)
+        for each conn in pending.waiters
+            if conn <> invalid
+                removeConnectionMapping(conn)
+            end if
+        end for
+    end if
+
     connection = pending?.connection
     if connection <> invalid
-        connKey = Stri(connection.getID())
-        if m.connectionFetchMap.DoesExist(connKey)
-            m.connectionFetchMap.Delete(connKey)
-        end if
-        connection.close()
-        m.sockets[connKey] = invalid
+        removeConnectionMapping(connection)
     end if
+
+    workerId = pending?.workerId
+    if workerId <> invalid and m.workerState.DoesExist(workerId)
+        state = m.workerState.Lookup(workerId)
+        state.status = "idle"
+        state.fetchId = invalid
+        m.workerState[workerId] = state
+    end if
+
+    dispatchPendingRequests()
 end sub
 
 sub cancelPendingFetchForConnection(connection as object)
@@ -469,9 +752,19 @@ sub cancelPendingFetchForConnection(connection as object)
     if not m.connectionFetchMap.DoesExist(connKey) then return
     fetchId = m.connectionFetchMap.Lookup(connKey)
     key = Stri(fetchId)
-    if m.fetchPending.DoesExist(key)
-        m.fetchPending.Delete(key)
+    pending = m.fetchPending.Lookup(key)
+    if pending <> invalid
+        if isValid(pending.connection) and connection.getId() = pending.connection.getId()
+            pending.connection = invalid
+        else if IsArray(pending.waiters)
+            newWaiters = []
+            for each waiterConn in pending.waiters
+                if waiterConn.GetID() <> connection.GetID() then newWaiters.push(waiterConn)
+            end for
+            pending.waiters = newWaiters
+        end if
+        m.fetchPending[key] = pending
     end if
-    m.connectionFetchMap.Delete(connKey)
+    removeConnectionMapping(connection)
     m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Cancelled pending fetch ${fetchId} for closed connection ${connKey}`)
 end sub

@@ -1144,6 +1144,44 @@ function sabr_joinWithPipe(parts as object) as string
     return result
 end function
 
+function sabr_notifySegmentCallback(callback as dynamic, response as object, requestMetadata as object, contentType as string) as boolean
+    if not IsFunction(callback) then return false
+    segmentInfo = {
+        "response": response
+        "requestMetadata": requestMetadata
+        "contentType": contentType
+    }
+    success = false
+    try
+        if isValid(m?.logs)
+            rangeLabel = ""
+            initFlag = false
+            requestNumberLabel = ""
+            metadata = segmentInfo?.requestMetadata
+            if IsAssociativeArray(metadata)
+                if metadata.DoesExist("isInit") and metadata.isInit = true
+                    initFlag = true
+                end if
+                requestNumberLabel = sabr_valueToLabel(metadata?.requestNumber)
+                byteRange = metadata?.byteRange
+                if IsAssociativeArray(byteRange)
+                    rangeLabel = sabr_formatRequestedRangeForPath(byteRange)
+                end if
+            end if
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-${contentType}] Segment callback dispatch init=${initFlag} range=${rangeLabel} request=${requestNumberLabel}`)
+        end if
+        callback(segmentInfo)
+        success = true
+    catch e
+        if isValid(m?.logs)
+            message = e?.message
+            if not isValid(message) or message = "" then message = `${e}`
+            m.logs.printl(log_level_Type.WARN, `[YTSABR-${contentType}] Segment callback failed: ${message}`)
+        end if
+    end try
+    return success
+end function
+
 function sabr_currentTimestampMs() as integer
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0
@@ -1851,12 +1889,13 @@ function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic)
     return `[YTSABR-Util-${contentType}-${rn}]`
 end function
 
-function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, redirectDepth = 0 as integer) as object
+function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, redirectDepth = 0 as integer, segmentCallback = invalid as dynamic) as object
     ok = true
 
     sabrAbrUrl = ""
     playbackContext = invalid
     response = invalid
+    segmentDeliveredViaCallback = false
     requestTimer = invalid
     requestLogTag = `[YTSABR-${contentType}]`
     if isValid(m?.logs)
@@ -1986,6 +2025,11 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolved playerTimeMs=${playerTimeOverride} source=${playerTimeSourceLabel}`)
     rangeLabelForLog = sabr_formatRequestedRangeForPath(requestByteRange)
+    indexInfoLabel = "absent"
+    if requestByteRange.DoesExist("segmentIndexInfo")
+        indexInfoLabel = "present"
+    end if
+    m.logs.printl(log_level_Type.INFO, `${requestLogTag} Request classified init=${isInitSegmentRequest} range=${rangeLabelForLog} hasIndexInfo=${indexInfoLabel}`)
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using playerTimeMs=${playerTimeOverride} for range ${rangeLabelForLog}`)
 
     sabrRequestJson = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, playerTimeOverride, videoNode, nextRequestId)
@@ -2108,6 +2152,18 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             pathLabel = parts[parts.count() - 1]
         end if
         m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache hit path=${pathLabel} range=${cacheLookupRange} bytes=${cacheEntry.data.count()}`)
+        if not segmentDeliveredViaCallback and requestMetadataEntry?.isInit <> true
+            callbackSuccess = sabr_notifySegmentCallback(segmentCallback, response, requestMetadataEntry, contentType)
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Cache segment callback success=${callbackSuccess} range=${cacheLookupRange}`)
+            if callbackSuccess
+                segmentDeliveredViaCallback = true
+                response["deliveredViaCallback"] = true
+            end if
+        else if requestMetadataEntry?.isInit = true
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache hit for init range=${cacheLookupRange}; suppressing callback`)
+        else if segmentDeliveredViaCallback = true
+            m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Cache hit range=${cacheLookupRange} already delivered via callback`)
+        end if
     end if
 
     if cacheHit = false
@@ -2236,6 +2292,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 sabrUmpProcessor = sabr_ump_createProcessor(requestMetadata, m.logs)
                                 umpResult = invalid
                                 pendingResult = invalid
+                                firstResult = invalid
+                                responseReady = invalid
                                 bytesRemaining = sabrUmpResponse.count()
                                 chunkOffset = 0
                                 chunkSize = 32 * 1024
@@ -2249,19 +2307,49 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     chunkOffset = chunkOffset + windowSize
                                     pendingResult = sabrUmpProcessor.processChunk(chunk)
                                     if isValid(pendingResult) and pendingResult.done = true
-                                        umpResult = pendingResult
-                                        exit while
+                                        if not isValid(firstResult)
+                                            firstResult = pendingResult
+                                        end if
+                                        if not isValid(response)
+                                            response = sabr_buildResponseForPlayer(requestMetadata, pendingResult, currentFormat, requestByteRange, contentType)
+                                        end if
+                                        if not segmentDeliveredViaCallback
+                                            callbackRangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+                                            callbackLoopSuccess = sabr_notifySegmentCallback(segmentCallback, response, requestMetadataEntry, contentType)
+                                            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Streaming segment callback success=${callbackLoopSuccess} range=${callbackRangeLabel} chunkOffset=${chunkOffset}`)
+                                            if callbackLoopSuccess
+                                                segmentDeliveredViaCallback = true
+                                                if isValid(response)
+                                                    response["deliveredViaCallback"] = true
+                                                end if
+                                            end if
+                                        end if
                                     end if
                                 end while
 
                                 ' If loop finished without marking done, flush remainder to ensure final result.
-                                if not isValid(umpResult)
-                                    pendingResult = sabr_umpProcessor.processChunk(createObject("roByteArray"))
+                                if not isValid(firstResult)
+                                    pendingResult = sabrUmpProcessor.processChunk(createObject("roByteArray"))
                                     if isValid(pendingResult) and pendingResult.done = true
-                                        umpResult = pendingResult
+                                        firstResult = pendingResult
+                                        if not isValid(response)
+                                            response = sabr_buildResponseForPlayer(requestMetadata, pendingResult, currentFormat, requestByteRange, contentType)
+                                        end if
+                                        if not segmentDeliveredViaCallback
+                                            callbackRangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+                                            callbackLoopFlushSuccess = sabr_notifySegmentCallback(segmentCallback, response, requestMetadataEntry, contentType)
+                                            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Streaming flush callback success=${callbackLoopFlushSuccess} range=${callbackRangeLabel}`)
+                                            if callbackLoopFlushSuccess
+                                                segmentDeliveredViaCallback = true
+                                                if isValid(response)
+                                                    response["deliveredViaCallback"] = true
+                                                end if
+                                            end if
+                                        end if
                                     end if
                                 end if
 
+                                umpResult = firstResult
                                 segmentInfo = sabrUmpProcessor.getSegmentInfo()
                                 if sabrUmpProcessor.DoesExist("getSegmentScanSummary")
                                     segmentScanSummary = sabrUmpProcessor.getSegmentScanSummary()
@@ -2338,7 +2426,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         sabr_deleteFileIfExists(responseFilePath)
                                         sabr_deleteFileIfExists(protoFilePath)
                                         writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
-                                        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, redirectDepth + 1)
+                                        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, redirectDepth + 1, segmentCallback)
                                     end if
                                 end if
 
@@ -2380,7 +2468,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     if isValid(umpResult?.data)
                                         m.logs.printl(log_level_Type.INFO, `${requestLogTag} UMP result data size: ${umpResult.data.count()}`)
                                     end if
-                                    response = sabr_buildResponseForPlayer(requestMetadata, umpResult, currentFormat, requestByteRange, contentType)
+                                    if not isValid(response)
+                                        response = sabr_buildResponseForPlayer(requestMetadata, umpResult, currentFormat, requestByteRange, contentType)
+                                    end if
 
                                     segmentPayload = response?.fullBody
                                     if not isValid(segmentPayload)
@@ -2392,6 +2482,28 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         if response.status >= 200 and response.status < 300 and isValid(segmentPayload) and segmentPayload.count() > 0
                                             deliveredSegment = true
                                         end if
+                                    end if
+                                    segmentPayloadBytes = 0
+                                    if GetInterface(segmentPayload, "ifByteArray") <> invalid
+                                        segmentPayloadBytes = segmentPayload.count()
+                                    end if
+                                    statusLabel = sabr_valueToLabel(response?.status)
+                                    if deliveredSegment = true
+                                        m.logs.printl(log_level_Type.INFO, `${requestLogTag} Segment payload ready bytes=${segmentPayloadBytes} status=${statusLabel} init=${requestMetadataEntry?.isInit}`)
+                                    else
+                                        m.logs.printl(log_level_Type.WARN, `${requestLogTag} Segment payload missing bytes=${segmentPayloadBytes} status=${statusLabel} init=${requestMetadataEntry?.isInit}`)
+                                    end if
+
+                                    if deliveredSegment = true and not segmentDeliveredViaCallback
+                                        callbackRangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+                                        callbackFinalSuccess = sabr_notifySegmentCallback(segmentCallback, response, requestMetadataEntry, contentType)
+                                        m.logs.printl(log_level_Type.INFO, `${requestLogTag} Final segment callback success=${callbackFinalSuccess} range=${callbackRangeLabel} bytes=${segmentPayloadBytes}`)
+                                        if callbackFinalSuccess
+                                            segmentDeliveredViaCallback = true
+                                            response["deliveredViaCallback"] = true
+                                        end if
+                                    else if deliveredSegment = true and segmentDeliveredViaCallback = true
+                                        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Segment payload already delivered via callback earlier range=${sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)}`)
                                     end if
 
                                     if cacheKey <> "" and isValid(segmentPayload) and segmentPayload.count() > 0 and isValid(response?.status) and response.status >= 200 and response.status < 300
@@ -2685,6 +2797,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     if requestTimer <> invalid
         m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Total request duration`, requestTimer, -1)
+    end if
+
+    if isValid(response)
+        response["deliveredViaCallback"] = segmentDeliveredViaCallback
     end if
 
     return response

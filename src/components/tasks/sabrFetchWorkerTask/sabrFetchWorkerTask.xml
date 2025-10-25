@@ -2,7 +2,7 @@
 <component name="sabrFetchWorkerTask" extends="Task">
     <interface>
         <field id="requestQueue" type="array" access="readwrite" />
-        <field id="fetchResponse" type="assocarray" access="readwrite" />
+        <field id="fetchEvents" type="array" access="readwrite" />
         <field id="utilsTask" type="node" access="readwrite" />
         <field id="videoNode" type="node" access="readwrite" />
         <field id="debugUploadUrl" type="string" access="readwrite" />

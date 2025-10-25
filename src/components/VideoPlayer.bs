@@ -9,6 +9,12 @@ sub init()
     m.titleBackground = m.top.findNode("titleBackground")
     m.titleLabel = m.top.findNode("titleLabel")
     m.top.focusable = true
+    m.lastLoggedPositionMs = -1
+
+    if m.videoNode <> invalid
+        m.videoNode.observeField("state", "onVideoStateChanged")
+        m.videoNode.observeField("position", "onVideoPositionChanged")
+    end if
 end sub
 
 function getVideoNodeRef() as object
@@ -40,6 +46,33 @@ sub setVideo(data as object)
     m.videoNode.control = "play"
     m.videoNode.setFocus(true)
 
+end sub
+
+sub onVideoStateChanged()
+    if m.videoNode = invalid then return
+    state = m.videoNode.state
+    m.logs.printl(log_level_Type.INFO, `[${TAG}] state=${state}`)
+end sub
+
+sub onVideoPositionChanged()
+    if m.videoNode = invalid then return
+    position = m.videoNode.position
+    if position = invalid then return
+
+    positionMs = int((position ?? 0) * 1000)
+    if positionMs < 0 then return
+
+    shouldLog = false
+    if m.lastLoggedPositionMs = -1 and positionMs >= 0
+        shouldLog = true
+    else if Abs(positionMs - m.lastLoggedPositionMs) >= 5000
+        shouldLog = true
+    end if
+
+    if shouldLog
+        m.lastLoggedPositionMs = positionMs
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] position=${positionMs}ms (~${Str(position)}s)`)
+    end if
 end sub
 
 sub showTitleOverlay(title as string)
