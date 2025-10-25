@@ -10,6 +10,7 @@
         <function name="clearSidxIndexMap" />
         <function name="getPlaybackContext" />
         <function name="setPlaybackContext" />
+        <function name="mergePlaybackContext" />
         <function name="clearPlaybackContext" />
         <function name="getSabrPayload" />
         <function name="setSabrPayload" />

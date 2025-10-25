@@ -282,36 +282,6 @@ function sabr_mergeAssociativeMaps(existing as dynamic, incoming as dynamic) as 
     return merged
 end function
 
-function sabr_mergePlaybackContexts(existing as dynamic, updated as dynamic) as object
-    profiler = sabr_profilerStart("adapter.mergePlaybackContexts")
-    if not IsAssociativeArray(existing) and not IsAssociativeArray(updated)
-        sabr_profilerStop(profiler)
-        return CreateObject("roAssociativeArray")
-    end if
-
-    merged = CreateObject("roAssociativeArray")
-    if IsAssociativeArray(existing)
-        for each key in existing
-            merged[key] = existing[key]
-        end for
-    end if
-
-    if IsAssociativeArray(updated)
-        for each key in updated
-            value = updated[key]
-            if key = "sidxIndexByFormat" or key = "initializedFormats" or key = "deliveredDurationTotals"
-                priorValue = merged.Lookup(key)
-                merged[key] = sabr_mergeAssociativeMaps(priorValue, value)
-            else
-                merged[key] = value
-            end if
-        end for
-    end if
-
-    sabr_profilerStop(profiler)
-    return merged
-end function
-
 function sabr_safeFormatJson(value as dynamic, fallback = "" as string) as string
     result = fallback
     if not isValid(value) then return result
@@ -545,54 +515,36 @@ function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as o
         return playbackContext
     end if
 
-    existingContext = invalid
-    if isValid(m?.top?.utilsTask)
-        profileGet = sabr_profilerStart("adapter.utilsTask.getPlaybackContext.call")
-        existingContext = m.top.utilsTask.callFunc("getPlaybackContext", mediaIdHash)
-        sabr_profilerStop(profileGet)
-    else
-        if not IsAssociativeArray(m?.playbackContextFallback)
-            m.playbackContextFallback = {}
+    if not isValid(m?.top?.utilsTask)
+        if isValid(m?.logs)
+            m.logs.printl(log_level_Type.WARN, `[YTSABR-Context] utilsTask singleton unavailable; skipping persist for mediaId=${mediaIdHash}`)
         end if
-        existingContext = m.playbackContextFallback.Lookup(mediaIdHash)
+        sabr_profilerStop(profiler)
+        return playbackContext
     end if
 
     incomingSummary = sabr_buildPlaybackContextSizeSummary(playbackContext)
-    existingSummary = sabr_buildPlaybackContextSizeSummary(existingContext)
-
-    mergedContext = sabr_mergePlaybackContexts(existingContext, playbackContext)
-
+    mergeProfile = sabr_profilerStart("adapter.utilsTask.mergePlaybackContext.call")
+    mergedContext = m.top.utilsTask.callFunc("mergePlaybackContext", mediaIdHash, playbackContext)
+    sabr_profilerStop(mergeProfile)
     mergedSummary = sabr_buildPlaybackContextSizeSummary(mergedContext)
-    if isValid(m?.logs)
-        contextLogTag = "[YTSABR-Context]"
-        m.logs.printl(log_level_Type.INFO, `${contextLogTag} mediaId=${mediaIdHash} existing≈${existingSummary.byteEstimate}B(${existingSummary.keyCount} keys) incoming≈${incomingSummary.byteEstimate}B(${incomingSummary.keyCount} keys) merged≈${mergedSummary.byteEstimate}B(${mergedSummary.keyCount} keys) sampleKeys=${mergedSummary.sampleKeys}`)
+    if isValid(mergedContext?.sidxIndexByFormat)
+        m.sidxIndexCache = sabr_mergeAssociativeMaps(m.sidxIndexCache, mergedContext.sidxIndexByFormat)
     end if
 
-    if isValid(m?.top?.utilsTask)
-        profileSet = sabr_profilerStart("adapter.utilsTask.setPlaybackContext.call")
-        m.top.utilsTask.callFunc("setPlaybackContext", mediaIdHash, mergedContext)
-        sabr_profilerStop(profileSet)
-        if IsAssociativeArray(mergedContext?.sidxIndexByFormat)
-            profileMergeSidx = sabr_profilerStart("adapter.utilsTask.mergeSidxIndexMap.call")
-            m.top.utilsTask.callFunc("mergeSidxIndexMap", mergedContext.sidxIndexByFormat)
-            sabr_profilerStop(profileMergeSidx)
+    existingSummary = {
+        "byteEstimate": 0
+        "keyCount": 0
+        "sampleKeys": "[]"
+    }
+
+    if isValid(m?.logs)
+        contextLogTag = "[YTSABR-Context]"
+        existingLabel = "n/a"
+        if existingSummary?.byteEstimate <> invalid and existingSummary.byteEstimate >= 0
+            existingLabel = `${existingSummary.byteEstimate}B(${existingSummary.keyCount} keys)`
         end if
-        profileGetSidx = sabr_profilerStart("adapter.utilsTask.getSidxIndexMap.call")
-        latestGlobal = m.top.utilsTask.callFunc("getSidxIndexMap")
-        sabr_profilerStop(profileGetSidx)
-        if IsAssociativeArray(latestGlobal)
-            m.sidxIndexCache = latestGlobal
-        end if
-    else
-        if not IsAssociativeArray(m?.playbackContextFallback)
-            m.playbackContextFallback = {}
-        end if
-        m.playbackContextFallback[mediaIdHash] = mergedContext
-        if IsAssociativeArray(mergedContext?.sidxIndexByFormat)
-            currentGlobal = sabr_globalSidxIndexMap()
-            currentGlobal = sabr_mergeAssociativeMaps(currentGlobal, mergedContext.sidxIndexByFormat)
-            m.sidxIndexCache = currentGlobal
-        end if
+        m.logs.printl(log_level_Type.INFO, `${contextLogTag} mediaId=${mediaIdHash} existing≈${existingLabel} incoming≈${incomingSummary.byteEstimate}B(${incomingSummary.keyCount} keys) merged≈${mergedSummary.byteEstimate}B(${mergedSummary.keyCount} keys) sampleKeys=${mergedSummary.sampleKeys}`)
     end if
 
     sabr_profilerStop(profiler)
@@ -1132,24 +1084,9 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     map[indexKey] = sanitized
     playbackContext["sidxIndexByFormat"] = map
 
-    globalMap = sabr_globalSidxIndexMap()
-    if not IsAssociativeArray(globalMap)
-        globalMap = {}
-    end if
-    globalMap[indexKey] = sanitized
-    if isValid(m?.top?.utilsTask)
-        updateMap = CreateObject("roAssociativeArray")
-        updateMap[indexKey] = sanitized
-        m.top.utilsTask.callFunc("mergeSidxIndexMap", updateMap)
-        latestGlobal = m.top.utilsTask.callFunc("getSidxIndexMap")
-        if IsAssociativeArray(latestGlobal)
-            m.sidxIndexCache = latestGlobal
-        else
-            m.sidxIndexCache = globalMap
-        end if
-    else
-        m.sidxIndexCache = globalMap
-    end if
+    updateMap = CreateObject("roAssociativeArray")
+    updateMap[indexKey] = sanitized
+    m.sidxIndexCache = sabr_mergeAssociativeMaps(m.sidxIndexCache, updateMap)
 
     sabr_seedMetadataFromSidx(playbackContext, typeLabel, formatKey, sanitized)
 
@@ -2402,8 +2339,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         profileGetContext = sabr_profilerStart("adapter.utilsTask.getPlaybackContext.call")
         playbackContext = m.top.utilsTask.callFunc("getPlaybackContext", mediaIdHash)
         sabr_profilerStop(profileGetContext)
-    else if IsAssociativeArray(m?.playbackContextFallback)
-        playbackContext = m.playbackContextFallback.Lookup(mediaIdHash)
+    else
+        sabr_profilerStop(handleProfile)
+        if isValid(m?.logs)
+            m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] utilsTask singleton unavailable; cannot service SABR request`)
+        end if
+        return sabr_buildErrorResponseForPlayer(500, "SABR utilsTask unavailable")
     end if
 
     if not IsAssociativeArray(playbackContext)
@@ -2413,21 +2354,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         m.logs.printl(log_level_Type.INFO, `[YTSABR-Util-${contentType}] Loaded SABR playbackContext from utilsTask for mediaIdHash: ${mediaIdHash}`)
         loadedSidx = playbackContext?.sidxIndexByFormat
         if IsAssociativeArray(loadedSidx)
-            if isValid(m?.top?.utilsTask)
-                profileMergeSidx = sabr_profilerStart("adapter.utilsTask.mergeSidxIndexMap.call")
-                m.top.utilsTask.callFunc("mergeSidxIndexMap", loadedSidx)
-                sabr_profilerStop(profileMergeSidx)
-                profileGetSidx = sabr_profilerStart("adapter.utilsTask.getSidxIndexMap.call")
-                latest = m.top.utilsTask.callFunc("getSidxIndexMap")
-                sabr_profilerStop(profileGetSidx)
-                if IsAssociativeArray(latest)
-                    m.sidxIndexCache = latest
-                end if
-            else
-                globalMap = sabr_globalSidxIndexMap()
-                globalMap = sabr_mergeAssociativeMaps(globalMap, loadedSidx)
-                m.sidxIndexCache = globalMap
-            end if
+            m.sidxIndexCache = sabr_mergeAssociativeMaps(m.sidxIndexCache, loadedSidx)
         end if
     end if
 

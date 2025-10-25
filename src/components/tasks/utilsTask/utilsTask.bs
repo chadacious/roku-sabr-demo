@@ -28,6 +28,48 @@ sub messageHandlers()
     end while
 end sub
 
+function mergeAssociativeMaps(existing as dynamic, incoming as dynamic) as object
+    merged = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(existing)
+        for each key in existing
+            merged[key] = existing[key]
+        end for
+    end if
+    if IsAssociativeArray(incoming)
+        for each key in incoming
+            merged[key] = incoming[key]
+        end for
+    end if
+    return merged
+end function
+
+function mergePlaybackContexts(existing as dynamic, updated as dynamic) as object
+    if not IsAssociativeArray(existing) and not IsAssociativeArray(updated)
+        return CreateObject("roAssociativeArray")
+    end if
+
+    merged = CreateObject("roAssociativeArray")
+    if IsAssociativeArray(existing)
+        for each key in existing
+            merged[key] = existing[key]
+        end for
+    end if
+
+    if IsAssociativeArray(updated)
+        for each key in updated
+            value = updated[key]
+            if key = "sidxIndexByFormat" or key = "initializedFormats" or key = "deliveredDurationTotals"
+                priorValue = merged.Lookup(key)
+                merged[key] = mergeAssociativeMaps(priorValue, value)
+            else
+                merged[key] = value
+            end if
+        end for
+    end if
+
+    return merged
+end function
+
 function profilerStore() as object
     if not IsAssociativeArray(m?.profilerStats)
         m.profilerStats = {}
@@ -194,6 +236,31 @@ function setPlaybackContext(mediaIdHash as string, context as dynamic) as dynami
     result = context
     profilerStop(profiler)
     return result
+end function
+
+function mergePlaybackContext(mediaIdHash as string, updates as dynamic) as dynamic
+    profiler = profilerStart("utilsTask.mergePlaybackContext")
+    if not IsAssociativeArray(m.playbackContextByMediaId)
+        m.playbackContextByMediaId = {}
+    end if
+    if not isValid(mediaIdHash) or mediaIdHash = ""
+        profilerStop(profiler)
+        return invalid
+    end if
+
+    existing = m.playbackContextByMediaId.Lookup(mediaIdHash)
+    merged = mergePlaybackContexts(existing, updates)
+    m.playbackContextByMediaId[mediaIdHash] = merged
+
+    if Not IsAssociativeArray(m.sidxIndexCache)
+        m.sidxIndexCache = {}
+    end if
+    if IsAssociativeArray(merged?.sidxIndexByFormat)
+        m.sidxIndexCache = mergeAssociativeMaps(m.sidxIndexCache, merged.sidxIndexByFormat)
+    end if
+
+    profilerStop(profiler)
+    return merged
 end function
 
 function getSabrPayload(mediaIdHash as string) as dynamic
