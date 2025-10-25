@@ -309,6 +309,74 @@ function sabr_mergePlaybackContexts(existing as dynamic, updated as dynamic) as 
     return merged
 end function
 
+function sabr_safeFormatJson(value as dynamic, fallback = "" as string) as string
+    result = fallback
+    if not isValid(value) then return result
+    try
+        formatted = FormatJson(value)
+        if isValid(formatted)
+            result = formatted
+        end if
+    catch e
+        ' ignore serialization errors; caller inspects fallback
+    end try
+    return result
+end function
+
+function sabr_buildPlaybackContextSizeSummary(playbackContext as dynamic) as object
+    summary = {
+        "isAssociative": false
+        "byteEstimate": 0
+        "keyCount": 0
+        "sampleKeys": ""
+        "error": ""
+    }
+
+    if not IsAssociativeArray(playbackContext) then
+        summary.error = "not-associative-array"
+        return summary
+    end if
+
+    summary.isAssociative = true
+    summary.keyCount = playbackContext.count()
+
+    sample = []
+    sampleLimit = 8
+    for each key in playbackContext
+        sample.push(key)
+        if sample.count() >= sampleLimit then exit for
+    end for
+    summary.sampleKeys = sabr_safeFormatJson(sample, "[]")
+
+    jsonStr = invalid
+    try
+        jsonStr = FormatJson(playbackContext)
+    catch e
+        summary.error = e?.message ?? "format-json-failed"
+    end try
+
+    if isValid(jsonStr)
+        summary.byteEstimate = Len(jsonStr)
+    end if
+
+    return summary
+end function
+
+sub sabr_logPlaybackContextSize(logTag as string, label as string, playbackContext as dynamic) as void
+    if not isValid(m?.logs) then return
+
+    summary = sabr_buildPlaybackContextSizeSummary(playbackContext)
+    if summary.isAssociative = true
+        details = summary.sampleKeys
+        if details = invalid or details = "" then details = "[]"
+        m.logs.printl(log_level_Type.INFO, `${logTag} PlaybackContext size[${label}] bytes≈${summary.byteEstimate} keys=${summary.keyCount} sampleKeys=${details}`)
+    else
+        reason = summary.error
+        if not isValid(reason) or reason = "" then reason = "unknown"
+        m.logs.printl(log_level_Type.WARN, `${logTag} PlaybackContext size[${label}] unavailable: ${reason}`)
+    end if
+end sub
+
 function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as object) as object
     if not IsAssociativeArray(playbackContext) then return playbackContext
 
@@ -322,7 +390,16 @@ function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as o
         existingContext = m.playbackContextFallback.Lookup(mediaIdHash)
     end if
 
+    incomingSummary = sabr_buildPlaybackContextSizeSummary(playbackContext)
+    existingSummary = sabr_buildPlaybackContextSizeSummary(existingContext)
+
     mergedContext = sabr_mergePlaybackContexts(existingContext, playbackContext)
+
+    mergedSummary = sabr_buildPlaybackContextSizeSummary(mergedContext)
+    if isValid(m?.logs)
+        contextLogTag = "[YTSABR-Context]"
+        m.logs.printl(log_level_Type.INFO, `${contextLogTag} mediaId=${mediaIdHash} existing≈${existingSummary.byteEstimate}B(${existingSummary.keyCount} keys) incoming≈${incomingSummary.byteEstimate}B(${incomingSummary.keyCount} keys) merged≈${mergedSummary.byteEstimate}B(${mergedSummary.keyCount} keys) sampleKeys=${mergedSummary.sampleKeys}`)
+    end if
 
     if isValid(m?.top?.utilsTask)
         m.top.utilsTask.callFunc("setPlaybackContext", mediaIdHash, mergedContext)
@@ -2205,8 +2282,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     ' increment the request number
     ' nextRequestId = generateSabrRequestNumber(playbackContext, contentType)
     nextRequestId = m.top.utilsTask.callFunc("getNextId", "sabrRequestNumber")
-    playbackContext["requestNumber"] = nextRequestId
     requestLogTag = sabr_utilLogTag(contentType, nextRequestId)
+    sabr_logPlaybackContextSize(requestLogTag, "loaded", playbackContext)
+    playbackContext["requestNumber"] = nextRequestId
     m.logs.printl(log_level_Type.INFO, `${requestLogTag} SABR playback request number: ${nextRequestId}`)
 
     ' update the URL's rn param (or create it) to be the request number
@@ -3329,7 +3407,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(m?.logs)
         contextStoreTimer = m.logs.mark()
     end if
+    sabr_logPlaybackContextSize(requestLogTag, "pre-persist", playbackContext)
     playbackContext = sabr_persistPlaybackContext(mediaIdHash, playbackContext)
+    sabr_logPlaybackContextSize(requestLogTag, "post-persist", playbackContext)
     if contextStoreTimer <> invalid
         m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Playback context persisted`, contextStoreTimer, -1)
     end if
