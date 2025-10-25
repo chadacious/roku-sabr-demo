@@ -249,6 +249,20 @@ function sabr_cacheParseEntry(fileName as string) as object
         if extra.DoesExist("sequenceNumber") then entry["sequenceNumber"] = extra.Lookup("sequenceNumber")
         if extra.DoesExist("formatId") then entry["formatId"] = extra.Lookup("formatId")
         if extra.DoesExist("playerTimeMs") then entry["playerTimeMs"] = extra.Lookup("playerTimeMs")
+        if extra.DoesExist("rangeStart") and entry.Lookup("rangeStart") = invalid
+            metaStart = extra.Lookup("rangeStart")
+            if IsString(metaStart)
+                metaStart = Val(metaStart)
+            end if
+            entry["rangeStart"] = metaStart
+        end if
+        if extra.DoesExist("rangeEnd") and entry.Lookup("rangeEnd") = invalid
+            metaEnd = extra.Lookup("rangeEnd")
+            if IsString(metaEnd)
+                metaEnd = Val(metaEnd)
+            end if
+            entry["rangeEnd"] = metaEnd
+        end if
     end if
     return entry
 end function
@@ -341,6 +355,8 @@ function sabr_cacheStoreSegment(options as object) as object
     else if isValid(extra?.startSegmentIndex)
         extra.sequenceNumber = extra.startSegmentIndex
     end if
+    if isValid(options?.rangeStart) then extra.rangeStart = options.rangeStart
+    if isValid(options?.rangeEnd) then extra.rangeEnd = options.rangeEnd
     formatIdOpt = options?.formatId
     if IsAssociativeArray(formatIdOpt)
         extra.formatId = formatIdOpt
@@ -377,19 +393,22 @@ function sabr_cacheLoadSegment(params as object) as object
     requestedEnd = Val(params?.requestedEnd)
     hasStart = requestedStart <> invalid
     hasEnd = requestedEnd <> invalid
+    allowInitFallback = params?.allowInitFallback
+    if allowInitFallback = invalid then allowInitFallback = false
 
     best = invalid
     for each entry in entries
-        if entry["isInit"] = true
+        entryIsInit = entry["isInit"] = true
+        if entryIsInit
             if params?.isInit = true
                 best = entry
                 exit for
-            else
+            else if allowInitFallback <> true
                 continue for
             end if
+        else
+            if params?.isInit = true then continue for
         end if
-
-        if params?.isInit = true then continue for
 
         coverageStart = entry?.rangeStart
         coverageEnd = entry?.rangeEnd
@@ -420,7 +439,7 @@ function sabr_cacheLoadSegment(params as object) as object
         end if
     end for
 
-    if params?.isInit = true and best = invalid
+    if (params?.isInit = true or allowInitFallback = true) and best = invalid
         ' fallback: use first init if available
         for each entry in entries
             if entry["isInit"] = true
@@ -869,6 +888,11 @@ sub sabr_cacheRunMaintenance(activePath as string)
             sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=active-request`)
         end if
 
+        if shouldRemove and entryInfo?.isInit = true
+            shouldRemove = false
+            sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=keep-init-${removalReason}`)
+        end if
+
         if shouldRemove
             focus = sabr_cacheFinalizeRemoval(fs, base, table, entryInfo, metadata, removalReason)
             if focus <> ""
@@ -919,16 +943,21 @@ sub sabr_cacheRunMaintenance(activePath as string)
 
     if SABR_CACHE_TOTAL_SIZE_LIMIT > 0 and totalBytes > SABR_CACHE_TOTAL_SIZE_LIMIT
         while totalBytes > SABR_CACHE_TOTAL_SIZE_LIMIT and remaining.count() > 0
-            oldestIdx = 0
-            oldestVal = remaining[0]?.storedAt
-            for idx = 1 to remaining.count() - 1
+            oldestIdx = -1
+            oldestVal = invalid
+            for idx = 0 to remaining.count() - 1
                 info = remaining[idx]
+                if info.entry?.isInit = true then continue for
                 value = info?.storedAt
-                if oldestVal = invalid or (value <> invalid and value < oldestVal)
+                if oldestIdx = -1 or oldestVal = invalid or (value <> invalid and value < oldestVal)
                     oldestIdx = idx
                     oldestVal = value
                 end if
             end for
+            if oldestIdx = -1
+                sabr_cacheLog(log_level_Type.DEBUG, "[SabrCache] quota enforcement skipped; only init segments remain")
+                exit while
+            end if
             info = remaining[oldestIdx]
             focus = sabr_cacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "quota")
             if focus <> ""

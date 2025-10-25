@@ -119,8 +119,7 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                 jsonPayload = fromBase64(base64Payload)
                 m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Decoded SupplementalProperty: ${FormatJson(jsonPayload)}`)
                 if isValid(jsonPayload)
-                    ' we need to store the playbackContext to the tmp file system. create a folder from the hash of the mediaId
-                    ' where we will store the video context as json, and also the downloaded UMP segments
+                    ' stash the playbackContext and SABR payload in the singleton utils task so every worker sees the same state
                     if isValid(mediaId) and mediaId <> ""
                         mediaIdHash = hashStringEVP(mediaId, "md5")
                         ' replace any url occurrence of sabr:// with our local http server url
@@ -141,11 +140,9 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                             "hasVideoParts": hasVideoParts,
                             "hasAudioParts": hasAudioParts,
                         }
-                        fileName = `tmp:/${mediaIdHash}/playbackContext.json`
-                        m.utilsTask.CACHE_STRING_TO_FILE = { "content": playbackContext, "path": fileName }
-                        fileName = `tmp:/${mediaIdHash}/sabrPayload.json`
-                        m.utilsTask.CACHE_STRING_TO_FILE = { "content": jsonPayload, "path": fileName }
-                        m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Stored playbackContext to file: ${fileName}`)
+                        m.utilsTask.callFunc("setPlaybackContext", mediaIdHash, playbackContext)
+                        m.utilsTask.callFunc("setSabrPayload", mediaIdHash, jsonPayload)
+                        m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Stored playbackContext in utilsTask for mediaIdHash=${mediaIdHash}`)
                     else
                         m.logs.printl(log_level_Type.WARN, `[${TAG}] SDUIPlayer: Cannot store playbackContext as video mediaId is missing or invalid`)
                     end if

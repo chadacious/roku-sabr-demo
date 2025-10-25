@@ -5,5 +5,13 @@
         <field id="CACHE_STRING_TO_FILE" type="assocarray" access="writeonly" />
         <field id="uiMessage" type="assocarray" access="readwrite" />
         <function name="getNextId" />
+        <function name="getSidxIndexMap" />
+        <function name="mergeSidxIndexMap" />
+        <function name="clearSidxIndexMap" />
+        <function name="getPlaybackContext" />
+        <function name="setPlaybackContext" />
+        <function name="clearPlaybackContext" />
+        <function name="getSabrPayload" />
+        <function name="setSabrPayload" />
     </interface>
 </component>

@@ -74,18 +74,7 @@ sub YtsabrServer()
                     connection = m.sockets[Stri(msg.getSocketID())]
                     ' If connection is invalid, what does that mean?
                     if isValid(connection)
-                        ' FIXME: Do we actually correctly close sockets?
-                        if connection.isReadable() and connection.getCountRcvBuf() = 0 and connection.isListening() = false then
-                            ' Apparently this means the connection has been closed
-                            ' What a terrible way to indicate it
-                            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
-                            connection.close()
-                            cancelPendingFetchForConnection(connection)
-                            m.sockets[Stri(msg.getSocketID())] = invalid
-                        else
-                            'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
-                            handle_tcp(connection, port)
-                        end if
+                        handle_tcp(connection, port)
                     ' else
                     '     m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
                         ' stop
@@ -127,7 +116,6 @@ sub handle_tcp(connection as object, port as object)
     end if
     status = request.read_data(request, connection)
     if status = false then ' More data is required
-        m.logs.printl(log_level_Type.INFO, "[YTSABR-Server] Not yet finished")
         return
     else if status = true then 'Data is complete. Execute handler
         ' body = request.body
@@ -139,8 +127,7 @@ sub handle_tcp(connection as object, port as object)
         m.connections[Stri(connection.getID())] = invalid
         should_close = process_request(request, connection, port)
         if should_close then
-            m.sockets[Stri(connection.getID())] = invalid
-            connection.close()
+            closeServerConnection(connection)
             m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] finalizing connection close: ${connection.getID()}`)
         end if
     else ' Error condition. Not handled (FIXME! Need to return ints instead of booleans so we have a third case. Or invalid?)
@@ -163,29 +150,20 @@ function process_request(request as object, connection as object, port as object
             return true
         end if
 
-        ' check if we already have this mediaIdHash sabrPayload.json file loaded
-        if m.sabrPayloads[mediaIdHash] = invalid then
-            ' Load the sabrPayload.json file from tmp:/{mediaIdHash}/sabrPayload.json
-            filePath = `tmp:/${mediaIdHash}/sabrPayload.json`
-            fileContent = getFile(filePath)
-            if fileContent = invalid or fileContent = "" then
-                m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayload.json file: ${filePath} on ${connection.getID()}`)
-                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - could not load sabrPayload.json")
-                return true
+        sabrPayload = m.sabrPayloads[mediaIdHash]
+        if sabrPayload = invalid and isValid(m.top.utilsTask)
+            sabrPayload = m.top.utilsTask.callFunc("getSabrPayload", mediaIdHash)
+            if sabrPayload <> invalid
+                m.sabrPayloads[mediaIdHash] = sabrPayload
+                m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from utilsTask`)
             end if
-            ' Parse the JSON content
-            sabrPayload = ParseJson(fileContent)
-            if sabrPayload = invalid then
-                m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] sabrPayload.json file is not valid JSON: ${filePath} on ${connection.getID()}`)
-                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - sabrPayload.json is not valid JSON")
-                return true
-            end if
-            m.sabrPayloads[mediaIdHash] = sabrPayload
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
-        else
-            sabrPayload = m.sabrPayloads[mediaIdHash]
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         end if
+        if sabrPayload = invalid then
+            m.logs.printl(log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] No sabrPayload available for mediaIdHash: ${mediaIdHash}`)
+            status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - missing SABR payload")
+            return true
+        end if
+        m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         if enqueueFetchRequest(request, connection, mediaIdHash, sabrPayload)
             status = "ASYNC"
         else
@@ -490,16 +468,19 @@ sub handleFetchFinalEvent(event as object)
     end if
 
     if deliveredFlag <> true
-        pending.segmentStatus = statusCode
-        pending.segmentHeaders = headers
-        pending.segmentBody = body
-        stagedBytes = 0
-        if GetInterface(body, "ifByteArray") <> invalid
-            stagedBytes = body.count()
+        if bodyLength > 0
+            pending.segmentStatus = statusCode
+            pending.segmentHeaders = headers
+            pending.segmentBody = body
+            stagedBytes = bodyLength
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${pending.contentType}] Staged final body for fetch=${fetchId} bytes=${stagedBytes}`)
+        else
+            m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${pending.contentType}] Skipping final body staging for fetch=${fetchId} due to empty payload`)
         end if
-        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-Server-${pending.contentType}] Staged final body for fetch=${fetchId} bytes=${stagedBytes}`)
     end if
-    pending.delivered = true
+    if deliveredFlag = true or bodyLength > 0
+        pending.delivered = true
+    end if
 
     cleanupDescriptorFile(descriptor)
     cleanupFetch(fetchId, pending)
@@ -515,7 +496,7 @@ sub handleFetchErrorEvent(event as object)
         connection = pending.connection
         if connection <> invalid
             status = send_http_reply(connection, "500", "text/plain", message)
-            removeConnectionMapping(connection)
+            closeServerConnection(connection)
             m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Completed fetch ${fetchId} with status ${status}`)
         end if
         cleanupFetch(fetchId, pending)
@@ -535,7 +516,7 @@ sub deliverErrorToConnection(connection as object, fetchId as integer, message a
     if connection = invalid then return
     status = send_http_reply(connection, "500", "text/plain", message)
     m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Error response for fetch ${fetchId} status=${status} message=${message}`)
-    removeConnectionMapping(connection)
+    closeServerConnection(connection)
 end sub
 
 sub removeConnectionMapping(connection as object)
@@ -544,6 +525,12 @@ sub removeConnectionMapping(connection as object)
     if m.connectionFetchMap.DoesExist(connKey)
         m.connectionFetchMap.Delete(connKey)
     end if
+end sub
+
+sub closeServerConnection(connection as object)
+    if connection = invalid then return
+    connKey = Stri(connection.getID())
+    removeConnectionMapping(connection)
     if m.sockets.DoesExist(connKey)
         m.sockets[connKey] = invalid
     end if
@@ -746,7 +733,7 @@ sub cleanupFetch(fetchId as integer, pending as object)
     dispatchPendingRequests()
 end sub
 
-sub cancelPendingFetchForConnection(connection as object)
+sub cancelPendingFetchForConnection(connection as object, shouldClose = false as boolean)
     if connection = invalid then return
     connKey = Stri(connection.getID())
     if not m.connectionFetchMap.DoesExist(connKey) then return
@@ -765,6 +752,10 @@ sub cancelPendingFetchForConnection(connection as object)
         end if
         m.fetchPending[key] = pending
     end if
-    removeConnectionMapping(connection)
+    if shouldClose
+        closeServerConnection(connection)
+    else
+        removeConnectionMapping(connection)
+    end if
     m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Cancelled pending fetch ${fetchId} for closed connection ${connKey}`)
 end sub

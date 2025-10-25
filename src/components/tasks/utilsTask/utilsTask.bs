@@ -7,6 +7,9 @@ sub init()
     m.top.ObserveField("LOAD_FILE_TO_STRING", m.port)
     m.top.ObserveField("CACHE_STRING_TO_FILE", m.port)
     m.nextRequestId = {}
+    m.sidxIndexCache = {}
+    m.playbackContextByMediaId = {}
+    m.sabrPayloadByMediaId = {}
     m.logs = logger()
 end sub
 
@@ -32,6 +35,109 @@ function getNextId(group as string) as integer
     m.nextRequestId[group] = m.nextRequestId[group] + 1
     return m.nextRequestId[group]
 end function
+
+function getSidxIndexMap() as object
+    if not IsAssociativeArray(m.sidxIndexCache)
+        m.sidxIndexCache = {}
+    end if
+    return m.sidxIndexCache
+end function
+
+function mergeSidxIndexMap(incoming as dynamic) as object
+    if not IsAssociativeArray(m.sidxIndexCache)
+        m.sidxIndexCache = {}
+    end if
+    if IsAssociativeArray(incoming)
+        for each key in incoming
+            m.sidxIndexCache[key] = incoming[key]
+        end for
+    end if
+    return m.sidxIndexCache
+end function
+
+sub clearSidxIndexMap()
+    m.sidxIndexCache = {}
+end sub
+
+function getPlaybackContext(mediaIdHash as string) as dynamic
+    if not isValid(mediaIdHash) or mediaIdHash = "" then return invalid
+    if not IsAssociativeArray(m.playbackContextByMediaId)
+        m.playbackContextByMediaId = {}
+    end if
+    return m.playbackContextByMediaId.Lookup(mediaIdHash)
+end function
+
+function setPlaybackContext(mediaIdHash as string, context as dynamic) as dynamic
+    if not IsAssociativeArray(m.playbackContextByMediaId)
+        m.playbackContextByMediaId = {}
+    end if
+    if not isValid(mediaIdHash) or mediaIdHash = ""
+        return invalid
+    end if
+    if not IsAssociativeArray(context)
+        if m.playbackContextByMediaId.DoesExist(mediaIdHash)
+            m.playbackContextByMediaId.Delete(mediaIdHash)
+        end if
+        return invalid
+    end if
+    m.playbackContextByMediaId[mediaIdHash] = context
+    return context
+end function
+
+function getSabrPayload(mediaIdHash as string) as dynamic
+    if not isValid(mediaIdHash) or mediaIdHash = "" then return invalid
+    if not IsAssociativeArray(m.sabrPayloadByMediaId)
+        m.sabrPayloadByMediaId = {}
+    end if
+    return m.sabrPayloadByMediaId.Lookup(mediaIdHash)
+end function
+
+function setSabrPayload(mediaIdHash as string, payload as dynamic) as dynamic
+    if not IsAssociativeArray(m.sabrPayloadByMediaId)
+        m.sabrPayloadByMediaId = {}
+    end if
+    if not isValid(mediaIdHash) or mediaIdHash = ""
+        return invalid
+    end if
+    normalized = payload
+    if IsString(normalized)
+        trimmed = normalized.Trim()
+        if trimmed <> ""
+            parsed = invalid
+            parseError = false
+            try
+                parsed = ParseJson(trimmed)
+            catch e
+                parseError = true
+            end try
+            if parsed <> invalid
+                normalized = parsed
+            else if parseError
+                if isValid(m?.logs)
+                    m.logs.printl(log_level_Type.WARN, `[UtilsTask] Failed to parse SABR payload JSON for mediaIdHash=${mediaIdHash}`)
+                end if
+                normalized = invalid
+            end if
+        else
+            normalized = invalid
+        end if
+    end if
+    if not isValid(normalized)
+        if m.sabrPayloadByMediaId.DoesExist(mediaIdHash)
+            m.sabrPayloadByMediaId.Delete(mediaIdHash)
+        end if
+        return invalid
+    end if
+    m.sabrPayloadByMediaId[mediaIdHash] = normalized
+    return normalized
+end function
+
+sub clearPlaybackContext(mediaIdHash as string)
+    if not IsAssociativeArray(m.playbackContextByMediaId) then return
+    if m.playbackContextByMediaId.DoesExist(mediaIdHash)
+        m.playbackContextByMediaId.Delete(mediaIdHash)
+    end if
+end sub
 
 sub sendUIMessage(message as object)
     m.top.uiMessage = message
