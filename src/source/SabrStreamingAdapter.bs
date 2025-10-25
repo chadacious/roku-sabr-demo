@@ -283,7 +283,9 @@ function sabr_mergeAssociativeMaps(existing as dynamic, incoming as dynamic) as 
 end function
 
 function sabr_mergePlaybackContexts(existing as dynamic, updated as dynamic) as object
+    profiler = sabr_profilerStart("adapter.mergePlaybackContexts")
     if not IsAssociativeArray(existing) and not IsAssociativeArray(updated)
+        sabr_profilerStop(profiler)
         return CreateObject("roAssociativeArray")
     end if
 
@@ -306,6 +308,7 @@ function sabr_mergePlaybackContexts(existing as dynamic, updated as dynamic) as 
         end for
     end if
 
+    sabr_profilerStop(profiler)
     return merged
 end function
 
@@ -377,12 +380,176 @@ sub sabr_logPlaybackContextSize(logTag as string, label as string, playbackConte
     end if
 end sub
 
+function sabr_profilerStore() as object
+    if not IsAssociativeArray(m?.profilerStats)
+        m.profilerStats = {}
+    end if
+    return m.profilerStats
+end function
+
+function sabr_profilerEnsure(label as string) as object
+    store = sabr_profilerStore()
+    entry = store.Lookup(label)
+    if not IsAssociativeArray(entry)
+        entry = {
+            "count": 0
+            "totalMs": 0
+            "maxMs": 0
+            "minMs": -1
+            "slowCount": 0
+            "lastMs": 0
+        }
+    end if
+    return entry
+end function
+
+function sabr_profilerStart(label as string, thresholdMs = 5 as integer) as object
+    timer = invalid
+    if isValid(m?.logs)
+        timer = m.logs.mark()
+    else
+        timer = CreateObject("roTimespan")
+        timer.mark()
+    end if
+    return {
+        "label": label
+        "timer": timer
+        "thresholdMs": thresholdMs
+    }
+end function
+
+sub sabr_profilerStop(profile as object)
+    if profile = invalid then return
+    timer = profile?.timer
+    if timer = invalid then return
+    durationVal = timer.TotalMilliseconds()
+    durationMs = int(durationVal + 0.5)
+    if durationMs < 0 then durationMs = 0
+
+    entry = sabr_profilerEnsure(profile.label)
+    entry.count = entry.count + 1
+    entry.totalMs = entry.totalMs + durationMs
+    if durationMs > entry.maxMs then entry.maxMs = durationMs
+    if entry.minMs < 0 or durationMs < entry.minMs then entry.minMs = durationMs
+    if durationMs >= profile.thresholdMs
+        entry.slowCount = entry.slowCount + 1
+        if isValid(m?.logs)
+            m.logs.printl(log_level_Type.DEBUG, `[SABR-Profiler] ${profile.label} duration=${durationMs}ms`)
+        end if
+    end if
+    entry.lastMs = durationMs
+
+    store = sabr_profilerStore()
+    store[profile.label] = entry
+end sub
+
+function sabr_profilerSnapshot() as object
+    store = sabr_profilerStore()
+    snapshot = {}
+    for each label in store
+        entry = store[label]
+        if not IsAssociativeArray(entry) then continue for
+        snapshot[label] = {
+            "count": entry.count
+            "totalMs": entry.totalMs
+            "maxMs": entry.maxMs
+            "minMs": entry.minMs
+            "slowCount": entry.slowCount
+            "lastMs": entry.lastMs
+        }
+    end for
+    return snapshot
+end function
+
+sub sabr_profilerReset()
+    m.profilerStats = {}
+end sub
+
+sub sabr_profilerLogSummary(logTag as string, limit = 10 as integer)
+    if not isValid(m?.logs) then return
+    snapshot = sabr_profilerSnapshot()
+    if snapshot.count() = 0 then return
+
+    used = {}
+    index = 0
+    while index < limit
+        maxLabel = invalid
+        maxTotal = -1
+        for each label in snapshot
+            if used.DoesExist(label) then continue for
+            entry = snapshot[label]
+            total = entry?.totalMs
+            if total = invalid then total = 0
+            if total > maxTotal
+                maxTotal = total
+                maxLabel = label
+            end if
+        end for
+        if maxLabel = invalid then exit while
+        entry = snapshot[maxLabel]
+        count = entry?.count
+        if count = invalid or count = 0 then count = 1
+        avgMs = int(entry.totalMs / count + 0.5)
+        m.logs.printl(log_level_Type.INFO, `${logTag} Profiler[${index + 1}] ${maxLabel} total=${entry.totalMs}ms count=${entry.count} avg=${avgMs}ms max=${entry.maxMs}ms slow=${entry.slowCount} last=${entry.lastMs}ms`)
+        used[maxLabel] = true
+        index = index + 1
+    end while
+end sub
+
+sub sabr_profilerLogExternalSummary(logTag as string, prefix as string, stats as object, limit = 5 as integer)
+    if not isValid(m?.logs) then return
+    if not IsAssociativeArray(stats) then return
+    used = {}
+    index = 0
+    while index < limit
+        maxLabel = invalid
+        maxTotal = -1
+        for each label in stats
+            if used.DoesExist(label) then continue for
+            entry = stats[label]
+            if not IsAssociativeArray(entry) then continue for
+            total = entry?.totalMs
+            if total = invalid then total = 0
+            if total > maxTotal
+                maxTotal = total
+                maxLabel = label
+            end if
+        end for
+        if maxLabel = invalid then exit while
+        entry = stats[maxLabel]
+        count = entry?.count
+        if count = invalid or count = 0 then count = 1
+        avgMs = int(entry.totalMs / count + 0.5)
+        m.logs.printl(log_level_Type.INFO, `${logTag} ${prefix}Profiler[${index + 1}] ${maxLabel} total=${entry.totalMs}ms count=${entry.count} avg=${avgMs}ms max=${entry.maxMs}ms slow=${entry.slowCount} last=${entry.lastMs}ms`)
+        used[maxLabel] = true
+        index = index + 1
+    end while
+end sub
+
+sub sabr_profilerCompleteRequest(handleProfile as object, logTag as string)
+    sabr_profilerStop(handleProfile)
+    sabr_profilerLogSummary(logTag, 10)
+    utilsStats = invalid
+    if isValid(m?.top?.utilsTask)
+        statsProfile = sabr_profilerStart("adapter.utilsTask.getProfilerStats.call")
+        utilsStats = m.top.utilsTask.callFunc("getProfilerStats")
+        sabr_profilerStop(statsProfile)
+        sabr_profilerLogExternalSummary(logTag, "UtilsTask", utilsStats, 10)
+    end if
+end sub
+
 function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as object) as object
-    if not IsAssociativeArray(playbackContext) then return playbackContext
+    profiler = sabr_profilerStart("adapter.persistPlaybackContext")
+    if not IsAssociativeArray(playbackContext)
+        sabr_profilerStop(profiler)
+        return playbackContext
+    end if
 
     existingContext = invalid
     if isValid(m?.top?.utilsTask)
+        profileGet = sabr_profilerStart("adapter.utilsTask.getPlaybackContext.call")
         existingContext = m.top.utilsTask.callFunc("getPlaybackContext", mediaIdHash)
+        sabr_profilerStop(profileGet)
     else
         if not IsAssociativeArray(m?.playbackContextFallback)
             m.playbackContextFallback = {}
@@ -402,11 +569,17 @@ function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as o
     end if
 
     if isValid(m?.top?.utilsTask)
+        profileSet = sabr_profilerStart("adapter.utilsTask.setPlaybackContext.call")
         m.top.utilsTask.callFunc("setPlaybackContext", mediaIdHash, mergedContext)
+        sabr_profilerStop(profileSet)
         if IsAssociativeArray(mergedContext?.sidxIndexByFormat)
+            profileMergeSidx = sabr_profilerStart("adapter.utilsTask.mergeSidxIndexMap.call")
             m.top.utilsTask.callFunc("mergeSidxIndexMap", mergedContext.sidxIndexByFormat)
+            sabr_profilerStop(profileMergeSidx)
         end if
+        profileGetSidx = sabr_profilerStart("adapter.utilsTask.getSidxIndexMap.call")
         latestGlobal = m.top.utilsTask.callFunc("getSidxIndexMap")
+        sabr_profilerStop(profileGetSidx)
         if IsAssociativeArray(latestGlobal)
             m.sidxIndexCache = latestGlobal
         end if
@@ -422,6 +595,7 @@ function sabr_persistPlaybackContext(mediaIdHash as string, playbackContext as o
         end if
     end if
 
+    sabr_profilerStop(profiler)
     return mergedContext
 end function
 
@@ -1213,7 +1387,7 @@ function sabr_extractMediaIdHash(url as string) as dynamic
     return invalid
 end function
 
-function sabr_zeroPadDigits(value as integer, width as integer) as string
+function sabr_zeroPadDigits(value as dynamic, width as integer) as string
     if IsString(value)
         strValue = value
     else if IsInteger(value)
@@ -2029,8 +2203,13 @@ function sabr_getDumpLabel(playbackContext as object, prefix as string, requestN
     counter =  m.top.utilsTask.callFunc("getNextId", "sabrDumpCounterBatch")
 
     seqLabel = sabr_nextDumpSequence()
+    requestLabel = rn
+    if requestLabel = "" or requestLabel = "unknown"
+        requestLabel = `${seqLabel}`
+    end if
+    requestLabel = sabr_zeroPadDigits(requestLabel, 6)
 
-    return `roku-player/${sabr_zeroPadDigits(seqLabel, 6)}-${prefix}-${contentLabel}-itag${itagLabel}-${batchIndex}-${counter}-${rn}-${rangePart}`
+    return `roku-player/${requestLabel}-${prefix}-${contentLabel}-itag${itagLabel}-${batchIndex}-${counter}-${rn}-${rangePart}`
 end function
 
 sub roku_debugUploadText(debugUploadUrl as string, relativePath as string, text as string, logs = invalid as dynamic)
@@ -2205,7 +2384,7 @@ end function
 
 function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, redirectDepth = 0 as integer, segmentCallback = invalid as dynamic) as object
     ok = true
-
+    handleProfile = sabr_profilerStart("adapter.handleRequest.total", 0)
     sabrAbrUrl = ""
     playbackContext = invalid
     response = invalid
@@ -2220,7 +2399,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     ' load the playback context from the utilsTask singleton
     if isValid(m?.top?.utilsTask)
+        profileGetContext = sabr_profilerStart("adapter.utilsTask.getPlaybackContext.call")
         playbackContext = m.top.utilsTask.callFunc("getPlaybackContext", mediaIdHash)
+        sabr_profilerStop(profileGetContext)
     else if IsAssociativeArray(m?.playbackContextFallback)
         playbackContext = m.playbackContextFallback.Lookup(mediaIdHash)
     end if
@@ -2233,8 +2414,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         loadedSidx = playbackContext?.sidxIndexByFormat
         if IsAssociativeArray(loadedSidx)
             if isValid(m?.top?.utilsTask)
+                profileMergeSidx = sabr_profilerStart("adapter.utilsTask.mergeSidxIndexMap.call")
                 m.top.utilsTask.callFunc("mergeSidxIndexMap", loadedSidx)
+                sabr_profilerStop(profileMergeSidx)
+                profileGetSidx = sabr_profilerStart("adapter.utilsTask.getSidxIndexMap.call")
                 latest = m.top.utilsTask.callFunc("getSidxIndexMap")
+                sabr_profilerStop(profileGetSidx)
                 if IsAssociativeArray(latest)
                     m.sidxIndexCache = latest
                 end if
@@ -2257,6 +2442,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(fatalInfo)
         fatalReason = fatalInfo?.reason ?? "SABR fatal error"
         m.logs.printl(log_level_Type.WARN, `[YTSABR-Util-${contentType}] Blocking SABR request due to fatal error: ${fatalReason}`)
+        sabr_profilerCompleteRequest(handleProfile, requestLogTag)
         return sabr_buildErrorResponseForPlayer(502, fatalReason)
     end if
 
@@ -2281,7 +2467,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     ' increment the request number
     ' nextRequestId = generateSabrRequestNumber(playbackContext, contentType)
+    getIdProfile = sabr_profilerStart("adapter.utilsTask.getNextId.call")
     nextRequestId = m.top.utilsTask.callFunc("getNextId", "sabrRequestNumber")
+    sabr_profilerStop(getIdProfile)
     requestLogTag = sabr_utilLogTag(contentType, nextRequestId)
     sabr_logPlaybackContextSize(requestLogTag, "loaded", playbackContext)
     playbackContext["requestNumber"] = nextRequestId
@@ -2618,7 +2806,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 if isValid(m?.logs)
                     requestSpan = m.logs.mark()
                 end if
+                downloadProfile = sabr_profilerStart("adapter.sabrRequest.download")
                 res = makeRequest(sabrRequest)
+                sabr_profilerStop(downloadProfile)
                 if requestSpan <> invalid
                     m.logs.printTime(log_level_Type.INFO, `${requestLogTag} SABR proxy round-trip`, requestSpan, -1)
                 end if
@@ -2795,6 +2985,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         sabr_deleteFileIfExists(responseFilePath)
                                         sabr_deleteFileIfExists(protoFilePath)
                                         sabr_persistPlaybackContext(mediaIdHash, playbackContext)
+                                        sabr_profilerCompleteRequest(handleProfile, requestLogTag)
                                         return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, redirectDepth + 1, segmentCallback)
                                     end if
                                 end if
@@ -3421,6 +3612,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(response)
         response["deliveredViaCallback"] = segmentDeliveredViaCallback
     end if
+
+    sabr_profilerCompleteRequest(handleProfile, requestLogTag)
 
     return response
 

@@ -28,22 +28,118 @@ sub messageHandlers()
     end while
 end sub
 
+function profilerStore() as object
+    if not IsAssociativeArray(m?.profilerStats)
+        m.profilerStats = {}
+    end if
+    return m.profilerStats
+end function
+
+function profilerStart(label as string, thresholdMs = 5 as integer) as object
+    timer = invalid
+    if isValid(m?.logs)
+        timer = m.logs.mark()
+    else
+        timer = CreateObject("roTimespan")
+        timer.mark()
+    end if
+    return {
+        "label": label
+        "timer": timer
+        "thresholdMs": thresholdMs
+    }
+end function
+
+function profilerEnsureEntry(label as string) as object
+    store = profilerStore()
+    entry = store.Lookup(label)
+    if not IsAssociativeArray(entry)
+        entry = {
+            "count": 0
+            "totalMs": 0
+            "maxMs": 0
+            "minMs": -1
+            "slowCount": 0
+            "lastMs": 0
+        }
+    end if
+    return entry
+end function
+
+sub profilerStop(mark as object)
+    if mark = invalid then return
+    timer = mark?.timer
+    if timer = invalid then return
+    durationVal = timer.TotalMilliseconds()
+    durationMs = int(durationVal + 0.5)
+    if durationMs < 0 then durationMs = 0
+
+    entry = profilerEnsureEntry(mark.label)
+    entry.count = entry.count + 1
+    entry.totalMs = entry.totalMs + durationMs
+    if durationMs > entry.maxMs then entry.maxMs = durationMs
+    if entry.minMs < 0 or durationMs < entry.minMs then entry.minMs = durationMs
+    if durationMs >= mark.thresholdMs
+        entry.slowCount = entry.slowCount + 1
+        if isValid(m?.logs)
+            m.logs.printl(log_level_Type.DEBUG, `[UtilsTaskProfiler] ${mark.label} duration=${durationMs}ms`)
+        end if
+    end if
+    entry.lastMs = durationMs
+
+    store = profilerStore()
+    store[mark.label] = entry
+end sub
+
+function profilerSnapshot() as object
+    store = profilerStore()
+    snapshot = {}
+    for each label in store
+        entry = store[label]
+        if not IsAssociativeArray(entry) then continue for
+        snapshot[label] = {
+            "count": entry.count
+            "totalMs": entry.totalMs
+            "maxMs": entry.maxMs
+            "minMs": entry.minMs
+            "slowCount": entry.slowCount
+            "lastMs": entry.lastMs
+        }
+    end for
+    return snapshot
+end function
+
+sub resetProfilerStats()
+    m.profilerStats = {}
+end sub
+
+function getProfilerStats() as object
+    return profilerSnapshot()
+end function
+
 function getNextId(group as string) as integer
+    profiler = profilerStart("utilsTask.getNextId")
     if not m.nextRequestId.DoesExist(group)
         m.nextRequestId[group] = 0
     end if
     m.nextRequestId[group] = m.nextRequestId[group] + 1
-    return m.nextRequestId[group]
+    result = m.nextRequestId[group]
+    profilerStop(profiler)
+    return result
 end function
 
 function getSidxIndexMap() as object
+    profiler = profilerStart("utilsTask.getSidxIndexMap")
     if not IsAssociativeArray(m.sidxIndexCache)
         m.sidxIndexCache = {}
     end if
-    return m.sidxIndexCache
+    result = m.sidxIndexCache
+    profilerStop(profiler)
+    return result
 end function
 
 function mergeSidxIndexMap(incoming as dynamic) as object
+    profiler = profilerStart("utilsTask.mergeSidxIndexMap")
     if not IsAssociativeArray(m.sidxIndexCache)
         m.sidxIndexCache = {}
     end if
@@ -52,52 +148,77 @@ function mergeSidxIndexMap(incoming as dynamic) as object
             m.sidxIndexCache[key] = incoming[key]
         end for
     end if
-    return m.sidxIndexCache
+    result = m.sidxIndexCache
+    profilerStop(profiler)
+    return result
 end function
 
 sub clearSidxIndexMap()
+    profiler = profilerStart("utilsTask.clearSidxIndexMap")
     m.sidxIndexCache = {}
+    profilerStop(profiler)
 end sub
 
 function getPlaybackContext(mediaIdHash as string) as dynamic
-    if not isValid(mediaIdHash) or mediaIdHash = "" then return invalid
+    profiler = profilerStart("utilsTask.getPlaybackContext")
+    if not isValid(mediaIdHash) or mediaIdHash = ""
+        profilerStop(profiler)
+        return invalid
+    end if
     if not IsAssociativeArray(m.playbackContextByMediaId)
         m.playbackContextByMediaId = {}
     end if
-    return m.playbackContextByMediaId.Lookup(mediaIdHash)
+    result = m.playbackContextByMediaId.Lookup(mediaIdHash)
+    profilerStop(profiler)
+    return result
 end function
 
 function setPlaybackContext(mediaIdHash as string, context as dynamic) as dynamic
+    profiler = profilerStart("utilsTask.setPlaybackContext")
     if not IsAssociativeArray(m.playbackContextByMediaId)
         m.playbackContextByMediaId = {}
     end if
+    result = invalid
     if not isValid(mediaIdHash) or mediaIdHash = ""
-        return invalid
+        profilerStop(profiler)
+        return result
     end if
     if not IsAssociativeArray(context)
         if m.playbackContextByMediaId.DoesExist(mediaIdHash)
             m.playbackContextByMediaId.Delete(mediaIdHash)
         end if
-        return invalid
+        profilerStop(profiler)
+        return result
     end if
     m.playbackContextByMediaId[mediaIdHash] = context
-    return context
+    result = context
+    profilerStop(profiler)
+    return result
 end function
 
 function getSabrPayload(mediaIdHash as string) as dynamic
-    if not isValid(mediaIdHash) or mediaIdHash = "" then return invalid
+    profiler = profilerStart("utilsTask.getSabrPayload")
+    if not isValid(mediaIdHash) or mediaIdHash = ""
+        profilerStop(profiler)
+        return invalid
+    end if
     if not IsAssociativeArray(m.sabrPayloadByMediaId)
         m.sabrPayloadByMediaId = {}
     end if
-    return m.sabrPayloadByMediaId.Lookup(mediaIdHash)
+    result = m.sabrPayloadByMediaId.Lookup(mediaIdHash)
+    profilerStop(profiler)
+    return result
 end function
 
 function setSabrPayload(mediaIdHash as string, payload as dynamic) as dynamic
+    profiler = profilerStart("utilsTask.setSabrPayload")
     if not IsAssociativeArray(m.sabrPayloadByMediaId)
         m.sabrPayloadByMediaId = {}
     end if
+    result = invalid
     if not isValid(mediaIdHash) or mediaIdHash = ""
-        return invalid
+        profilerStop(profiler)
+        return result
     end if
     normalized = payload
     if IsString(normalized)
@@ -126,17 +247,25 @@ function setSabrPayload(mediaIdHash as string, payload as dynamic) as dynamic
         if m.sabrPayloadByMediaId.DoesExist(mediaIdHash)
             m.sabrPayloadByMediaId.Delete(mediaIdHash)
         end if
-        return invalid
+        profilerStop(profiler)
+        return result
     end if
     m.sabrPayloadByMediaId[mediaIdHash] = normalized
-    return normalized
+    result = normalized
+    profilerStop(profiler)
+    return result
 end function
 
 sub clearPlaybackContext(mediaIdHash as string)
-    if not IsAssociativeArray(m.playbackContextByMediaId) then return
+    profiler = profilerStart("utilsTask.clearPlaybackContext")
+    if not IsAssociativeArray(m.playbackContextByMediaId)
+        profilerStop(profiler)
+        return
+    end if
     if m.playbackContextByMediaId.DoesExist(mediaIdHash)
         m.playbackContextByMediaId.Delete(mediaIdHash)
     end if
+    profilerStop(profiler)
 end sub
 
 sub sendUIMessage(message as object)

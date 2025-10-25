@@ -71,22 +71,22 @@ class Logger
 
     function printl(level as integer, msg as object) as void
 
-        if m.appInfo.isDev()
-            dateTime = CreateObject("roDateTime")
-            dateTime.toLocalTime()
-            if (m.log_options[level] = invalid)
-                level = log_level_Type.UNKNOWN
-            end if
-            if level > m.log_level
-                return
-            end if
-            option = m.log_options[level]
-            ' build ISO string with .mmm
-            ms  = Right(`00${dateTime.GetMilliseconds()}`, 3)
-            iso = dateTime.ToISOString()                     ' e.g., 2025-08-28T11:22:33Z
-            isoWithMs = `${Left(iso, Len(iso)-1)}.${ms}Z`
-            print chr(27) + `[${option.color}m[${option.string}] ${isoWithMs} ${msg}` + chr(27) + "[0m"
+        ' if m.appInfo.isDev()
+        dateTime = CreateObject("roDateTime")
+        dateTime.toLocalTime()
+        if (m.log_options[level] = invalid)
+            level = log_level_Type.UNKNOWN
         end if
+        if level > m.log_level
+            return
+        end if
+        option = m.log_options[level]
+        ' build ISO string with .mmm
+        ms  = Right(`00${dateTime.GetMilliseconds()}`, 3)
+        iso = dateTime.ToISOString()                     ' e.g., 2025-08-28T11:22:33Z
+        isoWithMs = `${Left(iso, Len(iso)-1)}.${ms}Z`
+        print chr(27) + `[${option.color}m[${option.string}] ${isoWithMs} ${msg}` + chr(27) + "[0m"
+        ' end if
     end function
 
     function mark() as object
