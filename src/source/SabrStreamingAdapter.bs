@@ -2639,7 +2639,7 @@ function sabr_processExecutionSegments(exec as object) as object
             if requestSpan <> invalid
                 m.logs.printTime(log_level_Type.INFO, `${requestLogTag} SABR proxy round-trip`, requestSpan, -1)
             end if
-            if not isValid(res?.status) 
+            if not isValid(res?.status)
                 ok = false
                 m.logs.printl(log_level_Type.WARN, `${requestLogTag} No response status from SABR UMP request`)
                 response = sabr_buildErrorResponseForPlayer(500, "SABR request failed")
