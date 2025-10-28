@@ -530,6 +530,12 @@ function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType 
     predicted = sabr_predictPlayerTimeFromSidxEntry(candidateEntry, targetStart)
     if predicted = invalid then return result
 
+    if isValid(m?.logs)
+        logMsg = `[YTSABR-PlayerTime] SIDX match ${label} start=${candidateEntry?.rangeStart ?? candidateEntry?.rangeStartLabel} `
+        logMsg = `${logMsg}end=${candidateEntry?.rangeEnd ?? candidateEntry?.rangeEndLabel} startMs=${candidateEntry?.startTimeMs ?? "?"} durationMs=${candidateEntry?.durationMs ?? "?"} predicted=${predicted}`
+        m.logs.printl(log_level_Type.DEBUG, logMsg)
+    end if
+
     result["value"] = predicted
     result["source"] = label
     return result
@@ -621,6 +627,9 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
     if IsAssociativeArray(meta)
         predicted = sabr_predictPlayerTimeFromMetadata(meta, targetStart)
         if predicted <> invalid
+            if isValid(m?.logs)
+                m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata exact start=${meta?.rangeStart ?? meta?.startRange} end=${meta?.rangeEnd ?? meta?.endRange} startMs=${meta?.startTimeMs ?? "?"} durationMs=${meta?.durationMs ?? "?"} predicted=${predicted}`)
+            end if
             result["value"] = predicted
             result["source"] = "metadata:exact"
             return result
@@ -642,6 +651,9 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
         if endVal <> invalid and targetStart >= startVal and targetStart <= endVal
             predicted = sabr_predictPlayerTimeFromMetadata(meta, targetStart)
             if predicted <> invalid
+                if isValid(m?.logs)
+                    m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata within start=${startVal} end=${endVal} startMs=${meta?.startTimeMs ?? "?"} durationMs=${meta?.durationMs ?? "?"} predicted=${predicted}`)
+                end if
                 result["value"] = predicted
                 result["source"] = "metadata:within"
                 return result
@@ -658,6 +670,10 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
 
     predicted = sabr_predictPlayerTimeFromMetadata(bestCandidate, targetStart)
     if predicted = invalid then return result
+
+    if isValid(m?.logs)
+        m.logs.printl(log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata nearest start=${bestCandidate?.rangeStart ?? bestCandidate?.startRange} end=${bestCandidate?.rangeEnd ?? bestCandidate?.endRange} startMs=${bestCandidate?.startTimeMs ?? "?"} durationMs=${bestCandidate?.durationMs ?? "?"} predicted=${predicted}`)
+    end if
 
     result["value"] = predicted
     result["source"] = bestLabel
@@ -1253,6 +1269,48 @@ function sabr_buildRepeatRequestKey(contentType as string, format as object, byt
     return `${typeLabel}|${segmentKey}`
 end function
 
+sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, playbackContext as object, label as string, extra = invalid as dynamic)
+    if not isValid(m?.logs) then return
+    logTag = sabr_utilLogTag(contentType, `${requestNumber}`)
+    state = playbackContext?.repeatRequestState
+
+    extraParts = []
+    if isValid(extra)
+        if IsString(extra)
+            extraParts.push(extra)
+        else if IsAssociativeArray(extra)
+            for each key in extra
+                extraParts.push(`${key}=${extra[key]}`)
+            end for
+        end if
+    end if
+
+    if not IsAssociativeArray(state)
+        message = `${logTag} RepeatState ${label}: none`
+        if extraParts.count() > 0 then message = `${message} ${extraParts.Join(" ")}`
+        m.logs.printl(log_level_Type.DEBUG, message)
+        return
+    end if
+
+    pieces = [
+        `key=${state?.lastKey ?? ""}`
+        `count=${state?.count ?? ""}`
+        `success=${state?.successStreak ?? ""}`
+        `failure=${state?.failureStreak ?? ""}`
+        `lastStatus=${state?.lastStatus ?? ""}`
+        `lastResult=${state?.lastResult ?? ""}`
+    ]
+    if state?.updatedAt <> invalid
+        pieces.push(`updatedAt=${state.updatedAt}`)
+    end if
+    if extraParts.count() > 0
+        for each part in extraParts
+            pieces.push(part)
+        end for
+    end if
+    m.logs.printl(log_level_Type.DEBUG, `${logTag} RepeatState ${label}: ${pieces.Join(" ")}`)
+end sub
+
 function sabr_streamInfoKey(contentType as string, format as object) as string
     keyPart = sabr_formatToKey(format)
     if keyPart = ""
@@ -1262,6 +1320,57 @@ function sabr_streamInfoKey(contentType as string, format as object) as string
     if typePart = "" then typePart = "UNKNOWN"
     return `${typePart}|${keyPart}`
 end function
+
+sub sabr_logBufferedRanges(logTag as string, requestJson as object)
+    if not isValid(m?.logs) then return
+    if not IsAssociativeArray(requestJson) then return
+    ranges = invalid
+    if requestJson.DoesExist("clientAbrState") and IsAssociativeArray(requestJson.clientAbrState)
+        ranges = requestJson.clientAbrState.Lookup("bufferedRanges")
+    else if requestJson.DoesExist("bufferedRanges")
+        ranges = requestJson.Lookup("bufferedRanges")
+    end if
+
+    summary = []
+    if IsArray(ranges)
+        for each entry in ranges
+            if not IsAssociativeArray(entry) then continue for
+            startLabel = sabr_valueToLabel(entry?.rangeStart)
+            if startLabel = "" then startLabel = sabr_valueToLabel(entry?.startRange)
+            endLabel = sabr_valueToLabel(entry?.rangeEnd)
+            if endLabel = "" then endLabel = sabr_valueToLabel(entry?.endRange)
+            entryType = sabr_valueToLabel(entry?.type)
+            formatKey = sabr_valueToLabel(entry?.formatKey)
+            summary.push(`${startLabel}-${endLabel}@${entryType}:${formatKey}`)
+        end for
+    end if
+
+    selected = []
+    selectedIds = requestJson?.selectedFormatIds
+    if IsArray(selectedIds)
+        for each id in selectedIds
+            if IsAssociativeArray(id)
+                itagLabel = sabr_valueToLabel(id?.itag)
+                xtagLabel = sabr_valueToLabel(id?.xtags)
+                selected.push(`${itagLabel}:${xtagLabel}`)
+            else
+                selected.push(`${id}`)
+            end if
+        end for
+    end if
+
+    if summary.count() = 0 and isValid(ranges)
+        rawSummary = ""
+        try
+            rawSummary = FormatJson(ranges)
+        catch e
+            rawSummary = "<unserializable>"
+        end try
+        m.logs.printl(log_level_Type.DEBUG, `${logTag} bufferedRangesRaw=${rawSummary}`)
+    end if
+
+    m.logs.printl(log_level_Type.DEBUG, `${logTag} bufferedRanges=${summary.Join(" ")} selected=${selected.Join(",")}`)
+end sub
 
 function sabr_toInt(value as dynamic) as dynamic
     if not isValid(value) then return invalid
@@ -1357,6 +1466,11 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
     }
     playbackContext["repeatRequestState"] = newState
 
+    deltaMs = -1
+    if lastUpdated <> invalid then deltaMs = nowTs - lastUpdated
+    extra = `key=${repeatKey} deltaMs=${deltaMs} range=${rangeLabel}`
+    sabr_debugLogRepeatState(contentType, requestNumber, playbackContext, "before_guard", extra)
+
     if successStreak < SABR_REPEAT_SEGMENT_THRESHOLD then return invalid
 
     fatalMessage = `Repeated SABR requests detected for segment ${repeatKey} (range ${rangeLabel}); aborting playback`
@@ -1367,6 +1481,8 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
     }
     newState["aborted"] = true
     playbackContext["repeatRequestState"] = newState
+
+    sabr_debugLogRepeatState(contentType, requestNumber, playbackContext, "guard_abort", extra)
 
     m.logs.printl(log_level_Type.WARN, `${logTag} ${fatalMessage}`)
 
@@ -1386,7 +1502,7 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
     return sabr_buildErrorResponseForPlayer(502, fatalMessage)
 end function
 
-sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as object, response as object)
+sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as object, response as object, contentType = "" as string, requestNumber = invalid as dynamic)
     if not isValid(playbackContext) then return
     repeatKey = `${requestMetadataEntry?.repeatKey ?? ""}`
     if repeatKey = "" then return
@@ -1398,8 +1514,16 @@ sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as o
     statusVal = sabr_toInt(response?.status)
     success = false
     if statusVal <> invalid
-        if statusVal = 206 or (statusVal >= 200 and statusVal < 300)
+        if statusVal = 206 or ((statusVal >= 200 and statusVal < 300) and statusVal <> 204)
             success = true
+        end if
+    end if
+
+    if success
+        body = response?.body
+        bodyPath = sabr_toSafeString(response?.bodyPath)
+        if GetInterface(body, "ifByteArray") <> invalid and body.count() = 0 and bodyPath = ""
+            success = false
         end if
     end if
 
@@ -1421,6 +1545,12 @@ sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as o
     repeatState["updatedAt"] = sabr_currentTimestampMs()
 
     playbackContext["repeatRequestState"] = repeatState
+
+    if contentType <> ""
+        if requestNumber = invalid then requestNumber = requestMetadataEntry?.requestNumber
+        extra = `key=${repeatKey} status=${statusVal} success=${success}`
+        sabr_debugLogRepeatState(contentType, requestNumber, playbackContext, "after_result", extra)
+    end if
 end sub
 
 function sabr_formatTypeFromFormat(format as dynamic) as string
@@ -2005,12 +2135,15 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
      end if
 
     formatToDiscard = sabr_applyBufferedStateToRequest(sabrRequestJson, bufferState)
+
     if isValid(formatToDiscard)
         ' the formatToDiscard is the one that we are faking out the youtube server to "not" send us any data.
         ' in this way, if this is a video request, we can get the video segment data but not the audio and vice versa
         ' Sabr wants to send us both audio and video segments in the same response, but we only want one or the other
         sabrRequestJson.selectedFormatIds.push(formatToDiscard)
     end if
+
+    sabr_logBufferedRanges(requestLogTag, sabrRequestJson)
 
     cacheKey = sabr_buildCacheKey(mediaIdHash, contentType, currentFormat, requestByteRange, isInitSegmentRequest)
 
@@ -2049,6 +2182,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(metadataManager)
         metadataManager.store(metadataManager, `${nextRequestId}`, requestMetadataEntry)
     end if
+
+    sabr_debugLogRepeatState(contentType, nextRequestId, playbackContext, "pre_guard", `range=${rangeLabelForLog}`)
 
     repeatGuardResponse = sabr_guardRepeatedRequests(playbackContext, contentType, currentFormat, requestMetadataEntry, `${nextRequestId}`, videoNode, mediaIdHash)
     if isValid(repeatGuardResponse)
@@ -2126,11 +2261,25 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     playbackContext["lastDumpIndex"] = batchCounter
     requestMetadataEntry["batchIndex"] = batchCounter
 
-    if not isInitSegmentRequest and isValid(currentFormat)
-        sabrRequestJson.selectedFormatIds.push(currentFormat)
-    end if
-
     if ok and not cacheHit
+        if not isInitSegmentRequest and isValid(currentFormat)
+            sabrRequestJson.selectedFormatIds.push(currentFormat)
+        end if
+
+        if isValid(m?.logs)
+            selectedSummary = ""
+            if IsArray(sabrRequestJson?.selectedFormatIds) and sabrRequestJson.selectedFormatIds.count() > 0
+                try
+                    selectedSummary = FormatJson(sabrRequestJson.selectedFormatIds)
+                catch e
+                    selectedSummary = "<FormatJson error>"
+                end try
+            end if
+            if selectedSummary <> ""
+                m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} selectedFormatIdsJson=${selectedSummary}`)
+            end if
+        end if
+
         ' clone the object as the encode will add snake case object keys alongside camel case ones
         playbackContext["lastSabrRequest"] = sabrRequestJson
         if debugUploadUrl <> ""
@@ -2522,7 +2671,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         roku_debugUploadText(debugUploadUrl, dumpBase + "-meta.json", FormatJson(responseInfo), m.logs)
     end if
 
-    sabr_recordRepeatResult(playbackContext, requestMetadataEntry, response)
+    sabr_recordRepeatResult(playbackContext, requestMetadataEntry, response, contentType, `${nextRequestId}`)
 
     if not IsAssociativeArray(response)
         response = sabr_buildEmptyResponseForPlayer(contentType, currentFormat)

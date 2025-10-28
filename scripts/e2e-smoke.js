@@ -14,6 +14,12 @@
  *   --host / --password CLI flags
  *   ROKU_DEV_TARGET / ROKU_DEV_PASSWORD environment variables
  *   .vscode/launch.json (first configuration by default, or pass --profile "name")
+ *
+ * Optional playback stress flags:
+ *   --seekPattern predictable|random|none   (default: none; predictable when flag provided without value)
+ *   --seekIterations <n>                    (default: 8 when seekPattern enabled)
+ *   --seekDelayMs <ms>                      (default: 3500ms between seeks)
+ *   --seekSeed <value>                      (for deterministic random pattern)
  */
 
 const fs = require("fs");
@@ -90,18 +96,47 @@ async function main() {
         await logStream.waitFor(/VideoPlayer\] setVideo/, 10000);
         await pause(1500);
 
-        console.log("[test] Waiting for SABR outcome logs (errors or repeats) ...");
+        const seekPatternRaw = options.seekPattern;
+        const normalizedSeekPattern = typeof seekPatternRaw === "string"
+            ? seekPatternRaw
+            : (seekPatternRaw === true ? "predictable" : null);
+        const seekEnabled = typeof normalizedSeekPattern === "string" && normalizedSeekPattern.toLowerCase() !== "none";
+        const seekPattern = seekEnabled ? normalizedSeekPattern : null;
+        const seekIterationsInput = Number(options.seekIterations ?? (seekEnabled ? 12 : 0));
+        const seekIterations = seekIterationsInput > 0 ? Math.min(seekIterationsInput, 20) : 0;
+        const seekDelayMs = Number(options.seekDelayMs ?? 3500);
+        const seekSeed = options.seekSeed;
+
+        if (seekEnabled && seekIterations > 0) {
+            await performSeekPattern({
+                host,
+                port: ecpPort,
+                pattern: seekPattern,
+                iterations: seekIterations,
+                delayMs: seekDelayMs,
+                seed: seekSeed,
+            });
+        }
+
+        const postSeekWaitMs = Number(options.postSeekWaitMs ?? (seekEnabled ? 20000 : 60000));
+        console.log(`[test] Waiting for SABR outcome logs (errors or repeats) up to ${postSeekWaitMs}ms ...`);
+        let repeatGuardTriggered = false;
         try {
-            await logStream.waitFor(/Repeated SABR requests detected/, 60000);
+            await logStream.waitFor(/Repeated SABR requests detected/, postSeekWaitMs);
             console.log("[test] Detected repeat request guard trip");
+            repeatGuardTriggered = true;
         } catch (_err) {
-            console.log("[test] No repeat guard detected within 60s");
+            console.log(`[test] No repeat guard detected within ${postSeekWaitMs}ms`);
+        }
+        if (repeatGuardTriggered && !shouldContinueAfterRepeat(options)) {
+            console.log("[test] Aborting run after repeat guard trigger (use --continueOnRepeat to disable)");
+            return;
         }
         try {
-            await logStream.waitFor(/VideoPlayer\][^\n]*error/i, 35000);
+            await logStream.waitFor(/VideoPlayer\][^\n]*error/i, Math.max(10000, postSeekWaitMs));
             console.log("[test] Detected video error log");
         } catch (_err) {
-            console.log("[test] No video error detected within 35s");
+            console.log(`[test] No video error detected within ${Math.max(10000, postSeekWaitMs)}ms`);
         }
         await pause(3000);
         console.log("[test] Completed log observation window");
@@ -119,9 +154,15 @@ function parseArgs(argv) {
     let pending = null;
     for (const arg of argv) {
         if (pending) {
-            result[pending] = arg;
-            pending = null;
-            continue;
+            if (arg.startsWith("--")) {
+                result[pending] = true;
+                pending = null;
+                // fall through and handle this arg as a new flag
+            } else {
+                result[pending] = arg;
+                pending = null;
+                continue;
+            }
         }
         if (arg.startsWith("--")) {
             const [key, value] = arg.slice(2).split("=", 2);
@@ -129,11 +170,13 @@ function parseArgs(argv) {
                 result[key] = value;
             } else {
                 pending = key;
-                result[key] = true;
             }
         } else {
             result._.push(arg);
         }
+    }
+    if (pending) {
+        result[pending] = true;
     }
     return result;
 }
@@ -438,6 +481,98 @@ function postEcp({ host, port, path: requestPath }) {
 
 function pause(durationMs) {
     return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
+function shouldContinueAfterRepeat(options) {
+    const flag = options?.continueOnRepeat;
+    if (flag === undefined || flag === null) {
+        return false;
+    }
+    if (flag === true) {
+        return true;
+    }
+    const value = String(flag).toLowerCase();
+    return value === "true" || value === "1" || value === "yes";
+}
+
+async function performSeekPattern({ host, port, pattern, iterations, delayMs, seed }) {
+    const normalizedPattern = pattern ? pattern.toLowerCase() : "predictable";
+    console.log(`[test] Starting seek pattern "${normalizedPattern}" for ${iterations} iterations (delay ${delayMs}ms)`);    
+
+    const steps = buildSeekSteps({ pattern: normalizedPattern, iterations, seed });
+    for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index];
+        console.log(`[test] Seek ${index + 1}/${steps.length}: ${step.direction} x${step.repeats}`);
+        await sendTrickPlay({ host, port, direction: step.direction, repeats: step.repeats });
+        await pause(delayMs);
+    }
+    console.log("[test] Completed seek pattern");
+}
+
+function buildSeekSteps({ pattern, iterations, seed }) {
+    const steps = [];
+    if (iterations <= 0) {
+        return steps;
+    }
+
+    if (pattern === "predictable") {
+        const template = [
+            { direction: "forward", repeats: 1 },
+            { direction: "forward", repeats: 2 },
+            { direction: "backward", repeats: 1 },
+            { direction: "forward", repeats: 1 },
+            { direction: "backward", repeats: 2 },
+            { direction: "forward", repeats: 3 },
+        ];
+        for (let i = 0; i < iterations; i += 1) {
+            const item = template[i % template.length];
+            steps.push({ direction: item.direction, repeats: item.repeats });
+        }
+    } else {
+        const rng = createDeterministicRandom(seed);
+        for (let i = 0; i < iterations; i += 1) {
+            const direction = rng() >= 0.5 ? "forward" : "backward";
+            const repeats = 1 + Math.floor(rng() * 3); // 1-3 presses
+            steps.push({ direction, repeats });
+        }
+    }
+    return steps;
+}
+
+async function sendTrickPlay({ host, port, direction, repeats }) {
+    const key = direction === "backward" ? "Rev" : "Fwd";
+    for (let i = 0; i < repeats; i += 1) {
+        await sendKeypress({ host, port, key });
+        await pause(220);
+    }
+    await pause(320);
+    // Select confirms the highlighted trick-play position.
+    await sendKeypress({ host, port, key: "Select" });
+    await pause(600);
+}
+
+function createDeterministicRandom(seed) {
+    let state;
+    if (seed === undefined || seed === null) {
+        state = Date.now() & 0xffffffff;
+    } else if (typeof seed === "number") {
+        state = seed | 0;
+    } else {
+        const text = String(seed);
+        state = 0;
+        for (let i = 0; i < text.length; i += 1) {
+            state = (state * 31 + text.charCodeAt(i)) & 0xffffffff;
+        }
+    }
+
+    if (state === 0) {
+        state = 0x6d2b79f5;
+    }
+
+    return function random() {
+        state = (state * 1664525 + 1013904223) & 0xffffffff;
+        return ((state >>> 0) / 0x100000000);
+    };
 }
 
 function httpRequest({ host, path: requestPath, method, headers, body }) {
