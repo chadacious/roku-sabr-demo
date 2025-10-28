@@ -566,12 +566,12 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
         ctx._partialSegments[segmentKeyStr] = {
             "headerId": headerId
             "mediaHeader": mediaHeader
-            "chunkFiles": []
             "chunkDir": tempFiles?.dir ?? ""
             "bytesWritten": 0
             "chunkCount": 0
             "lastChunkSize": 0
             "tempBaseName": tempFiles?.base ?? ""
+            "tempFilePath": ""
         }
 
         if ctx._requestSatisfied <> true
@@ -619,31 +619,24 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     if ctx._partialSegments.doesExist(key)
         segment = ctx._partialSegments.Lookup(key)
         segment.lastChunkSize = chunkBytes
-        chunkPath = sabr_ump_createChunkFile(ctx, segment, headerId)
-        if chunkPath <> ""
-            writeOk = payload.WriteFile(chunkPath)
-            if writeOk = true
-                if not IsArray(segment.chunkFiles)
-                    segment.chunkFiles = []
-                end if
-                segment.chunkFiles.push(chunkPath)
-                segment.chunkCount = segment.chunkCount + 1
-                segment.bytesWritten = segment.bytesWritten + chunkBytes
-                appendOk = true
-            else
-                sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to persist chunk for header ${headerId} at ${chunkPath}`)
-            end if
+        if sabr_ump_appendChunkToTemp(ctx, segment, headerId, payload) = true
+            segment.chunkCount = segment.chunkCount + 1
+            segment.bytesWritten = segment.bytesWritten + chunkBytes
+            appendOk = true
         else
-                sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Unable to determine chunk path for header ${headerId}`)
+            sabr_ump_log(ctx, log_level_Type.FATAL, `[SabrUmpProcessor] Aborting segment ${headerId} due to write failure`)
+            sabr_ump_cleanupSegmentChunks(segment)
+            ctx._partialSegments[key] = segment
+            return {
+                "done": true
+                "error": "segment_write_failed"
+                "headerId": headerId
+            }
         end if
         ctx._partialSegments[key] = segment
         sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Buffered media chunk for header ${headerId}; chunkBytes=${chunkBytes} totalChunks=${segment.chunkCount} stored=${appendOk}`)
         sabr_ump_logPartDetails(ctx, `media_header${headerId}`, part.data, invalid)
-        if appendOk = true
-            outcome = "buffered"
-        else
-            outcome = "persist_failed"
-        end if
+        outcome = "buffered"
         bufferedChunks = segment.chunkCount
     else
         sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Media chunk for header ${headerId} ignored; no matching media header cached`)
@@ -1012,7 +1005,10 @@ function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, se
         end if
     end if
 
-    if GetInterface(segmentData, "ifByteArray") <> invalid and segmentData.count() > 0
+    dataPath = sabr_ump_toSafeString(segmentInfo?.dataPath)
+    if dataPath <> ""
+        storeOptions.dataPath = dataPath
+    else if GetInterface(segmentData, "ifByteArray") <> invalid and segmentData.count() > 0
         storeOptions.bytes = segmentData
     else if IsArray(segmentInfo?.chunkFiles) and segmentInfo.chunkFiles.count() > 0
         storeOptions.chunkFiles = segmentInfo.chunkFiles
@@ -1279,46 +1275,41 @@ function sabr_ump_concatenateChunks(ctx as object, chunkSource as object, totalB
 end function
 
 function sabr_ump_prepareSegmentAssembly(ctx as object, segment as object, needBytes as boolean) as object
-    chunkList = segment?.chunkFiles
+    totalBytes = sabr_ump_toInt(segment?.bytesWritten)
+    if totalBytes = invalid then totalBytes = 0
     chunkCountVal = sabr_ump_toInt(segment?.chunkCount)
-    if chunkCountVal = invalid and IsArray(chunkList)
-        chunkCountVal = chunkList.count()
-    end if
-
+    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
     info = {
         "bytes": invalid
-        "chunkFiles": chunkList
         "chunkCount": chunkCountVal
-        "totalBytes": sabr_ump_toInt(segment?.bytesWritten)
+        "totalBytes": totalBytes
+        "dataPath": tempPath
     }
 
-    if info.totalBytes = invalid then info.totalBytes = 0
-
     if needBytes = true
-        info.bytes = sabr_ump_concatenateChunks(ctx, info.chunkFiles, info.totalBytes)
-        if info.totalBytes = invalid or info.totalBytes <= 0
+        if tempPath <> ""
+            bytes = CreateObject("roByteArray")
+            if bytes.ReadFile(tempPath) = true
+                info.bytes = bytes
+                if info.totalBytes = 0 then info.totalBytes = bytes.count()
+            else
+                info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
+                info.totalBytes = sabr_ump_countBytes(info.bytes)
+            end if
+        else
+            info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
             info.totalBytes = sabr_ump_countBytes(info.bytes)
         end if
-    end if
-
-    if info.totalBytes = invalid or info.totalBytes <= 0
-        total = 0
-        if IsArray(chunkList)
-            fs = CreateObject("roFileSystem")
-            for each chunkPath in chunkList
-                if IsString(chunkPath) and chunkPath <> ""
-                    stat = fs.Stat(chunkPath)
-                    if IsAssociativeArray(stat)
-                        sizeVal = stat.Lookup("size")
-                        if sizeVal = invalid then sizeVal = stat.Lookup("length")
-                        if IsInteger(sizeVal) or IsFloat(sizeVal) or IsDouble(sizeVal)
-                            total = total + Int(sizeVal)
-                        end if
-                    end if
-                end if
-            end for
+    else if info.totalBytes = 0 and tempPath <> ""
+        fs = CreateObject("roFileSystem")
+        stat = fs.Stat(tempPath)
+        if IsAssociativeArray(stat)
+            sizeVal = stat.Lookup("size")
+            if sizeVal = invalid then sizeVal = stat.Lookup("length")
+            if IsInteger(sizeVal) or IsFloat(sizeVal) or IsDouble(sizeVal)
+                info.totalBytes = Int(sizeVal)
+            end if
         end if
-        info.totalBytes = total
     end if
 
     return info
@@ -1840,39 +1831,66 @@ function sabr_ump_prepareSegmentTempInfo(ctx as object, headerId as dynamic) as 
     }
 end function
 
-function sabr_ump_createChunkFile(ctx as object, segment as object, headerId as dynamic) as string
-    dirPath = segment?.chunkDir
-    if dirPath = "" then dirPath = invalid
-    if not isValid(dirPath) or dirPath = ""
-        info = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
-        dirPath = info?.dir
-        if not isValid(dirPath) or dirPath = ""
-            return ""
-        end if
-        segment.chunkDir = dirPath
-        if isValid(info?.base)
-            segment.tempBaseName = info.base
-        end if
+function sabr_ump_getSegmentTempPath(ctx as object, segment as object, headerId as dynamic) as string
+    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
+    if tempPath <> "" then return tempPath
+
+    info = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
+    dirPath = sabr_ump_toSafeString(info?.dir)
+    if dirPath = "" then return ""
+    sabr_ump_ensureDirectory(dirPath)
+
+    baseName = sabr_ump_toSafeString(segment?.tempBaseName)
+    if baseName = ""
+        baseName = sabr_ump_toSafeString(info?.base)
+        if baseName = "" then baseName = "segment"
+        segment.tempBaseName = baseName
     end if
+    segment.chunkDir = dirPath
 
-    baseName = segment?.tempBaseName
-    if baseName = "" then baseName = "segment"
-    chunkIndex = sabr_ump_toInt(segment?.chunkCount)
-    if chunkIndex = invalid then chunkIndex = 0
-    fileName = `${baseName}_chunk${chunkIndex}`
-    chunkPath = sabr_ump_joinPath(dirPath, fileName)
-
+    tempPath = sabr_ump_joinPath(dirPath, `${baseName}_stream.tmp`)
     fs = CreateObject("roFileSystem")
-    if fs.Exists(chunkPath)
-        fs.Delete(chunkPath)
+    if fs.Exists(tempPath)
+        try
+            fs.Delete(tempPath)
+        catch e
+        end try
+    end if
+    segment.tempFilePath = tempPath
+    return tempPath
+end function
+
+function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object) as boolean
+    if GetInterface(payload, "ifByteArray") = invalid then return false
+    tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
+    if tempPath = "" then return false
+
+    if segment?.chunkCount = 0 and segment?.bytesWritten = 0
+        wrote = payload.WriteFile(tempPath)
+    else
+        wrote = payload.AppendFile(tempPath)
     end if
 
-    return chunkPath
+    if wrote <> true
+        sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to append chunk for header ${headerId} at ${tempPath}`)
+        return false
+    end if
+    return true
 end function
+
+
 
 sub sabr_ump_cleanupSegmentChunks(segment as object)
     if not isValid(segment) then return
     fs = CreateObject("roFileSystem")
+    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
+    if tempPath <> ""
+        try
+            if fs.Exists(tempPath) then fs.Delete(tempPath)
+        catch e
+        end try
+        segment.tempFilePath = ""
+    end if
     chunkFiles = segment?.chunkFiles
     if IsArray(chunkFiles)
         for each chunkPath in chunkFiles
@@ -1883,6 +1901,7 @@ sub sabr_ump_cleanupSegmentChunks(segment as object)
                 end try
             end if
         end for
+        segment.chunkFiles = []
     end if
     dirPath = segment?.chunkDir
     if IsString(dirPath) and dirPath <> ""
@@ -2610,11 +2629,15 @@ function sabr_ump_valueToLabel(value as dynamic) as string
     return Str(value).trim()
 end function
 function sabr_ump_loadSegmentFromChunks(ctx as object, segment as object) as object
+    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
+    if tempPath <> ""
+        data = CreateObject("roByteArray")
+        if data.ReadFile(tempPath) = true
+            return data
+        end if
+    end if
     chunkFiles = segment?.chunkFiles
     totalBytes = sabr_ump_toInt(segment?.bytesWritten)
     if totalBytes = invalid then totalBytes = 0
-    if not IsArray(chunkFiles) or chunkFiles.count() = 0
-        return sabr_ump_concatenateChunks(ctx, chunkFiles, totalBytes)
-    end if
     return sabr_ump_concatenateChunks(ctx, chunkFiles, totalBytes)
 end function

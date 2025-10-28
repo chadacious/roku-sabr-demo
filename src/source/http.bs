@@ -405,7 +405,11 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             if sendLen <= 0 then exit while
             sent = connection.send(data, offset, sendLen)
             if sent <= 0
-                loggers.printl(log_level_Type.FATAL, "Send failed while writing body (byte array): " + str(sent))
+                loggers.printl(log_level_Type.WARN, `[HTTP] Send aborted while writing body (byte array) offset=${offset} remaining=${data.Count() - offset} status=${sent}`)
+                try
+                    connection.Close()
+                catch e
+                end try
                 return sent
             end if
             offset = offset + sent
@@ -429,7 +433,11 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             if chunkLen <= 0 then exit while
             sent = connection.send(chunk, 0, chunkLen)
             if sent <= 0
-                loggers.printl(log_level_Type.FATAL, "Send failed while streaming file: " + str(sent))
+                loggers.printl(log_level_Type.WARN, `[HTTP] Send aborted while streaming file path=${dataPath} offset=${currentOffset} chunk=${chunkLen} status=${sent}`)
+                try
+                    connection.Close()
+                catch e
+                end try
                 return sent
             end if
             currentOffset = currentOffset + chunkLen

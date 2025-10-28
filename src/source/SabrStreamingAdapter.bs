@@ -2257,15 +2257,23 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 totalBytesRead = totalBytesRead + chunkLength
                                 chunkIndex = chunkIndex + 1
                                 chunkResult = sabrUmpProcessor.processChunk(chunkBytes)
-                                if isValid(chunkResult) and chunkResult.done = true and not isValid(umpResult)
-                                    umpResult = chunkResult
+                                if isValid(chunkResult) and chunkResult.done = true
+                                    if chunkResult?.error <> invalid and chunkResult.error <> ""
+                                        fatalReason = `SABR processing error: ${chunkResult.error}`
+                                        if not isValid(umpResult) then umpResult = chunkResult
+                                        exit while
+                                    else if not isValid(umpResult)
+                                        umpResult = chunkResult
+                                    end if
                                 end if
 
                                 fileOffset = fileOffset + chunkLength
-                                if chunkLength < chunkSize then exit while
+                                if chunkLength < chunkSize or fatalReason <> "" then exit while
                             end while
 
-                            segmentInfo = sabrUmpProcessor.getSegmentInfo()
+                            if fatalReason = ""
+                                segmentInfo = sabrUmpProcessor.getSegmentInfo()
+                            end if
                             if sabrUmpProcessor.DoesExist("getSegmentScanSummary")
                                 segmentScanSummary = sabrUmpProcessor.getSegmentScanSummary()
                             end if
