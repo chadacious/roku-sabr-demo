@@ -1222,20 +1222,12 @@ function sabr_cacheWriteChunksToFile(destPath as string, chunkFiles as object) a
                 wrote = invalid
             end try
             if wrote = invalid or wrote = false
-                fallback = invalid
+                outFile.Close()
                 try
-                    fallback = outFile.Write(chunkBytes.ToAsciiString())
-                catch innerErr
-                    fallback = invalid
+                    fs.Delete(destPath)
+                catch delErr
                 end try
-                if fallback = invalid or fallback = false
-                    outFile.Close()
-                    try
-                        fs.Delete(destPath)
-                    catch delErr
-                    end try
-                    return false
-                end if
+                return false
             end if
         end for
         outFile.Close()
