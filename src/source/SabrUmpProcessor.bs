@@ -63,6 +63,8 @@ function sabr_ump_createProcessor(requestMetadata as object, logs = invalid) as 
         "_perfEnabled": SABR_PERF_LOGGING_ENABLED
         "_perfCaptureMemory": SABR_PERF_CAPTURE_MEMORY
         "_perfMemoryMonitor": invalid
+        "_chunkBufferPool": requestMetadata?.chunkBufferPool
+        "_chunkBufferPoolLimit": requestMetadata?.chunkBufferPoolLimit
     }
 
     if IsAssociativeArray(requestMetadata)
@@ -134,7 +136,25 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
 
     pendingBefore = sabr_ump_countBytes(ctx?._pendingBytes)
     incomingBytes = sabr_ump_countBytes(incoming)
-    sabr_ump_appendBytes(ctx._pendingBytes, incoming)
+
+    incomingArray = invalid
+    if incomingBytes > 0 and GetInterface(incoming, "ifByteArray") <> invalid
+        incomingArray = incoming
+    end if
+
+    ' Reuse incoming buffer when there are no pending bytes to avoid an extra copy.
+    if pendingBefore = 0 and incomingArray <> invalid
+        ctx._pendingBytes = incomingArray
+    else if incomingBytes > 0
+        pendingArray = ctx._pendingBytes
+        if GetInterface(pendingArray, "ifByteArray") = invalid
+            pendingArray = CreateObject("roByteArray")
+            ctx._pendingBytes = pendingArray
+        end if
+        sourceArray = incomingArray
+        if sourceArray = invalid then sourceArray = incoming
+        sabr_ump_appendBytes(pendingArray, sourceArray)
+    end if
 
     buffer = ctx._pendingBytes
     offset = 0
@@ -166,14 +186,19 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
             exit while
         end if
 
-        partData = sabr_ump_sliceByteArray(buffer, offset, partSize)
+        partDataStart = offset
         offset = offset + partSize
 
         part = {
             "type": partTypeInfo.value
             "size": partSize
-            "data": partData
         }
+        if part.type = UMP_PART_ID_MEDIA
+            part["buffer"] = buffer
+            part["bufferOffset"] = partDataStart
+        else
+            part["data"] = sabr_ump_sliceByteArray(buffer, partDataStart, partSize)
+        end if
 
         result = sabr_ump_handlePart(ctx, part)
         partsProcessed = partsProcessed + 1
@@ -185,6 +210,7 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
     end while
 
     sabr_ump_finalizeChunkProcessing(ctx, buffer, offset, totalLength)
+    sabr_ump_releaseIncomingBuffer(ctx, buffer)
     pendingAfter = sabr_ump_countBytes(ctx?._pendingBytes)
     bytesConsumed = offset
     pending = ctx._pendingResult
@@ -601,25 +627,57 @@ end function
 
 function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     mediaTimer = sabr_ump_perfStart(ctx, "media_chunk")
-    if part.data.count() = 0
-        sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
-            "outcome": "empty_payload"
-        })
-        return invalid
+    sourceBuffer = invalid
+    payloadOffset = 0
+    payloadLength = 0
+    headerId = invalid
+
+    dataArray = part?.data
+    if GetInterface(dataArray, "ifByteArray") <> invalid
+        if dataArray.count() = 0
+            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
+                "outcome": "empty_payload"
+            })
+            return invalid
+        end if
+        sourceBuffer = dataArray
+        headerId = sourceBuffer[0]
+        payloadOffset = 1
+        payloadLength = sourceBuffer.count() - 1
+    else
+        sourceBuffer = part?.buffer
+        if GetInterface(sourceBuffer, "ifByteArray") = invalid
+            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
+                "outcome": "invalid_payload"
+            })
+            return invalid
+        end if
+        bufferOffset = sabr_ump_toInt(part?.bufferOffset)
+        if bufferOffset = invalid then bufferOffset = 0
+        totalLength = sabr_ump_toInt(part?.size)
+        if totalLength = invalid then totalLength = 0
+        if totalLength <= 0 or bufferOffset + totalLength > sourceBuffer.count()
+            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
+                "outcome": "empty_payload"
+            })
+            return invalid
+        end if
+        headerId = sourceBuffer[bufferOffset]
+        payloadOffset = bufferOffset + 1
+        payloadLength = totalLength - 1
+        if payloadLength < 0 then payloadLength = 0
     end if
 
-    headerId = part.data[0]
-    payload = sabr_ump_sliceByteArray(part.data, 1, part.data.count() - 1)
+    chunkBytes = payloadLength
     key = str(headerId)
     outcome = "ignored"
     bufferedChunks = 0
-    chunkBytes = payload.count()
     appendOk = false
 
     if ctx._partialSegments.doesExist(key)
         segment = ctx._partialSegments.Lookup(key)
         segment.lastChunkSize = chunkBytes
-        if sabr_ump_appendChunkToTemp(ctx, segment, headerId, payload) = true
+        if chunkBytes = 0 or sabr_ump_appendChunkToTemp(ctx, segment, headerId, sourceBuffer, payloadOffset, chunkBytes) = true
             segment.chunkCount = segment.chunkCount + 1
             segment.bytesWritten = segment.bytesWritten + chunkBytes
             appendOk = true
@@ -649,7 +707,7 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
         if isValid(headerId)
             label = `media_header${headerId}`
         end if
-        sabr_ump_debugDumpPart(ctx, label, part.data, invalid)
+        sabr_ump_debugDumpPart(ctx, label, invalid, invalid)
     end if
 
     sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
@@ -1177,10 +1235,25 @@ function sabr_ump_appendBytes(target as object, source as object) as void
     count = source.count()
     if count = 0 then return
 
+    startIndex = target.count()
+    endIndex = startIndex + count - 1
+    target[endIndex] = 0
+    dest = startIndex
     for i = 0 to count - 1
-        target.push(source[i])
+        target[dest] = source[i]
+        dest = dest + 1
     end for
 end function
+
+sub sabr_ump_releaseIncomingBuffer(ctx as object, buffer as dynamic)
+    if GetInterface(buffer, "ifByteArray") = invalid then return
+    pool = ctx?._chunkBufferPool
+    if not IsArray(pool) then return
+    limit = sabr_ump_toInt(ctx?._chunkBufferPoolLimit)
+    if limit = invalid or limit <= 0 then limit = 8
+    if pool.count() >= limit then return
+    pool.push(buffer)
+end sub
 
 function sabr_ump_sliceByteArray(buffer as object, startIndex as integer, length as integer) as object
     result = createObject("roByteArray")
@@ -1860,15 +1933,29 @@ function sabr_ump_getSegmentTempPath(ctx as object, segment as object, headerId 
     return tempPath
 end function
 
-function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object) as boolean
+function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object, payloadOffset = 0 as integer, payloadLength = invalid as dynamic) as boolean
     if GetInterface(payload, "ifByteArray") = invalid then return false
     tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
     if tempPath = "" then return false
 
+    totalBytes = payload.count()
+    if payloadLength = invalid or payloadLength > totalBytes - payloadOffset then payloadLength = totalBytes - payloadOffset
+    if payloadLength <= 0 then return true
+    if payloadOffset < 0 then payloadOffset = 0
+
+    wrote = false
     if segment?.chunkCount = 0 and segment?.bytesWritten = 0
-        wrote = payload.WriteFile(tempPath)
+        if payloadOffset = 0 and payloadLength = totalBytes
+            wrote = payload.WriteFile(tempPath)
+        else
+            wrote = payload.WriteFile(tempPath, payloadOffset, payloadLength)
+        end if
     else
-        wrote = payload.AppendFile(tempPath)
+        if payloadOffset = 0 and payloadLength = totalBytes
+            wrote = payload.AppendFile(tempPath)
+        else
+            wrote = payload.AppendFile(tempPath, payloadOffset, payloadLength)
+        end if
     end if
 
     if wrote <> true

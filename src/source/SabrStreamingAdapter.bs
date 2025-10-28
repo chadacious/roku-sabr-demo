@@ -34,6 +34,7 @@ import "pkg:/source/taskUtils.bs"
 const SABR_REPEAT_SEGMENT_THRESHOLD = 4
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
 const SABR_UMP_STREAM_CHUNK_SIZE = 131072
+const SABR_CHUNK_BUFFER_POOL_LIMIT = 6
 const MAX_BUFFERED_RANGES_PER_TYPE = 1
 
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
@@ -2233,6 +2234,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             "mediaIdHash": mediaIdHash
                             "contentType": contentType
                         }
+                        requestMetadata["chunkBufferPool"] = sabr_chunkBufferPool()
+                        requestMetadata["chunkBufferPoolLimit"] = SABR_CHUNK_BUFFER_POOL_LIMIT
 
                         if isValid(requestMetadataEntry.byteRange.start) and requestMetadataEntry.byteRange.start <> "" and isValid(requestMetadataEntry.byteRange.end) and requestMetadataEntry.byteRange.end <> ""
                             requestMetadata["byteRange"] = requestMetadataEntry.byteRange
@@ -2248,11 +2251,17 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             sabrUmpProcessor = sabr_ump_createProcessor(requestMetadata, m.logs)
                             fileOffset = 0
                             while true
-                                chunkBytes = CreateObject("roByteArray")
+                                chunkBytes = sabr_acquireChunkBuffer()
                                 readOk = chunkBytes.ReadFile(responseFilePath, fileOffset, chunkSize)
-                                if readOk <> true then exit while
+                                if readOk <> true
+                                    sabr_releaseChunkBuffer(chunkBytes)
+                                    exit while
+                                end if
                                 chunkLength = chunkBytes.Count()
-                                if chunkLength <= 0 then exit while
+                                if chunkLength <= 0
+                                    sabr_releaseChunkBuffer(chunkBytes)
+                                    exit while
+                                end if
 
                                 totalBytesRead = totalBytesRead + chunkLength
                                 chunkIndex = chunkIndex + 1
@@ -3491,3 +3500,30 @@ end sub
 
 '     return invalid
 ' end function
+function sabr_chunkBufferPool() as object
+    pool = m?.sabrChunkBufferPool
+    if not IsArray(pool)
+        pool = []
+        m.sabrChunkBufferPool = pool
+    end if
+    return pool
+end function
+
+function sabr_acquireChunkBuffer() as object
+    pool = sabr_chunkBufferPool()
+    if pool.count() > 0
+        buffer = pool[pool.count() - 1]
+        pool.Delete(pool.count() - 1)
+        return buffer
+    end if
+    return CreateObject("roByteArray")
+end function
+
+sub sabr_releaseChunkBuffer(buffer as dynamic)
+    if GetInterface(buffer, "ifByteArray") = invalid then return
+    pool = sabr_chunkBufferPool()
+    limit = SABR_CHUNK_BUFFER_POOL_LIMIT
+    if limit <= 0 then limit = 8
+    if pool.count() >= limit then return
+    pool.push(buffer)
+end sub
