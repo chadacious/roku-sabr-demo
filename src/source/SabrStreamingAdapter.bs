@@ -197,6 +197,76 @@ function sabr_applyBufferedStateToRequest(videoPlaybackAbrRequest as object, buf
 end function
 
 
+sub sabr_pruneBufferedRangesForSeekBack(bufferState as object, formatType as string, maxSegmentIndex as dynamic, maxStartTimeMs as dynamic, logTag as string)
+    if not IsAssociativeArray(bufferState) then return
+    if formatType = "" then return
+    rangesMap = bufferState?.rangesByType
+    if not IsAssociativeArray(rangesMap) then return
+
+    normalizedType = UCase(formatType)
+    if not rangesMap.DoesExist(normalizedType) then return
+
+    targetIndex = sabr_toInt(maxSegmentIndex)
+
+    originalRanges = rangesMap[normalizedType]
+    if not IsArray(originalRanges) then return
+
+    keptRanges = []
+    removedCount = 0
+    targetStartTimeMs = sabr_toInt(maxStartTimeMs)
+    for each bufferedRange in originalRanges
+        if not isValid(bufferedRange)
+            continue for
+        end if
+
+        segmentIndex = sabr_toInt(bufferedRange?.startSegmentIndex)
+        if segmentIndex = invalid
+            segmentIndex = sabr_toInt(bufferedRange?.sequenceNumber)
+        end if
+        if segmentIndex = invalid
+            segmentIndex = sabr_toInt(bufferedRange?.segmentIndex)
+        end if
+
+        shouldRemove = false
+        if segmentIndex <> invalid and targetIndex <> invalid and segmentIndex > targetIndex
+            shouldRemove = true
+        else if targetStartTimeMs <> invalid
+            startMs = sabr_toInt(bufferedRange?.startTimeMs)
+            if startMs = invalid
+                timeRange = bufferedRange?.timeRange
+                startTicks = sabr_toInt(timeRange?.startTicks)
+                timeScale = sabr_toInt(timeRange?.timescale)
+                if startTicks <> invalid and timeScale <> invalid and timeScale > 0
+                    startMs = int(startTicks * 1000 / timeScale)
+                end if
+            end if
+            if startMs <> invalid and startMs > targetStartTimeMs
+                shouldRemove = true
+            end if
+        end if
+
+        if shouldRemove
+            removedCount = removedCount + 1
+        else
+            keptRanges.push(bufferedRange)
+        end if
+    end for
+
+    rangesMap[normalizedType] = keptRanges
+
+    if removedCount > 0 and isValid(m?.logs)
+        logPieces = [`${logTag} Seek-back detected; pruned ${removedCount} buffered range(s)`]
+        if targetIndex <> invalid
+            logPieces.push(`segment>${targetIndex}`)
+        end if
+        if targetStartTimeMs <> invalid
+            logPieces.push(`startTime>${targetStartTimeMs}`)
+        end if
+        m.logs.printl(log_level_Type.DEBUG, logPieces.Join(" "))
+    end if
+end sub
+
+
 sub sabr_ensurePlayerTimeStrategy(playbackContext as object) as void
     if not IsAssociativeArray(playbackContext) then return
     current = playbackContext?.playerTimeStrategy
@@ -1471,7 +1541,7 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
     extra = `key=${repeatKey} deltaMs=${deltaMs} range=${rangeLabel}`
     sabr_debugLogRepeatState(contentType, requestNumber, playbackContext, "before_guard", extra)
 
-    if successStreak < SABR_REPEAT_SEGMENT_THRESHOLD then return invalid
+    if failureStreak < SABR_REPEAT_SEGMENT_THRESHOLD then return invalid
 
     fatalMessage = `Repeated SABR requests detected for segment ${repeatKey} (range ${rangeLabel}); aborting playback`
     playbackContext["sabrFatalError"] = {
@@ -2115,6 +2185,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     bufferState = sabr_buildBufferedState(mediaIdHash, currentFormat, activeFormats, playbackContext, contentType)
 
     playerTimeInfo = sabr_resolvePlayerTimeMsForRequest(playbackContext, contentType, currentFormat, requestByteRange, videoNode)
+    previousResolvedPlayerTime = sabr_toInt(playbackContext?.lastResolvedPlayerTimeMs)
+    previousRequestedPlayerTime = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
+    previousMaxResolvedPlayerTime = sabr_toInt(playbackContext?.maxResolvedPlayerTimeMs)
+    storedPruneThresholdMs = sabr_toInt(playbackContext?.bufferPruneThresholdMs)
+    toleranceMs = 1000
+
     playerTimeOverride = sabr_toInt(playerTimeInfo?.value)
     if playerTimeOverride = invalid or playerTimeOverride < 0
         playerTimeOverride = 0
@@ -2126,6 +2202,61 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Resolved playerTimeMs=${playerTimeOverride} source=${playerTimeSourceLabel}`)
     rangeLabelForLog = sabr_formatRequestedRangeForPath(requestByteRange)
     m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Using playerTimeMs=${playerTimeOverride} for range ${rangeLabelForLog}`)
+
+    seekBackDetected = false
+    if playerTimeOverride <> invalid
+        if previousResolvedPlayerTime <> invalid and playerTimeOverride + toleranceMs < previousResolvedPlayerTime
+            seekBackDetected = true
+        else if previousRequestedPlayerTime <> invalid and playerTimeOverride + toleranceMs < previousRequestedPlayerTime
+            seekBackDetected = true
+        else if previousMaxResolvedPlayerTime <> invalid and playerTimeOverride + toleranceMs < previousMaxResolvedPlayerTime
+            seekBackDetected = true
+        end if
+    end if
+
+    newMaxResolvedPlayerTime = previousMaxResolvedPlayerTime
+    if playerTimeOverride <> invalid
+        if newMaxResolvedPlayerTime = invalid or playerTimeOverride > newMaxResolvedPlayerTime or seekBackDetected
+            newMaxResolvedPlayerTime = playerTimeOverride
+        end if
+        playbackContext["maxResolvedPlayerTimeMs"] = newMaxResolvedPlayerTime
+    end if
+
+    targetSegmentIndex = invalid
+    segmentIndexInfo = requestByteRange?.segmentIndexInfo
+    if IsAssociativeArray(segmentIndexInfo)
+        targetSegmentIndex = sabr_toInt(segmentIndexInfo?.segmentIndex)
+        if targetSegmentIndex = invalid
+            targetSegmentIndex = sabr_toInt(segmentIndexInfo?.sequenceNumber)
+        end if
+        if targetSegmentIndex = invalid
+            targetSegmentIndex = sabr_toInt(segmentIndexInfo?.startSegmentIndex)
+        end if
+    end if
+    if targetSegmentIndex = invalid
+        targetSegmentIndex = sabr_toInt(requestByteRange?.sequenceNumber)
+    end if
+
+    pruneCutoffMs = storedPruneThresholdMs
+    if playerTimeOverride <> invalid
+        if pruneCutoffMs = invalid or playerTimeOverride < pruneCutoffMs
+            pruneCutoffMs = playerTimeOverride
+        end if
+    end if
+
+    if seekBackDetected and playerTimeOverride <> invalid
+        pruneCutoffMs = playerTimeOverride
+        playbackContext["bufferPruneThresholdMs"] = playerTimeOverride
+    else if storedPruneThresholdMs <> invalid and playerTimeOverride <> invalid and playerTimeOverride > storedPruneThresholdMs + toleranceMs
+        playbackContext.Delete("bufferPruneThresholdMs")
+        pruneCutoffMs = playerTimeOverride
+    end if
+
+    if pruneCutoffMs <> invalid or targetSegmentIndex <> invalid
+        sabr_pruneBufferedRangesForSeekBack(bufferState, contentType, targetSegmentIndex, pruneCutoffMs, requestLogTag)
+    else if seekBackDetected and isValid(m?.logs)
+        m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Seek-back detected but no pruning constraints available`)
+    end if
 
     sabrRequestJson = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, playerTimeOverride, videoNode, nextRequestId)
 
