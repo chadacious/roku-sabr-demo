@@ -558,8 +558,9 @@ sub sabr_cacheMarkDelivered(entry as object)
     sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] delivered file=${fileName} deliveredAt=${metadata.deliveredAtMs}`)
 end sub
 
-sub sabr_cacheMarkDeliveredByPath(path as string, reason as string, extra = invalid as dynamic)
-    if not IsString(path) or path = "" then return
+sub sabr_cacheMarkDeliveredByPath(path as dynamic, reason as string, extra = invalid as dynamic)
+    ' if not IsString(path) then return
+    ' if path = "" then return
     fileName = sabr_cacheExtractFileName(path)
     entry = sabr_cacheParseEntry(fileName)
     if not IsAssociativeArray(entry)

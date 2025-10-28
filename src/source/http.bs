@@ -321,15 +321,8 @@ function send_http_reply(connection as object, response_code as string, content_
     return status
 end function
 
-function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid)
+function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid, dataPath = invalid as dynamic, dataOffset = 0 as dynamic, dataLength = invalid as dynamic)
     loggers = logger()
-    reply = createobject("roByteArray")
-    ' date = createobject("roDateTime")
-    ' months = ["placeholder", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    ' month_name = months[date.getMonth()]
-    ' ' WHY does str(6) return " 6" ?!
-    ' rfc822 = Left(date.GetWeekday(), 3) + ", " + pad_integer(date.GetDayOfMonth()) + " " + month_name + " " + right(str(date.getYear()), 4) + " " + pad_integer(date.getHours()) + ":" + pad_integer(date.getMinutes()) + ":" + pad_integer(date.getSeconds()) + " GMT"
-    ' if response_code = 206 then response_code = 200
     resStatus = ""
     if response_code = 200
         resStatus = "OK"
@@ -342,11 +335,8 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
     end if
 
     packet = `HTTP/1.1 ${response_code} ${resStatus}${chr(13)}${chr(10)}`
-    ' packet = `${packet}Date: ${rfc822}${chr(13)}${chr(10)}`
     for each key in headers.keys()
-        ' if findIndex(["accept-ranges"], lCase(key)) = -1
         packet = `${packet}${key}: ${headers[key]}${chr(13)}${chr(10)}`
-        ' end if
     next
     if IsAssociativeArray(headers)
         rangeHeader = headers.Lookup("Content-Range")
@@ -359,46 +349,115 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
         if not isValid(itagHeader)
             itagHeader = headers.Lookup("X-Stream-Itag")
         end if
+        lengthLabel = headers.Lookup("Content-Length")
+        if not isValid(lengthLabel) then lengthLabel = headers.Lookup("content-length")
         if isValid(rangeHeader)
+            taggedRange = rangeHeader
+            if isValid(lengthLabel) then taggedRange = `${rangeHeader} length=${lengthLabel}`
             if isValid(itagHeader) and itagHeader <> ""
-                loggers.printl(log_level_Type.INFO, `[HTTP] Reply itag=${itagHeader} range=${rangeHeader} status=${response_code} length=${data.Count()}`)
+                loggers.printl(log_level_Type.INFO, `[HTTP] Reply itag=${itagHeader} range=${taggedRange} status=${response_code}`)
             else
-                loggers.printl(log_level_Type.INFO, `[HTTP] Reply range=${rangeHeader} status=${response_code} length=${data.Count()}`)
+                loggers.printl(log_level_Type.INFO, `[HTTP] Reply range=${taggedRange} status=${response_code}`)
             end if
         end if
     end if
-    loggers.printl(log_level_Type.INFO, `Preparing to HTTP reply with:${chr(13)}${chr(10)}${packet}${chr(13)}${chr(10)}Raw data length: ${str(data.Count())}`)
-    reply.fromAsciiString(packet + chr(13) + chr(10))
-    reply.append(data)
-    ' loggers.printl(log_level_Type.INFO, "Entire response size: " + str(reply.count()))
-
-    offset = 0
-    bytes_to_send = reply.Count()
-    ' FRAME_SIZE = 4024
-    ' BUFFER_SOCKET_SIZE = 8192 
-    ' BUFFER_SLEEP = 10
-    ' BUFFER_LOOP_LIMIT = 1000 / BUFFER_SLEEP ' max waiting time till try to push another value into buffer, _BUFFER_SLEEP * _BUFFER_LOOP_LIMIT
-
-    ' if isValid(port) then connection.NotifyWritable(true) ' Enable writable events
-
-    ' while bytes_to_send > 0
-    sent = connection.send(reply, offset, bytes_to_send)
-    ' sent = connection.send(reply, offset, not isValid(port) or bytes_to_send < FRAME_SIZE ? bytes_to_send : FRAME_SIZE)
+    loggers.printl(log_level_Type.INFO, `Preparing to HTTP reply with:${chr(13)}${chr(10)}${packet}${chr(13)}${chr(10)}`)
+    headerBytes = CreateObject("roByteArray")
+    headerBytes.FromAsciiString(packet + chr(13) + chr(10))
+    sent = connection.send(headerBytes, 0, headerBytes.Count())
     if sent <= 0 then
-        loggers.printl(log_level_Type.FATAL, "Send failed with status: " + str(sent))
-        return sent ' Or handle error as needed
+        loggers.printl(log_level_Type.FATAL, "Send failed while writing headers: " + str(sent))
+        return sent
     end if
-    status = connection.Status()
-    if status <> 0 then
-        loggers.printl(log_level_Type.FATAL, "Connection status error: " + str(status))
-        return status
+
+    totalBytes = dataLength
+    if totalBytes = invalid
+        if IsAssociativeArray(headers)
+            lenLabel = headers.Lookup("Content-Length")
+            if not isValid(lenLabel) then lenLabel = headers.Lookup("content-length")
+            if isValid(lenLabel)
+                lenValue = Val(lenLabel)
+                if lenValue <> invalid then totalBytes = lenValue
+            end if
+        end if
     end if
-    ' offset = offset + sent
-    ' bytes_to_send = bytes_to_send - sent
-    ' loggers.printl(log_level_Type.INFO, "Sent chunk: " + str(sent) + " bytes, remaining: " + str(bytes_to_send) + ` - bytes in send buffer: ` + str(connection.GetCountSendBuf()))
-    ' if isValid(port)
-    '     loop_wait = 0
-    '     while not connection.IsWritable() or connection.GetCountSendBuf() > 0
-    loggers.printl(log_level_Type.INFO, `sent status: ${reply.Count()} - ${connection.GetCountSendBuf()}`)
-    return reply.Count() - connection.GetCountSendBuf()
+    if totalBytes = invalid
+        if GetInterface(data, "ifByteArray") <> invalid
+            totalBytes = data.Count()
+        else if IsString(dataPath) and dataPath <> ""
+            sizeGuess = http_getFileSize(dataPath)
+            if sizeGuess <> invalid then totalBytes = sizeGuess
+        else
+            totalBytes = 0
+        end if
+    end if
+
+    bytesSent = 0
+    chunkSize = 32768
+
+    if GetInterface(data, "ifByteArray") <> invalid and data.Count() > 0
+        offset = 0
+        while offset < data.Count()
+            sendLen = chunkSize
+            if offset + sendLen > data.Count()
+                sendLen = data.Count() - offset
+            end if
+            if sendLen <= 0 then exit while
+            sent = connection.send(data, offset, sendLen)
+            if sent <= 0
+                loggers.printl(log_level_Type.FATAL, "Send failed while writing body (byte array): " + str(sent))
+                return sent
+            end if
+            offset = offset + sent
+            bytesSent = bytesSent + sent
+        end while
+    else if IsString(dataPath) and dataPath <> ""
+        currentOffset = dataOffset
+        if currentOffset = invalid then currentOffset = 0
+        remaining = totalBytes
+        while remaining = invalid or remaining > 0
+            readLen = chunkSize
+            if remaining <> invalid and readLen > remaining
+                readLen = remaining
+            end if
+            if readLen <= 0 then exit while
+            chunk = CreateObject("roByteArray")
+            if chunk.ReadFile(dataPath, currentOffset, readLen) <> true
+                exit while
+            end if
+            chunkLen = chunk.Count()
+            if chunkLen <= 0 then exit while
+            sent = connection.send(chunk, 0, chunkLen)
+            if sent <= 0
+                loggers.printl(log_level_Type.FATAL, "Send failed while streaming file: " + str(sent))
+                return sent
+            end if
+            currentOffset = currentOffset + chunkLen
+            bytesSent = bytesSent + chunkLen
+            if remaining <> invalid
+                remaining = remaining - chunkLen
+                if remaining <= 0 then exit while
+            end if
+        end while
+    end if
+
+    loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body`)
+    return bytesSent
+end function
+
+function http_getFileSize(path as string) as dynamic
+    if not IsString(path) or path = "" then return invalid
+    fs = CreateObject("roFileSystem")
+    stat = invalid
+    try
+        stat = fs.Stat(path)
+    catch e
+        stat = invalid
+    end try
+    if IsAssociativeArray(stat)
+        sizeVal = stat.Lookup("size")
+        if sizeVal = invalid then sizeVal = stat.Lookup("length")
+        return sizeVal
+    end if
+    return invalid
 end function

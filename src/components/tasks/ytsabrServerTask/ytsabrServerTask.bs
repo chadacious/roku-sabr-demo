@@ -152,9 +152,9 @@ function process_request(request as object, connection as object, port as object
 
         if isValid(sabrResponse)
             responseBody = sabrResponse.body
-            if not isValid(responseBody)
-                responseBody = CreateObject("roByteArray")
-            end if
+            responseBodyPath = sabrResponse?.bodyPath
+            responseBodyOffset = sabr_toInt(sabrResponse?.bodyOffset)
+            responseBodyLength = sabr_toInt(sabrResponse?.bodyLength)
             responseHeaders = sabrResponse.headers
             if not isValid(responseHeaders)
                 responseHeaders = CreateObject("roAssociativeArray")
@@ -164,7 +164,13 @@ function process_request(request as object, connection as object, port as object
                 statusCode = 204
             end if
             if responseHeaders.DoesExist("Content-Length") = false
-                responseHeaders["Content-Length"] = responseBody.count().toStr()
+                if responseBodyLength <> invalid and responseBodyLength >= 0
+                    responseHeaders["Content-Length"] = responseBodyLength.toStr()
+                else if GetInterface(responseBody, "ifByteArray") <> invalid
+                    responseHeaders["Content-Length"] = responseBody.count().toStr()
+                else
+                    responseHeaders["Content-Length"] = "0"
+                end if
             end if
             if responseHeaders.DoesExist("Content-Type") = false
                 responseHeaders["Content-Type"] = "text/plain"
@@ -172,7 +178,7 @@ function process_request(request as object, connection as object, port as object
             if responseHeaders.DoesExist("Connection") = false
                 responseHeaders["Connection"] = "close"
             end if
-            status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody)
+            status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
         else
             status = send_http_reply(connection, "204", "text/plain", "")
         end if
