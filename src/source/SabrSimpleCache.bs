@@ -286,8 +286,12 @@ end function
 
 function sabr_cacheStoreSegment(options as object) as object
     if not IsAssociativeArray(options) then return invalid
+
     bytes = options?.bytes
-    if GetInterface(bytes, "ifByteArray") = invalid then return invalid
+    chunkFiles = options?.chunkFiles
+    dataPath = options?.dataPath
+    chunkCountOpt = sabr_cacheNormalizeNumber(options?.chunkCount)
+    totalBytesOpt = sabr_cacheNormalizeNumber(options?.totalBytes)
 
     path = sabr_cacheBuildFilename(
         options?.mediaIdHash,
@@ -305,7 +309,16 @@ function sabr_cacheStoreSegment(options as object) as object
         fs.CreateDirectory(base)
     end if
 
-    success = bytes.writeFile(path)
+    success = false
+    if GetInterface(bytes, "ifByteArray") <> invalid and bytes.count() > 0
+        success = bytes.writeFile(path)
+        if totalBytesOpt = invalid then totalBytesOpt = bytes.count()
+    else if IsArray(chunkFiles) and chunkFiles.count() > 0
+        success = sabr_cacheWriteChunksToFile(path, chunkFiles)
+    else if IsString(dataPath) and dataPath <> ""
+        success = sabr_cacheCopyFile(dataPath, path)
+    end if
+
     if success <> true then return invalid
 
     fileName = sabr_cacheExtractFileName(path)
@@ -348,11 +361,17 @@ function sabr_cacheStoreSegment(options as object) as object
     if isValid(options?.playerTimeMs)
         extra["playerTimeMs"] = options.playerTimeMs
     end if
+    if chunkCountOpt <> invalid then extra.chunkCount = chunkCountOpt
+    if totalBytesOpt <> invalid then extra.totalBytes = totalBytesOpt
     extra.storedAtMs = nowMs
     extra.lastAccessMs = nowMs
     extra.delivered = false
     sabr_cacheRememberMetadata(fileName, extra)
-    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] stored file=${fileName} size=${bytes.count()} storedAt=${nowMs}`)
+    sizeLabel = totalBytesOpt
+    if sizeLabel = invalid and GetInterface(bytes, "ifByteArray") <> invalid
+        sizeLabel = bytes.count()
+    end if
+    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] stored file=${fileName} size=${sabr_cacheNormalizeNumber(sizeLabel)} storedAt=${nowMs}`)
 
     if IsString(options?.mediaIdHash) and options.mediaIdHash <> ""
         m.sabrCacheActiveMediaId = options.mediaIdHash
@@ -558,9 +577,8 @@ sub sabr_cacheMarkDelivered(entry as object)
     sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] delivered file=${fileName} deliveredAt=${metadata.deliveredAtMs}`)
 end sub
 
-sub sabr_cacheMarkDeliveredByPath(path as dynamic, reason as string, extra = invalid as dynamic)
-    ' if not IsString(path) then return
-    ' if path = "" then return
+sub sabr_cacheMarkDeliveredByPath(path as string, reason as string, extra = invalid as dynamic)
+    if not IsString(path) or path = "" then return
     fileName = sabr_cacheExtractFileName(path)
     entry = sabr_cacheParseEntry(fileName)
     if not IsAssociativeArray(entry)
@@ -1149,6 +1167,97 @@ function sabr_cacheExtractModifiedTicks(fs as object, path as string) as double
     end if
 
     return 0.0
+end function
+
+function sabr_cacheCopyFile(sourcePath as string, destPath as string) as boolean
+    if not IsString(sourcePath) or sourcePath = "" then return false
+    if not IsString(destPath) or destPath = "" then return false
+    fs = CreateObject("roFileSystem")
+    copyOk = invalid
+    try
+        copyOk = fs.CopyFile(sourcePath, destPath)
+    catch e
+        copyOk = invalid
+    end try
+    if copyOk = true then return true
+
+    tempBytes = CreateObject("roByteArray")
+    if tempBytes.ReadFile(sourcePath) <> true then return false
+    return tempBytes.WriteFile(destPath)
+end function
+
+function sabr_cacheWriteChunksToFile(destPath as string, chunkFiles as object) as boolean
+    if not IsString(destPath) or destPath = "" then return false
+    if not IsArray(chunkFiles) or chunkFiles.count() = 0 then return false
+
+    fs = CreateObject("roFileSystem")
+    outFile = invalid
+    useBuffer = false
+    try
+        outFile = fs.OpenFile(destPath, "w")
+    catch e
+        outFile = invalid
+    end try
+    if GetInterface(outFile, "ifFile") = invalid
+        useBuffer = true
+    end if
+
+    if useBuffer = false
+        for each chunkPath in chunkFiles
+            if not IsString(chunkPath) or chunkPath = "" then continue for
+            chunkBytes = CreateObject("roByteArray")
+            if chunkBytes.ReadFile(chunkPath) <> true
+                outFile.Close()
+                try
+                    fs.Delete(destPath)
+                catch deleteErr
+                end try
+                return false
+            end if
+            if chunkBytes.count() = 0 then continue for
+            wrote = invalid
+            try
+                wrote = outFile.Write(chunkBytes)
+            catch writeErr
+                wrote = invalid
+            end try
+            if wrote = invalid or wrote = false
+                fallback = invalid
+                try
+                    fallback = outFile.Write(chunkBytes.ToAsciiString())
+                catch innerErr
+                    fallback = invalid
+                end try
+                if fallback = invalid or fallback = false
+                    outFile.Close()
+                    try
+                        fs.Delete(destPath)
+                    catch delErr
+                    end try
+                    return false
+                end if
+            end if
+        end for
+        outFile.Close()
+        return true
+    end if
+
+    combined = CreateObject("roByteArray")
+    for each chunkPath in chunkFiles
+        if not IsString(chunkPath) or chunkPath = "" then continue for
+        chunkBytes = CreateObject("roByteArray")
+        if chunkBytes.ReadFile(chunkPath) <> true then return false
+        chunkLen = chunkBytes.count()
+        if chunkLen <= 0 then continue for
+        startIndex = combined.count()
+        combined[startIndex + chunkLen - 1] = 0
+        destIndex = startIndex
+        for i = 0 to chunkLen - 1
+            combined[destIndex] = chunkBytes[i]
+            destIndex = destIndex + 1
+        end for
+    end for
+    return combined.WriteFile(destPath)
 end function
 
 sub sabr_cacheLogSnapshot(reason as string, focusPath as string)
