@@ -12,6 +12,7 @@ const SABR_CACHE_PENDING_SEQUENCE_DISTANCE = 4
 const SABR_CACHE_PENDING_RANGE_DISTANCE = 400000
 const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
 const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
+const SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS = 30 * 1000
 
 sub sabr_cacheSetLogger(logs as dynamic)
     m.sabr_cacheLogger = logs
@@ -800,12 +801,34 @@ sub sabr_cacheRunMaintenance(activePath as string)
     focusPath = ""
     remaining = []
     totalBytes = 0
+    activeMedia = sabr_cacheSanitize(m?.sabrCacheActiveMediaId)
 
     sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] maintenance start total=${names.count()} activePath=${activePath}`)
     sabr_cacheLogPendingEntries(table, base, "start")
 
     for each name in names
         path = `${base}/${name}`
+        if Right(name, 4) <> ".bin"
+            if name = "segments"
+                ' handled separately in sabr_cacheCleanupSegmentTemps
+            else
+                statDir = fs.Stat(path)
+                isDir = false
+                if IsAssociativeArray(statDir)
+                    entryType = statDir.Lookup("type")
+                    if IsString(entryType) and LCase(entryType) = "directory"
+                        isDir = true
+                    end if
+                end if
+                if isDir
+                    childEntries = fs.GetDirectoryListing(path)
+                    if IsArray(childEntries) and childEntries.count() = 0
+                        sabr_cacheDeleteDirectory(fs, path)
+                    end if
+                end if
+            end if
+            continue for
+        end if
         entryInfo = sabr_cacheParseEntry(name)
         if not IsAssociativeArray(entryInfo)
             entryInfo = {
@@ -855,6 +878,9 @@ sub sabr_cacheRunMaintenance(activePath as string)
 
         shouldRemove = false
         removalReason = ""
+        isInitEntry = entryInfo?.isInit = true
+        entryMediaId = sabr_cacheSanitize(entryInfo?.mediaIdHash)
+
         if delivered
             if sabr_cacheShouldDeferDeliveredRemoval(entryInfo, metadata, nowMs)
                 sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=recent-delivery`)
@@ -880,6 +906,13 @@ sub sabr_cacheRunMaintenance(activePath as string)
                         removalReason = `stale-lastTouch last=${lastTouchMs} age=${ageFallback}`
                     end if
                 end if
+            end if
+        end if
+
+        if shouldRemove and isInitEntry
+            if activeMedia <> "" and entryMediaId = activeMedia
+                shouldRemove = false
+                removalReason = ""
             end if
         end if
 
@@ -918,7 +951,6 @@ sub sabr_cacheRunMaintenance(activePath as string)
         end if
     end for
 
-    activeMedia = sabr_cacheSanitize(m?.sabrCacheActiveMediaId)
     if activeMedia <> ""
         for idx = remaining.count() - 1 to 0 step -1
             info = remaining[idx]
@@ -959,6 +991,8 @@ sub sabr_cacheRunMaintenance(activePath as string)
             remaining.Delete(oldestIdx)
         end while
     end if
+
+    sabr_cacheCleanupSegmentTemps(nowMs)
 
     if maintenanceTimer <> invalid
         summaryLabel = `[SabrCache] maintenance duration removed=${removedCount} remaining=${remaining.count()} bytes=${totalBytes}`
@@ -1168,6 +1202,86 @@ function sabr_cacheExtractModifiedTicks(fs as object, path as string) as double
 
     return 0.0
 end function
+
+function sabr_cacheSegmentTempRoot() as string
+    return `${SABR_CACHE_BASE_DIR}/segments`
+end function
+
+sub sabr_cacheDeleteDirectory(fs as object, path as string)
+    if GetInterface(fs, "ifFileSystem") = invalid then return
+    if not IsString(path) or path = "" then return
+    try
+        fs.Delete(path)
+    catch e
+    end try
+end sub
+
+sub sabr_cacheCleanupSegmentTemps(nowMs as integer)
+    root = sabr_cacheSegmentTempRoot()
+    fs = CreateObject("roFileSystem")
+    if fs = invalid then return
+
+    exists = false
+    try
+        exists = fs.Exists(root)
+    catch e
+        exists = false
+    end try
+    if not exists then return
+
+    mediaDirs = fs.GetDirectoryListing(root)
+    if not IsArray(mediaDirs) then return
+
+    for each mediaName in mediaDirs
+        mediaPath = `${root}/${mediaName}`
+        requestDirs = fs.GetDirectoryListing(mediaPath)
+        if not IsArray(requestDirs) then requestDirs = []
+
+        for each reqName in requestDirs
+            reqPath = `${mediaPath}/${reqName}`
+            entries = fs.GetDirectoryListing(reqPath)
+            if not IsArray(entries) or entries.count() = 0
+                sabr_cacheDeleteDirectory(fs, reqPath)
+            else
+                latestTick = 0.0
+                for each entryName in entries
+                    entryPath = `${reqPath}/${entryName}`
+                    stamp = sabr_cacheExtractModifiedTicks(fs, entryPath)
+                    if stamp > latestTick then latestTick = stamp
+                end for
+                if latestTick <= 0
+                    latestTick = sabr_cacheExtractModifiedTicks(fs, reqPath)
+                end if
+                ageMs = nowMs - Int(latestTick)
+                if ageMs < 0 then ageMs = 0
+
+                if ageMs >= SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS
+                    sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] temp-cleanup dir=${reqPath} ageMs=${ageMs}`)
+                    for each entryName in entries
+                        entryPath = `${reqPath}/${entryName}`
+                        try
+                            if fs.Exists(entryPath)
+                                fs.Delete(entryPath)
+                            end if
+                        catch e
+                        end try
+                    end for
+                    sabr_cacheDeleteDirectory(fs, reqPath)
+                end if
+            end if
+        end for
+
+        remaining = fs.GetDirectoryListing(mediaPath)
+        if IsArray(remaining) and remaining.count() = 0
+            sabr_cacheDeleteDirectory(fs, mediaPath)
+        end if
+    end for
+
+    rootEntries = fs.GetDirectoryListing(root)
+    if IsArray(rootEntries) and rootEntries.count() = 0
+        sabr_cacheDeleteDirectory(fs, root)
+    end if
+end sub
 
 function sabr_cacheCopyFile(sourcePath as string, destPath as string) as boolean
     if not IsString(sourcePath) or sourcePath = "" then return false
