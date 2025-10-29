@@ -24,7 +24,7 @@ const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
 ' Seek guard duration (ms) to keep segments around after a seek/back operation
 const SABR_CACHE_SEEK_GUARD_MS = 30 * 1000
 ' Hard cap on total cache size (bytes); oldest entries are removed when exceeded
-const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
+const SABR_CACHE_TOTAL_SIZE_LIMIT = 2 * 1024 * 1024 ' 10 * 1024 * 1024 ` 10MB
 ' Lifetime (ms) for temporary streamed segment chunks under tmp:/sabr-cache/segments
 const SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS = 30 * 1000
 
