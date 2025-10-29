@@ -1922,6 +1922,18 @@ end sub
 
 sub roku_debugUploadBytes(debugUploadUrl as string, relativePath as string, bytes as object, logs = invalid as dynamic)
     if not isValid(bytes) then return
+
+    if IsString(bytes)
+        candidatePath = bytes.trim()
+        if candidatePath <> ""
+            fs = CreateObject("roFileSystem")
+            if fs.Exists(candidatePath)
+                roku_debugUploadContent(debugUploadUrl, relativePath, candidatePath, false, logs)
+                return
+            end if
+        end if
+    end if
+
     if GetInterface(bytes, "ifByteArray") = invalid then return
     roku_debugUploadContent(debugUploadUrl, relativePath, bytes, false, logs)
 end sub
@@ -1965,28 +1977,40 @@ sub roku_debugUploadContent(debugUploadUrl as string, relativePath as string, co
         end if
     else
         transfer.AddHeader("Content-Type", "application/octet-stream")
-        tempDir = "tmp:/roku-debug"
         fs = CreateObject("roFileSystem")
-        fs.CreateDirectory(tempDir)
-        fileName = roku_sanitizeForFilename(originalPath)
-        if fileName = "" then fileName = "roku-debug-bytes.bin"
-        tmpFilePath = `${tempDir}/${fileName}`
-
-        bytesRef = content
-        wrote = false
-        if GetInterface(bytesRef, "ifByteArray") <> invalid
-            wrote = bytesRef.WriteFile(tmpFilePath)
-        else
-            byteCopy = CreateObject("roByteArray")
-            if IsString(bytesRef)
-                byteCopy.FromAsciiString(bytesRef)
+        directPath = ""
+        if IsString(content)
+            pathCandidate = content.trim()
+            if pathCandidate <> "" and fs.Exists(pathCandidate)
+                directPath = pathCandidate
             end if
-            wrote = byteCopy.WriteFile(tmpFilePath)
         end if
 
-        if wrote
-            success = transfer.PostFromFile(tmpFilePath)
-            fs.Delete(tmpFilePath)
+        if directPath <> ""
+            success = transfer.PostFromFile(directPath)
+        else
+            tempDir = "tmp:/roku-debug"
+            fs.CreateDirectory(tempDir)
+            fileName = roku_sanitizeForFilename(originalPath)
+            if fileName = "" then fileName = "roku-debug-bytes.bin"
+            tmpFilePath = `${tempDir}/${fileName}`
+
+            bytesRef = content
+            wrote = false
+            if GetInterface(bytesRef, "ifByteArray") <> invalid
+                wrote = bytesRef.WriteFile(tmpFilePath)
+            else
+                byteCopy = CreateObject("roByteArray")
+                if IsString(bytesRef) and bytesRef <> ""
+                    byteCopy.FromAsciiString(bytesRef)
+                end if
+                wrote = byteCopy.WriteFile(tmpFilePath)
+            end if
+
+            if wrote
+                success = transfer.PostFromFile(tmpFilePath)
+                fs.Delete(tmpFilePath)
+            end if
         end if
     end if
 
@@ -2252,8 +2276,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         pruneCutoffMs = playerTimeOverride
     end if
 
+    pruneRangeStart = sabr_toInt(requestByteRange?.startRange)
+    if pruneRangeStart = invalid then pruneRangeStart = sabr_toInt(requestByteRange?.start)
+
     if pruneCutoffMs <> invalid or targetSegmentIndex <> invalid
         sabr_pruneBufferedRangesForSeekBack(bufferState, contentType, targetSegmentIndex, pruneCutoffMs, requestLogTag)
+        sabr_cacheUpdateProgressForSeek(contentType, currentFormat, targetSegmentIndex, pruneRangeStart, pruneCutoffMs)
     else if seekBackDetected and isValid(m?.logs)
         m.logs.printl(log_level_Type.DEBUG, `${requestLogTag} Seek-back detected but no pruning constraints available`)
     end if
@@ -2734,6 +2762,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                             "mediaIdHash": mediaIdHash,
                                             "playerTimeMs": playerTimeForStore
                                         })
+                                        sabr_cacheUpdateProgressForSeek(contentType, currentFormat, requestMetadataEntry?.sequenceNumber, coverageRange?.rangeStart, playerTimeForStore)
                                     end if
                                 end if
                             end if
@@ -2771,24 +2800,37 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             m.logs.printl(log_level_Type.WARN, `${requestLogTag} No valid SABR proto bytes to send`)
         end if
 
-        sabr_deleteFileIfExists(responseFilePath)
-        sabr_deleteFileIfExists(protoFilePath)
-
     end if
 
     if debugUploadUrl <> "" and isValid(response)
+        bodyByteArray = invalid
+        bodyPathForDump = sabr_toSafeString(response?.bodyPath)
         bytesCount = 0
-        if GetInterface(response.body, "ifByteArray") <> invalid
+
+        if GetInterface(response.body, "ifByteArray") <> invalid and response.body.count() > 0
+            bodyByteArray = response.body
             bytesCount = response.body.count()
+        else if bodyPathForDump <> ""
+            fs = CreateObject("roFileSystem")
+            if fs.Exists(bodyPathForDump)
+                fileStats = fs.Stat(bodyPathForDump)
+                if isValid(fileStats) and fileStats.DoesExist("size")
+                    bytesCount = sabr_toInt(fileStats.size)
+                end if
+            end if
         else if isValid(response?.bodyLength)
             bytesCount = sabr_toInt(response.bodyLength)
         end if
-        if GetInterface(response.body, "ifByteArray") <> invalid
+
+        dumpBase = sabr_getDumpLabel(playbackContext, "response", `${nextRequestId}`, requestByteRange, contentType, currentFormat)
+        if isValid(bodyByteArray)
             m.logs.printl(log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId}`)
-            dumpBase = sabr_getDumpLabel(playbackContext, "response", `${nextRequestId}`, requestByteRange, contentType, currentFormat)
-            roku_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", response.body, m.logs)
-        else
+            roku_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", bodyByteArray, m.logs)
+        else if bodyPathForDump <> ""
             m.logs.printl(log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId} (streaming)`)
+            roku_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", bodyPathForDump, m.logs)
+        else
+            m.logs.printl(log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId} (no body data)`)
         end if
 
         responseInfo = {
@@ -2801,6 +2843,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         }
         roku_debugUploadText(debugUploadUrl, dumpBase + "-meta.json", FormatJson(responseInfo), m.logs)
     end if
+
+    sabr_deleteFileIfExists(responseFilePath)
+    sabr_deleteFileIfExists(protoFilePath)
 
     sabr_recordRepeatResult(playbackContext, requestMetadataEntry, response, contentType, `${nextRequestId}`)
 
