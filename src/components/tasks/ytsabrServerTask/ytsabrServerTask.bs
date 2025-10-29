@@ -1,6 +1,7 @@
 import "pkg:/source/logger.bs"
 import "pkg:/source/http.bs"
 import "pkg:/source/SabrStreamingAdapter.bs"
+import "pkg:/source/SabrDebug.bs"
 
 sub init()
     m.logs = logger()
@@ -13,7 +14,7 @@ sub init()
     m.ut.setRequest("GET")
     m.ut.SetCertificatesFile("common:/certs/ca-bundle.crt")
     m.ut.initClientCertificates()
-    m.logs.printl(log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
+    sabr_log(m.logs, log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
     m.sabrPayloads = {}
     m.contentType = invalid
 end sub
@@ -25,26 +26,26 @@ sub YtsabrServer()
     tcp_bind_addr = CreateObject("roSocketAddress")
     tcp_bind_addr.setPort(m.top.contentType = "AUDIO" ? 7012 : 7011)
     m.contentType = m.top.contentType
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Starting YtsabrServer: ${m.top.contentType} on port ${tcp_bind_addr.getPort()}`)
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Starting YtsabrServer: ${m.top.contentType} on port ${tcp_bind_addr.getPort()}`)
     tcp.setAddress(tcp_bind_addr)
     tcp.notifyReadable(true)
     tcp.listen(4)
     if not tcp.eOK()
-        m.logs.printl(log_level_Type.WARN, "[YTSABR-Server] Could not create TCP socket")
+        sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] Could not create TCP socket", false)
         ' stop
     end if
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] address is ${tcp_bind_addr.getAddress()}`)
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] address is ${tcp_bind_addr.getAddress()}`)
 
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
-        ' if msgType <> "Invalid" then m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] got something ${msgType}`)
+        ' if msgType <> "Invalid" then sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] got something ${msgType}`)
         if msgType = "roSocketEvent"
             try
                 if msg.getSocketID() = tcp.getID()
                     client = tcp.accept()
                     if client = invalid
-                        m.logs.printl(log_level_Type.WARN, "[YTSABR-Server] Accept failed")
+                        sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] Accept failed", false)
                     else
                         client.notifyReadable(true)
                         client.setMessagePort(port)
@@ -59,7 +60,7 @@ sub YtsabrServer()
                         if connection.isReadable() and connection.getCountRcvBuf() = 0 and connection.isListening() = false then
                             ' Apparently this means the connection has been closed
                             ' What a terrible way to indicate it
-                            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
+                            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
                             connection.close()
                             m.sockets[Stri(msg.getSocketID())] = invalid
                         else
@@ -67,13 +68,13 @@ sub YtsabrServer()
                             handle_tcp(connection, port)
                         end if
                     ' else
-                    '     m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
+                    '     sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
                         ' stop
                     end if
                 end if
             catch e
-                m.logs.printl(log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling")
-                m.logs.printl(log_level_Type.WARN, FormatJson(e))
+                sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling", false)
+                sabr_log(m.logs, log_level_Type.WARN, FormatJson(e), false)
             end try
         end if
     end while
@@ -88,13 +89,13 @@ sub handle_tcp(connection as object, port as object)
     end if
     status = request.read_data(request, connection)
     if status = false then ' More data is required
-        m.logs.printl(log_level_Type.INFO, "[YTSABR-Server] Not yet finished")
+        sabr_log(m.logs, log_level_Type.INFO, "[YTSABR-Server] Not yet finished")
         return
     else if status = true then 'Data is complete. Execute handler
         ' body = request.body
         request.b64Body = request.body.ToBase64String()
         ' ' print "  body: "request.body
-        m.logs.printl(log_level_Type.VERBOSE, `[YTSABR-Server] Examining Request: {${chr(10)}  state: ${request.state},${chr(10)}  path: ${request.path},${chr(10)}  headers: ${FormatJson(request.headers)},${chr(10)}  method: ${request.method},${chr(10)}  body_size: ${request.body_size},${chr(10)}  search: ${FormatJson(request.search)},${chr(10)}  body: ${request.b64Body}${chr(10)}}`)
+        sabr_log(m.logs, log_level_Type.VERBOSE, `[YTSABR-Server] Examining Request: {${chr(10)}  state: ${request.state},${chr(10)}  path: ${request.path},${chr(10)}  headers: ${FormatJson(request.headers)},${chr(10)}  method: ${request.method},${chr(10)}  body_size: ${request.body_size},${chr(10)}  search: ${FormatJson(request.search)},${chr(10)}  body: ${request.b64Body}${chr(10)}}`)
         ' Regardless of whether the socket is to be closed, the HTTP request has finished. We have to invalidate it here
         ' since the process_data() call might set up something else
         m.connections[Stri(connection.getID())] = invalid
@@ -102,24 +103,24 @@ sub handle_tcp(connection as object, port as object)
         if should_close then
             m.sockets[Stri(connection.getID())] = invalid
             connection.close()
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] finalizing connection close: ${connection.getID()}`)
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] finalizing connection close: ${connection.getID()}`)
         end if
     else ' Error condition. Not handled (FIXME! Need to return ints instead of booleans so we have a third case. Or invalid?)
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] unrecognized status: ${status}`)
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] unrecognized status: ${status}`, false)
         ' stop
     end if
 end sub
 
 function process_request(request as object, connection as object, port as object)
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Processing request: ${request?.path}`)
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Processing request: ${request?.path}`)
     ' port = CreateObject("roMessagePort")
     status = invalid
     if request.path.inStr("/sabr/") > -1 then
-        m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Intercepted SABR request: ${request.path}`)
+        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Intercepted SABR request: ${request.path}`)
 
         mediaIdHash = sabr_extractMediaIdHash(request.path)
         if mediaIdHash = invalid then
-            m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Could not extract mediaIdHash from URL: ${request.path} on ${connection.getID()}`)
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not extract mediaIdHash from URL: ${request.path} on ${connection.getID()}`, false)
             status = send_http_reply(connection, "400", "text/plain", "Bad Request - could not extract mediaIdHash")
             return true
         end if
@@ -130,22 +131,22 @@ function process_request(request as object, connection as object, port as object
             filePath = `tmp:/${mediaIdHash}/sabrPayload.json`
             fileContent = getFile(filePath)
             if fileContent = invalid or fileContent = "" then
-                m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayload.json file: ${filePath} on ${connection.getID()}`)
+                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayload.json file: ${filePath} on ${connection.getID()}`, false)
                 status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - could not load sabrPayload.json")
                 return true
             end if
             ' Parse the JSON content
             sabrPayload = ParseJson(fileContent)
             if sabrPayload = invalid then
-                m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] sabrPayload.json file is not valid JSON: ${filePath} on ${connection.getID()}`)
+                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] sabrPayload.json file is not valid JSON: ${filePath} on ${connection.getID()}`, false)
                 status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - sabrPayload.json is not valid JSON")
                 return true
             end if
             m.sabrPayloads[mediaIdHash] = sabrPayload
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
         else
             sabrPayload = m.sabrPayloads[mediaIdHash]
-            m.logs.printl(log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         end if
         sabrResponse = invalid
         sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
@@ -183,9 +184,9 @@ function process_request(request as object, connection as object, port as object
             status = send_http_reply(connection, "204", "text/plain", "")
         end if
     else
-        m.logs.printl(log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`)
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`, false)
     end if
 
-    m.logs.printl(log_level_Type.INFO, `[YTSABR-Server] Status: ${status}`)
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Status: ${status}`)
     return false ' false = Keep-alive
 end function

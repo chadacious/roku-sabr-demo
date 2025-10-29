@@ -1,0 +1,209 @@
+' Utility helpers for parsing MP4 box structures used by SABR diagnostics
+
+function sabr_mp4_parseBoxes(bytes as object, maxBoxes as integer) as object
+    results = []
+    if not isValid(bytes) then return results
+    total = bytes.count()
+    offset = 0
+    limit = maxBoxes > 0 ? maxBoxes : 10
+
+    while offset + 8 <= total and results.count() < limit
+        sizeField = sabr_mp4_readUint32(bytes, offset)
+        boxType = sabr_mp4_readFourCC(bytes, offset + 4)
+        headerSize = 8
+        size = sizeField
+        if sizeField = 1
+            if offset + 16 > total then exit while
+            size = sabr_mp4_readUint64(bytes, offset + 8)
+            headerSize = 16
+        else if sizeField = 0
+            size = total - offset
+        end if
+        if size <= 0 then exit while
+        if offset + size > total then exit while
+
+        results.push({
+            "type": boxType
+            "size": size
+            "offset": offset
+            "headerSize": headerSize
+        })
+
+        if size < headerSize then exit while
+        offset = offset + size
+    end while
+
+    return results
+end function
+
+function sabr_mp4_extractSidxIndex(bytes as object) as dynamic
+    if not isValid(bytes) then return invalid
+    boxes = sabr_mp4_parseBoxes(bytes, 40)
+    for each boxInfo in boxes
+        if boxInfo?.type = "sidx"
+            return sabr_mp4_parseSidxBox(bytes, boxInfo)
+        end if
+    end for
+    return invalid
+end function
+
+function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
+    if not isValid(bytes) or not IsAssociativeArray(boxInfo) then return invalid
+
+    offset = sabr_mp4_toInt(boxInfo?.offset)
+    size = sabr_mp4_toInt(boxInfo?.size)
+    headerSize = sabr_mp4_toInt(boxInfo?.headerSize)
+    if headerSize = invalid or headerSize <= 0 then headerSize = 8
+    if offset < 0 or size <= headerSize then return invalid
+
+    totalLength = bytes.count()
+    if offset + size > totalLength then return invalid
+
+    cursor = offset + headerSize
+    if cursor + 4 > totalLength then return invalid
+    version = bytes[cursor]
+    cursor = cursor + 1
+
+    if cursor + 3 > totalLength then return invalid
+    flagByte1 = bytes[cursor] : cursor = cursor + 1
+    flagByte2 = bytes[cursor] : cursor = cursor + 1
+    flagByte3 = bytes[cursor] : cursor = cursor + 1
+    flags = (flagByte1 * 65536) + (flagByte2 * 256) + flagByte3
+
+    if cursor + 8 > totalLength then return invalid
+    referenceId = sabr_mp4_readUint32(bytes, cursor) : cursor = cursor + 4
+    timescale = sabr_mp4_readUint32(bytes, cursor) : cursor = cursor + 4
+
+    earliestPresentationTime = 0.0
+    firstOffset = 0.0
+    if version = 0
+        if cursor + 8 > totalLength then return invalid
+        earliestPresentationTime = sabr_mp4_readUint32(bytes, cursor)
+        cursor = cursor + 4
+        firstOffset = sabr_mp4_readUint32(bytes, cursor)
+        cursor = cursor + 4
+    else
+        if cursor + 16 > totalLength then return invalid
+        earliestPresentationTime = sabr_mp4_readUint64(bytes, cursor)
+        cursor = cursor + 8
+        firstOffset = sabr_mp4_readUint64(bytes, cursor)
+        cursor = cursor + 8
+    end if
+
+    if cursor + 4 > totalLength then return invalid
+    cursor = cursor + 2 ' reserved
+    referenceCount = sabr_mp4_readUint16(bytes, cursor)
+    cursor = cursor + 2
+
+    references = []
+    runningOffset = 0.0
+    baseRangeStart = (offset + size) * 1.0 + firstOffset
+    totalDuration = 0.0
+
+    for i = 0 to referenceCount - 1
+        if cursor + 12 > offset + size then exit for
+
+        rawSize = sabr_mp4_readUint32(bytes, cursor)
+        cursor = cursor + 4
+        referenceType = 0
+        if rawSize >= 2147483648
+            referenceType = 1
+            rawSize = rawSize - 2147483648
+        end if
+        referenceSize = rawSize * 1.0
+
+        subsegmentDuration = sabr_mp4_readUint32(bytes, cursor)
+        cursor = cursor + 4
+        totalDuration = totalDuration + subsegmentDuration
+
+        sapInfo = sabr_mp4_readUint32(bytes, cursor)
+        cursor = cursor + 4
+        startsWithSap = sapInfo >= 2147483648
+        sapValue = sapInfo
+        if startsWithSap then sapValue = sapValue - 2147483648
+        sapType = int(sapValue / 268435456)
+        sapValue = sapValue - (sapType * 268435456)
+        sapDelta = sapValue
+
+        rangeStart = baseRangeStart + runningOffset
+        rangeEnd = rangeStart + referenceSize - 1
+        runningOffset = runningOffset + referenceSize
+
+        references.push({
+            "index": i
+            "referenceType": referenceType
+            "referenceSize": referenceSize
+            "subsegmentDuration": subsegmentDuration
+            "startsWithSap": startsWithSap
+            "sapType": sapType
+            "sapDelta": sapDelta
+            "rangeStart": rangeStart
+            "rangeEnd": rangeEnd
+        })
+    end for
+
+    return {
+        "type": "sidx"
+        "version": version
+        "flags": flags
+        "referenceId": referenceId
+        "timescale": timescale
+        "earliestPresentationTime": earliestPresentationTime
+        "firstOffset": firstOffset
+        "baseRangeStart": baseRangeStart
+        "references": references
+        "totalDuration": totalDuration
+        "boxOffset": offset
+        "boxSize": size
+    }
+end function
+
+function sabr_mp4_readUint32(bytes as object, offset as integer) as integer
+    if not isValid(bytes) then return 0
+    if offset + 3 >= bytes.count() then return 0
+    b0 = bytes[offset]
+    b1 = bytes[offset + 1]
+    b2 = bytes[offset + 2]
+    b3 = bytes[offset + 3]
+    return (b0 * 16777216) + (b1 * 65536) + (b2 * 256) + b3
+end function
+
+function sabr_mp4_readUint16(bytes as object, offset as integer) as integer
+    if not isValid(bytes) then return 0
+    if offset + 1 >= bytes.count() then return 0
+    b0 = bytes[offset]
+    b1 = bytes[offset + 1]
+    return (b0 * 256) + b1
+end function
+
+function sabr_mp4_readUint64(bytes as object, offset as integer) as double
+    hi = sabr_mp4_readUint32(bytes, offset) * 1.0
+    lo = sabr_mp4_readUint32(bytes, offset + 4) * 1.0
+    return (hi * 4294967296.0) + lo
+end function
+
+function sabr_mp4_readFourCC(bytes as object, offset as integer) as string
+    if not isValid(bytes) then return ""
+    result = ""
+    for i = 0 to 3
+        if offset + i >= bytes.count() then exit for
+        result = result + Chr(bytes[offset + i])
+    end for
+    return result
+end function
+
+function sabr_mp4_toInt(value as dynamic) as dynamic
+    if not isValid(value) then return invalid
+
+    if IsInteger(value)
+        return value
+    else if IsFloat(value) or IsDouble(value)
+        return int(value)
+    else if IsString(value)
+        trimmed = value.trim()
+        if trimmed = "" then return invalid
+        return trimmed.toInt()
+    end if
+
+    return invalid
+end function

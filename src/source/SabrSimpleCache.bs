@@ -1,6 +1,7 @@
 ' Simple filesystem-based cache helpers for SABR segments.
 
 import "pkg:/source/isItem.bs"
+import "pkg:/source/SabrDebug.bs"
 
 const SABR_CACHE_BASE_DIR = "tmp:/sabr-cache"
 const SABR_CACHE_LOG_SAMPLE = 100
@@ -25,9 +26,8 @@ end function
 
 sub sabr_cacheLog(level as integer, message as string)
     logs = sabr_cacheLogger()
-    if IsAssociativeArray(logs)
-        logs.printl(level, message)
-    end if
+    debugOnly = (level = log_level_Type.DEBUG) or (level = log_level_Type.VERBOSE)
+    sabr_log(logs, level, message, debugOnly)
 end sub
 
 function sabr_cacheCurrentTimestampMs() as integer
@@ -57,7 +57,7 @@ function sabr_cacheEnsureBasePath() as string
         success = fs.CreateDirectory(SABR_CACHE_BASE_DIR)
         logObj = sabr_cacheLogger()
         if success <> true and IsAssociativeArray(logObj)
-            logObj.printl(log_level_Type.WARN, `[SabrCache] Failed to create cache directory ${SABR_CACHE_BASE_DIR}`)
+            sabr_log(logObj, log_level_Type.WARN, `[SabrCache] Failed to create cache directory ${SABR_CACHE_BASE_DIR}`, false)
         end if
     end if
     return SABR_CACHE_BASE_DIR
@@ -1492,7 +1492,7 @@ sub sabr_cacheLogSnapshot(reason as string, focusPath as string)
         focusLabel = parts[parts.count() - 1]
     end if
 
-    logs.printl(log_level_Type.DEBUG, `[SabrCache] snapshot reason=${reason} focus=${focusLabel} -> ${summary}`)
+    sabr_log(logs, log_level_Type.DEBUG, `[SabrCache] snapshot reason=${reason} focus=${focusLabel} -> ${summary}`)
 end sub
 
 function sabr_cacheFormatSize(sizeValue as dynamic) as string

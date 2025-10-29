@@ -7,7 +7,8 @@
     "package": "bsc --project bsconfig.json",
     "watch": "bsc --project bsconfig.json --watch",
     "deploy": "bsc --project bsconfig.json --createPackage --deploy",
-    "test:e2e": "node scripts/e2e-smoke.js"
+    "test:e2e": "node scripts/e2e-smoke.js",
+    "build:prod": "node scripts/build-prod.js"
   },
   "keywords": [],
   "author": "",

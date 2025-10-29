@@ -8,6 +8,9 @@ import "pkg:/source/ytproto/generated/messages/Range.brs"
 import "pkg:/source/ytproto/generated/messages/NextRequestPolicy.brs"
 import "pkg:/source/ytproto/generated/messages/PlaybackCookie.brs"
 import "pkg:/source/ytproto/generated/messages/SabrError.brs"
+import "pkg:/source/SabrDebug.bs"
+import "pkg:/source/SabrMp4Parser.bs"
+import "pkg:/source/SabrUtils.bs"
 import "pkg:/source/ytproto/generated/messages/SabrRedirect.brs"
 import "pkg:/source/ytproto/generated/messages/SabrContextUpdate.brs"
 import "pkg:/source/ytproto/generated/messages/SabrContextSendingPolicy.brs"
@@ -1621,9 +1624,8 @@ end function
 function sabr_ump_log(ctx as object, level as integer, message as string) as void
     taggedMessage = sabr_ump_applyRequestLogTag(ctx, message)
     loggerRef = ctx?.logs
-    if isValid(loggerRef) and IsAssociativeArray(loggerRef) and loggerRef.DoesExist("printl")
-        loggerRef.printl(level, taggedMessage)
-    end if
+    debugOnly = (level = log_level_Type.DEBUG) or (level = log_level_Type.VERBOSE)
+    sabr_log(loggerRef, level, taggedMessage, debugOnly)
 end function
 
 function sabr_ump_applyRequestLogTag(ctx as object, message as string) as string
@@ -1868,13 +1870,6 @@ sub sabr_ump_uploadSingleFile(ctx as object, baseUrl as string, fullPath as stri
     end if
 end sub
 
-function sabr_ump_joinPath(base as string, name as string) as string
-    if Len(base) = 0 then return name
-    lastChar = Right(base, 1)
-    if lastChar = "/" then return `${base}${name}`
-    return `${base}/${name}`
-end function
-
 function sabr_ump_segmentTempRoot() as string
     base = "tmp:/sabr-cache"
     subDir = sabr_ump_joinPath(base, "segments")
@@ -2015,43 +2010,6 @@ sub sabr_ump_ensureDirectory(path as string)
     fs.CreateDirectory(path)
 end sub
 
-function sabr_ump_urlEncode(value as string) as string
-    if not isValid(value) then return ""
-    encoder = CreateObject("roUrlTransfer")
-    return encoder.Escape(value)
-end function
-
-function sabr_ump_toSafeString(value as dynamic) as string
-    if not isValid(value) then return ""
-    if IsString(value)
-        return value.trim()
-    else if IsBoolean(value)
-        if value = true then return "true"
-        return "false"
-    end if
-    result = Str(value)
-    return result.trim()
-end function
-
-function sabr_ump_sanitizeForFilename(value as string) as string
-    if not isValid(value) then return ""
-    sanitized = ""
-    for i = 1 to Len(value)
-        ch = Mid(value, i, 1)
-        if ch = "/" or ch = "\\"
-            sanitized = sanitized + "_"
-        else
-            ascii = Asc(ch)
-            if (ascii >= 48 and ascii <= 57) or (ascii >= 65 and ascii <= 90) or (ascii >= 97 and ascii <= 122) or ch = "." or ch = "-" or ch = "_"
-                sanitized = sanitized + ch
-            else
-                sanitized = sanitized + "_"
-            end if
-        end if
-    end for
-    return sanitized
-end function
-
 function sabr_ump_shouldDebugDump(ctx as object) as boolean
     return sabr_ump_toSafeString(ctx?.requestMetadata?.debugUploadUrl) <> ""
 end function
@@ -2130,28 +2088,6 @@ sub sabr_ump_debugUploadByteArray(ctx as object, fileName as string, content as 
     sabr_ump_uploadSingleFile(ctx, baseUrl, tmpPath, fileName)
     sabr_ump_deletePath(tmpPath)
 end sub
-
-function sabr_ump_pathIsDir(path as string) as boolean
-    if not isValid(path) or path = "" then return false
-
-    lastChar = Right(path, 1)
-    if lastChar = "/" or lastChar = "\\" then return true
-
-    currentSegment = ""
-    for i = 1 to Len(path)
-        ch = Mid(path, i, 1)
-        if ch = "/" or ch = "\\"
-            currentSegment = ""
-        else
-            currentSegment = currentSegment + ch
-        end if
-    end for
-
-    if currentSegment = "" then return true
-
-    dotPos = currentSegment.InStr(".")
-    return dotPos = 0
-end function
 
 sub sabr_ump_prepareDebugDirectory(ctx as object, path as string)
     fs = CreateObject("roFileSystem")
@@ -2247,7 +2183,7 @@ sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as o
     if not sabr_ump_diagnosticsEnabled() then return
     if not isValid(bytes) or bytes.count() = 0 then return
 
-    boxes = sabr_ump_parseMp4Boxes(bytes, 10)
+    boxes = sabr_mp4_parseBoxes(bytes, 10)
     types = []
     for each mp4box in boxes
         types.push(mp4box.type)
@@ -2289,53 +2225,6 @@ sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as o
     end if
 end sub
 
-function sabr_ump_parseMp4Boxes(bytes as object, maxBoxes as integer) as object
-    results = []
-    if not isValid(bytes) then return results
-    total = bytes.count()
-    offset = 0
-    limit = maxBoxes > 0 ? maxBoxes : 10
-
-    while offset + 8 <= total and results.count() < limit
-        sizeField = sabr_ump_readUint32(bytes, offset)
-        boxType = sabr_ump_readFourCC(bytes, offset + 4)
-        headerSize = 8
-        size = sizeField
-        if sizeField = 1
-            if offset + 16 > total then exit while
-            size = sabr_ump_readUint64(bytes, offset + 8)
-            headerSize = 16
-        else if sizeField = 0
-            size = total - offset
-        end if
-        if size <= 0 then exit while
-        if offset + size > total then exit while
-
-        results.push({
-            "type": boxType
-            "size": size
-            "offset": offset
-            "headerSize": headerSize
-        })
-
-        if size < headerSize then exit while
-        offset = offset + size
-    end while
-
-    return results
-end function
-
-function sabr_ump_extractSidxIndex(bytes as object) as dynamic
-    if not isValid(bytes) then return invalid
-    boxes = sabr_ump_parseMp4Boxes(bytes, 40)
-    for each boxInfo in boxes
-        if boxInfo?.type = "sidx"
-            return sabr_ump_parseSidxBox(bytes, boxInfo)
-        end if
-    end for
-    return invalid
-end function
-
 function sabr_ump_formatKeyFromHeader(mediaHeader as object) as string
     if not isValid(mediaHeader) then return ""
 
@@ -2364,7 +2253,7 @@ function sabr_ump_buildSidxIndexUpdate(ctx as object, mediaHeader as object, seg
     if not isValid(mediaHeader) then return invalid
     if not isValid(segmentData) then return invalid
 
-    sidxInfo = sabr_ump_extractSidxIndex(segmentData)
+    sidxInfo = sabr_mp4_extractSidxIndex(segmentData)
     if not IsAssociativeArray(sidxInfo) then return invalid
 
     references = sidxInfo?.references
@@ -2442,169 +2331,6 @@ function sabr_ump_buildSidxIndexUpdate(ctx as object, mediaHeader as object, seg
     return update
 end function
 
-function sabr_ump_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
-    if not isValid(bytes) or not isValid(boxInfo) then return invalid
-
-    offset = sabr_ump_toInt(boxInfo?.offset)
-    size = sabr_ump_toInt(boxInfo?.size)
-    headerSize = sabr_ump_toInt(boxInfo?.headerSize)
-    if headerSize = invalid or headerSize <= 0 then headerSize = 8
-    if offset < 0 or size <= headerSize then return invalid
-
-    totalLength = bytes.count()
-    if offset + size > totalLength then return invalid
-
-    cursor = offset + headerSize
-    version = bytes[cursor]
-    cursor = cursor + 1
-
-    flagByte1 = bytes[cursor] : cursor = cursor + 1
-    flagByte2 = bytes[cursor] : cursor = cursor + 1
-    flagByte3 = bytes[cursor] : cursor = cursor + 1
-    flags = (flagByte1 * 65536) + (flagByte2 * 256) + flagByte3
-
-    referenceId = sabr_ump_readUint32(bytes, cursor) : cursor = cursor + 4
-    timescale = sabr_ump_readUint32(bytes, cursor) : cursor = cursor + 4
-
-    earliestPresentationTime = 0.0
-    firstOffset = 0.0
-    if version = 0
-        earliestPresentationTime = sabr_ump_readUint32(bytes, cursor)
-        cursor = cursor + 4
-        firstOffset = sabr_ump_readUint32(bytes, cursor)
-        cursor = cursor + 4
-    else
-        earliestPresentationTime = sabr_ump_readUint64(bytes, cursor)
-        cursor = cursor + 8
-        firstOffset = sabr_ump_readUint64(bytes, cursor)
-        cursor = cursor + 8
-    end if
-
-    cursor = cursor + 2 ' reserved
-    referenceCount = sabr_ump_readUint16(bytes, cursor)
-    cursor = cursor + 2
-
-    references = []
-    runningOffset = 0.0
-    totalDuration = 0.0
-    baseRangeStart = (offset + size) * 1.0 + firstOffset
-
-    for i = 0 to referenceCount - 1
-        if cursor + 12 > offset + size then exit for
-
-        rawSize = sabr_ump_readUint32(bytes, cursor)
-        cursor = cursor + 4
-        referenceType = 0
-        if rawSize >= 2147483648
-            referenceType = 1
-            rawSize = rawSize - 2147483648
-        end if
-        referenceSize = rawSize * 1.0
-
-        subsegmentDuration = sabr_ump_readUint32(bytes, cursor)
-        cursor = cursor + 4
-        totalDuration = totalDuration + subsegmentDuration
-
-        sapInfo = sabr_ump_readUint32(bytes, cursor)
-        cursor = cursor + 4
-        startsWithSap = sapInfo >= 2147483648
-        sapValue = sapInfo
-        if startsWithSap then sapValue = sapValue - 2147483648
-        sapType = int(sapValue / 268435456)
-        sapValue = sapValue - (sapType * 268435456)
-        sapDelta = sapValue
-
-        rangeStart = baseRangeStart + runningOffset
-        rangeEnd = rangeStart + referenceSize - 1
-        runningOffset = runningOffset + referenceSize
-
-        refRecord = {
-            "index": i
-            "referenceType": referenceType
-            "referenceSize": referenceSize
-            "subsegmentDuration": subsegmentDuration
-            "startsWithSap": startsWithSap
-            "sapType": sapType
-            "sapDelta": sapDelta
-            "rangeStart": rangeStart
-            "rangeEnd": rangeEnd
-        }
-        references.push(refRecord)
-    end for
-
-    return {
-        "type": "sidx"
-        "version": version
-        "flags": flags
-        "referenceId": referenceId
-        "timescale": timescale
-        "earliestPresentationTime": earliestPresentationTime
-        "firstOffset": firstOffset
-        "baseRangeStart": baseRangeStart
-        "references": references
-        "totalDuration": totalDuration
-        "boxOffset": offset
-        "boxSize": size
-    }
-end function
-
-function sabr_ump_readUint32(bytes as object, offset as integer) as integer
-    if offset + 3 >= bytes.count() then return 0
-    b0 = bytes[offset]
-    b1 = bytes[offset + 1]
-    b2 = bytes[offset + 2]
-    b3 = bytes[offset + 3]
-    return (b0 * 16777216) + (b1 * 65536) + (b2 * 256) + b3
-end function
-
-function sabr_ump_readUint16(bytes as object, offset as integer) as integer
-    if offset + 1 >= bytes.count() then return 0
-    b0 = bytes[offset]
-    b1 = bytes[offset + 1]
-    return (b0 * 256) + b1
-end function
-
-function sabr_ump_readUint64(bytes as object, offset as integer) as double
-    hi = sabr_ump_readUint32(bytes, offset) * 1.0
-    lo = sabr_ump_readUint32(bytes, offset + 4) * 1.0
-    return (hi * 4294967296.0) + lo
-end function
-
-function sabr_ump_readFourCC(bytes as object, offset as integer) as string
-    result = ""
-    for i = 0 to 3
-        if offset + i >= bytes.count() then exit for
-        result = result + Chr(bytes[offset + i])
-    end for
-    return result
-end function
-
-function sabr_ump_findInArray(arr as object, value as string) as boolean
-    if not isValid(arr) then return false
-    for each item in arr
-        if IsString(item)
-            if item = value then return true
-        end if
-    end for
-    return false
-end function
-
-function sabr_ump_toInt(value as dynamic) as dynamic
-    if not isValid(value) then return invalid
-
-    if IsInteger(value)
-        return value
-    else if IsFloat(value) or IsDouble(value)
-        return int(value)
-    else if IsString(value)
-        trimmed = value.trim()
-        if trimmed = "" then return invalid
-        return trimmed.toInt()
-    end if
-
-    return invalid
-end function
-
 function sabr_ump_formatInitializationKey(mediaHeader as dynamic) as string
     if not isValid(mediaHeader) then return ""
     parts = []
@@ -2669,52 +2395,6 @@ function sabr_ump_buildCacheKey(ctx as object, mediaHeader as object, rangeStart
     return sabr_ump_joinWithPipe(keyParts)
 end function
 
-function sabr_ump_joinWithPipe(values as object) as string
-    if not IsArray(values) then return ""
-    total = values.count()
-    if total = 0 then return ""
-    result = ""
-    for i = 0 to total - 1
-        piece = values[i] ?? ""
-        if result <> "" then result = `${result}|`
-        result = `${result}${piece}`
-    end for
-    return result
-end function
-
-function sabr_ump_valueToLabel(value as dynamic) as string
-    if not isValid(value) then return ""
-    if IsString(value)
-        trimmed = value.trim()
-        if trimmed = "" then return ""
-        if Instr(1, trimmed, "e") > 0 or Instr(1, trimmed, "E") > 0
-            numeric = trimmed.toFloat()
-            if numeric <> invalid
-                return sabr_ump_valueToLabel(numeric)
-            end if
-        end if
-        return trimmed
-    end if
-    if IsInteger(value)
-        return value.toStr()
-    end if
-    if IsFloat(value) or IsDouble(value)
-        precise = FormatJson(value)
-        if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0
-            return precise
-        end if
-        intVal = int(value)
-        if Abs(value - intVal) < 0.000001
-            return intVal.toStr()
-        end if
-        strVal = Str(value).trim()
-        if Instr(1, strVal, "e") > 0 or Instr(1, strVal, "E") > 0
-            return FormatJson(int(value))
-        end if
-        return strVal
-    end if
-    return Str(value).trim()
-end function
 function sabr_ump_loadSegmentFromChunks(ctx as object, segment as object) as object
     tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
     if tempPath <> ""
