@@ -3,17 +3,29 @@
 import "pkg:/source/isItem.bs"
 import "pkg:/source/SabrDebug.bs"
 
+' Root directory under tmp:/ where SABR segments are cached
 const SABR_CACHE_BASE_DIR = "tmp:/sabr-cache"
+' Number of entries to sample when logging cache snapshots
 const SABR_CACHE_LOG_SAMPLE = 100
+' Max age (ms) before segments are considered stale and eligible for removal
 const MAX_SABR_CACHE_SEGMENT_AGE_MS = 60 * 1000
+' Guard: keep delivered segments within N sequence numbers of the newest
 const SABR_CACHE_DELIVERED_SEQUENCE_GUARD = 3
+' Guard: keep delivered segments whose byte range is within this many bytes
 const SABR_CACHE_DELIVERED_RANGE_GUARD = 200000
+' Minimum time (ms) before a delivered segment can be removed
 const SABR_CACHE_DELIVERED_MIN_AGE_MS = 1500
+' Pending segments older than this many sequence numbers are culled
 const SABR_CACHE_PENDING_SEQUENCE_DISTANCE = 4
+' Pending segments whose range starts beyond this many bytes are culled
 const SABR_CACHE_PENDING_RANGE_DISTANCE = 400000
+' Pending segments older than this many ms (relative to player time) are culled
 const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
+' Seek guard duration (ms) to keep segments around after a seek/back operation
 const SABR_CACHE_SEEK_GUARD_MS = 30 * 1000
+' Hard cap on total cache size (bytes); oldest entries are removed when exceeded
 const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
+' Lifetime (ms) for temporary streamed segment chunks under tmp:/sabr-cache/segments
 const SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS = 30 * 1000
 
 sub sabr_cacheSetLogger(logs as dynamic)

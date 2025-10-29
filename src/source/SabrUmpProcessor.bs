@@ -20,10 +20,10 @@ import "pkg:/source/ytproto/generated/messages/ReloadPlaybackContext.brs"
 import "pkg:/source/ytproto/generated/messages/ReloadPlaybackParams.brs"
 import "pkg:/source/ytproto/generated/messages/MediaHeader.brs"
 import "pkg:/source/isItem.bs"
-
+' Toggle extra validation of init segments when true
 const SABR_INIT_DIAGNOSTICS_ENABLED = false
 
-' UMP part identifiers we care about (video_streaming.UMPPartId proto enum)
+' UMP part identifiers used by YouTube SABR responses
 const UMP_PART_ID_MEDIA_HEADER = 20
 const UMP_PART_ID_MEDIA = 21
 const UMP_PART_ID_MEDIA_END = 22
@@ -37,6 +37,7 @@ const UMP_PART_ID_STREAM_PROTECTION_STATUS = 58
 const UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY = 59
 const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
+' Controls performance instrumentation emitted by the processor
 const SABR_PERF_LOGGING_ENABLED = true
 const SABR_PERF_CAPTURE_MEMORY = true
 const SABR_PERF_THRESHOLD_MS = 0

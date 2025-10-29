@@ -14,6 +14,7 @@ BrighterScript Roku SceneGraph application that demonstrates how to adapt YouTub
 - Node.js 18+ (for tooling and the smoke test script).
 - Roku device in developer mode with network access and credentials.
 - `bsc` is installed automatically via `npm install` (it lives in `node_modules/.bin`).
+- A working YouTube sabr style manifest (see https://github.com/LuanRT/googlevideo)
 - Optional: `bun` if you prefer `bun install` (a `bun.lock` file is present).
 
 ## Getting Started
@@ -122,6 +123,13 @@ Segment data is delivered into `tmp:/sabr-cache/<mediaIdHash>/…`. The cache is
 If playback stops and no further SABR requests arrive, the cached set remains untouched until the next request triggers maintenance. For automated cleanup you can issue a manual `sabr_cacheRunMaintenance("")` or rely on the next playback session to trim the directory.
 
 ## Instrumentation & Debugging
+
+### Forcing Higher Bitrates
+- Set `SABR_BANDWIDTH_OVERRIDE_BPS` in `src/source/SabrStreamingAdapter.bs` to a concrete value (in bits per second) to force all SABR requests to advertise that bandwidth. Example: `25_000_000` (~25 Mbps) to target high-profile 1080p streams.
+- Alternatively, leave the override at `0` and set `SABR_BANDWIDTH_MULTIPLIER` (e.g., `1.5` or `2.0`) to scale the measured bandwidth upward while keeping adaptive behaviour.
+- Both settings are safe to leave at their defaults (`0` override, multiplier `1.0`) for normal operation.
+- Internally the adapter falls back to the current format bitrate (or 2 Mbps minimum) before applying the overrides so the SABR server always receives a non-zero estimate.
+
 - `SabrDebug.bs` provides `sabr_log` helpers that honor the global debug flag. Toggle `SABR_DEBUG_ENABLED` when preparing production builds.
 - HTTP dumps (request/response bodies, metadata) are uploaded through the debug upload URL when configured; file-backed responses stream via `bodyPath` to keep memory usage low.
 - The repeat-guard instrumentation logs state transitions (`RepeatState …`) so you can see when the player is requesting the same range repeatedly.

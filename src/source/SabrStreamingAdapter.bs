@@ -33,15 +33,28 @@ import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
 import "pkg:/source/taskUtils.bs"
 
+' Number of repeated requests before repeat guard fires
 const SABR_REPEAT_SEGMENT_THRESHOLD = 4
+' Time window (ms) for repeat guard to track duplicate requests
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
+' Size of chunks when streaming UMP payloads from the Roku socket
 const SABR_UMP_STREAM_CHUNK_SIZE = 131072
+' Max number of ByteArray buffers kept in the chunk pool
 const SABR_CHUNK_BUFFER_POOL_LIMIT = 6
+' Limit buffered ranges reported to SABR per content type
 const MAX_BUFFERED_RANGES_PER_TYPE = 1
 
+' Optional knobs to push the SABR server toward higher-bitrate renditions
+' Force all ABR requests to advertise this bandwidth (0 disables override)
+const SABR_BANDWIDTH_OVERRIDE_BPS = 0 ' i.e. 25000000
+' Scale measured bandwidth by this factor when override is zero
+const SABR_BANDWIDTH_MULTIPLIER = 1.0 ' i.e. 1.5
+
+' Player-time resolution strategies supported by the adapter
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
 const PLAYER_TIME_STRATEGY_METADATA = "metadata"
 const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
+' Default player-time strategy used when no override is provided
 const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
 
 
@@ -2712,6 +2725,12 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
     ' end if
     if not isValid(bandwidthEstimate) or bandwidthEstimate <= 0
         bandwidthEstimate = currentFormat?.bitrate ?? 0
+    end if
+    if bandwidthEstimate <= 0 then bandwidthEstimate = 2000000
+    if SABR_BANDWIDTH_OVERRIDE_BPS > 0
+        bandwidthEstimate = SABR_BANDWIDTH_OVERRIDE_BPS
+    else if SABR_BANDWIDTH_MULTIPLIER <> 1.0 and SABR_BANDWIDTH_MULTIPLIER > 0
+        bandwidthEstimate = Int(bandwidthEstimate * SABR_BANDWIDTH_MULTIPLIER)
     end if
 
     AUDIO_ONLY = 1
