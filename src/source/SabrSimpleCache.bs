@@ -104,7 +104,7 @@ sub sabr_cacheRememberMetadata(fileName as string, metadata as object)
     if fileName = "" then return
     if not IsAssociativeArray(metadata) then return
     meaningful = false
-    fields = [ "startSegmentIndex", "endSegmentIndex", "startTimeMs", "durationMs", "timescale", "startTicks", "durationTicks", "playerTimeMs", "storedAtMs", "delivered", "deliveredAtMs", "lastAccessMs", "mediaIdHash" ]
+    fields = ["startSegmentIndex", "endSegmentIndex", "startTimeMs", "durationMs", "timescale", "startTicks", "durationTicks", "playerTimeMs", "storedAtMs", "delivered", "deliveredAtMs", "lastAccessMs", "mediaIdHash"]
     for each fieldName in fields
         value = invalid
         if metadata.DoesExist(fieldName)
@@ -286,6 +286,8 @@ function sabr_cacheListEntries(mediaIdHash as string, contentType as string, ita
     return results
 end function
 
+' Writes a fully materialized segment to disk and records metadata used for
+' future SABR lookups. Returns an object describing the cache entry.
 function sabr_cacheStoreSegment(options as object) as object
     if not IsAssociativeArray(options) then return invalid
 
@@ -296,13 +298,13 @@ function sabr_cacheStoreSegment(options as object) as object
     totalBytesOpt = sabr_cacheNormalizeNumber(options?.totalBytes)
 
     path = sabr_cacheBuildFilename(
-        options?.mediaIdHash,
-        options?.contentType,
-        options?.itag,
-        options?.trackId ?? "",
-        options?.isInit = true,
-        options?.rangeStart,
-        options?.rangeEnd
+    options?.mediaIdHash,
+    options?.contentType,
+    options?.itag,
+    options?.trackId ?? "",
+    options?.isInit = true,
+    options?.rangeStart,
+    options?.rangeEnd
     )
 
     base = sabr_cacheEnsureBasePath()
@@ -380,6 +382,7 @@ function sabr_cacheStoreSegment(options as object) as object
         m.sabrCacheActiveMediaId = options.mediaIdHash
     end if
 
+    ' Trigger maintenance after storing a new segment to enforce quotas
     sabr_cacheRunMaintenance(path)
 
     sabr_cacheLogSnapshot("store", path)
@@ -390,6 +393,8 @@ function sabr_cacheStoreSegment(options as object) as object
     }
 end function
 
+' Loads a cached segment (or stream) from disk to satisfy a player request,
+' wiring up metadata and ByteArray content as needed.
 function sabr_cacheLoadSegment(params as object) as object
     if not IsAssociativeArray(params) then return invalid
     entries = sabr_cacheListEntries(params?.mediaIdHash, params?.contentType, params?.itag, params?.trackId ?? "")
@@ -549,6 +554,8 @@ sub sabr_cacheRecordAccess(entry as object)
     sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] access file=${fileName} lastAccessMs=${metadata.lastAccessMs}`)
 end sub
 
+' Marks a cache entry as delivered, recording timestamps and delivery progress
+' so maintenance can safely evict it once guard thresholds expire.
 sub sabr_cacheMarkDelivered(entry as object)
     if not IsAssociativeArray(entry) then return
     fileName = entry?.fileName
@@ -741,6 +748,8 @@ sub sabr_cacheUpdateDeliveryProgress(entry as object, metadata as object)
     m.sabr_cacheDeliveryProgress = progress
 end sub
 
+' Determines whether a delivered segment should be temporarily preserved
+' (recent delivery, seek guard, or proximity to current playback).
 function sabr_cacheShouldDeferDeliveredRemoval(entry as object, metadata as object, nowMs as integer) as boolean
     if not IsAssociativeArray(metadata) then return false
     if metadata?.delivered <> true then return false
@@ -789,6 +798,8 @@ function sabr_cacheShouldDeferDeliveredRemoval(entry as object, metadata as obje
     return false
 end function
 
+' Evaluates whether a pending (not-yet-delivered) segment is too old or far
+' from the current playback position and should be removed.
 function sabr_cacheShouldCullPending(entry as object, metadata as object) as boolean
     if not IsAssociativeArray(metadata) then return false
     key = sabr_cacheBuildDeliveryKey(entry)
@@ -845,6 +856,9 @@ function sabr_cacheShouldCullPending(entry as object, metadata as object) as boo
     return false
 end function
 
+' Main maintenance routine that refreshes metadata, removes stale/delivered
+' segments, and enforces overall cache quotas. activePath marks a segment
+' currently being written so we avoid removing it mid-flight.
 sub sabr_cacheRunMaintenance(activePath as string)
     base = sabr_cacheEnsureBasePath()
     fs = CreateObject("roFileSystem")
@@ -885,6 +899,7 @@ sub sabr_cacheRunMaintenance(activePath as string)
                 end if
                 if isDir
                     childEntries = fs.GetDirectoryListing(path)
+                    ' Prune empty directories that linger between runs
                     if IsArray(childEntries) and childEntries.count() = 0
                         sabr_cacheDeleteDirectory(fs, path)
                     end if
@@ -935,9 +950,9 @@ sub sabr_cacheRunMaintenance(activePath as string)
             else
                 lastTouchMs = storedAtMs
             end if
-        metadata["lastAccessMs"] = lastTouchMs
-        table[name] = metadata
-    end if
+            metadata["lastAccessMs"] = lastTouchMs
+            table[name] = metadata
+        end if
 
         protectUntil = sabr_cacheNormalizeNumber(metadata?.seekProtectedUntil)
         if protectUntil <> invalid and nowMs < protectUntil
@@ -1034,6 +1049,7 @@ sub sabr_cacheRunMaintenance(activePath as string)
             info = remaining[idx]
             entryMedia = sabr_cacheSanitize(info.entry?.mediaIdHash)
             if entryMedia <> "" and entryMedia <> activeMedia
+                ' Drop segments belonging to previous mediaId
                 focus = sabr_cacheFinalizeRemoval(fs, base, table, info.entry, info.metadata, "foreign-media")
                 if focus <> ""
                     removedAny = true
@@ -1189,6 +1205,8 @@ function sabr_cacheBuildSample(items as object) as string
     return summary
 end function
 
+' Removes the on-disk file and metadata entry for a cached segment, emitting
+' detailed logs about why the entry was culled.
 function sabr_cacheFinalizeRemoval(fs as object, base as string, table as object, entry as object, metadata as object, reason as string) as string
     if not IsAssociativeArray(entry) then return ""
     fileName = entry?.fileName
@@ -1240,7 +1258,7 @@ function sabr_cacheExtractSize(fs as object, path as string) as integer
     if GetInterface(fs, "ifFileSystem") = invalid then return 0
     info = fs.Stat(path)
     if not IsAssociativeArray(info) then return 0
-    keys = [ "size", "filesize", "length" ]
+    keys = ["size", "filesize", "length"]
     for each key in keys
         if info.DoesExist(key)
             raw = info.Lookup(key)
@@ -1259,7 +1277,7 @@ function sabr_cacheExtractModifiedTicks(fs as object, path as string) as double
     info = fs.Stat(path)
     if not IsAssociativeArray(info) then return 0.0
 
-    keys = [ "modified", "modificationTime", "creationTime", "ctime", "mtime" ]
+    keys = ["modified", "modificationTime", "creationTime", "ctime", "mtime"]
     stamp = invalid
     for each key in keys
         if info.DoesExist(key)

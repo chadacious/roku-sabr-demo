@@ -321,6 +321,8 @@ function send_http_reply(connection as object, response_code as string, content_
     return status
 end function
 
+' Streams an HTTP response back to the client, optionally reading payload
+' bytes from disk to avoid large in-memory buffers.
 function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid, dataPath = invalid as dynamic, dataOffset = 0 as dynamic, dataLength = invalid as dynamic)
     loggers = logger()
     resStatus = ""

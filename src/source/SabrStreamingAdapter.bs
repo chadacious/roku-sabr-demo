@@ -6,7 +6,7 @@ import "pkg:/source/ytproto/generated/messages/StreamerContext.brs"
 import "pkg:/source/ytproto/generated/messages/ClientInfo.brs"
 import "pkg:/source/ytproto/generated/messages/TimeRange.brs"
 import "pkg:/source/ytproto/generated/messages/BufferedRange.brs"
-import "pkg:/source/ytproto/generated/messages/StreamerContext.brs"  
+import "pkg:/source/ytproto/generated/messages/StreamerContext.brs"
 import "pkg:/source/ytproto/generated/messages/SabrContext.brs"
 import "pkg:/source/ytproto/generated/messages/GLDeviceInfo.brs"
 import "pkg:/source/ytproto/generated/messages/MediaCapabilities.brs"
@@ -45,6 +45,14 @@ const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
 const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
 
 
+' Handles an intercepted SABR segment request from the Roku video stack.
+' - request: parsed HTTP request from the local SABR server.
+' - contentType: "VIDEO" or "AUDIO" to drive format selection.
+' - mediaIdHash: unique directory key where SABR payloads live under tmp:/.
+' - sabr: decoded SABR payload metadata (formats, context, etc).
+' - videoNode: player node for querying seek position and playback hints.
+' - redirectDepth: recursion guard when SABR instructs us to retry/redirect.
+' Returns a response object (status, headers, body or bodyPath) ready to send.
 function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, redirectDepth = 0 as integer) as object
     ok = true
 
@@ -57,7 +65,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         requestTimer = m.logs.mark()
     end if
 
-    ' load the playbackContext.json file from tmp:/${mediaIdHash}/playbackContext.json
+    ' Load playback context for media and validate cached metadata from tmp:/${mediaIdHash}/playbackContext.json
     fileContent = getFile(`tmp:/${mediaIdHash}/playbackContext.json`)
     if fileContent = "" then
         ok = false
@@ -75,7 +83,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if not isValid(playbackContext)
         ok = false
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR playback context available`, false)
-    ' else
+        ' else
         ' sabr_log(m.logs, log_level_Type.INFO, `SABR playback mediaId: ${FormatJson(playbackContext.sabrPayload)}`)
     end if
 
@@ -86,6 +94,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         return sabr_buildErrorResponseForPlayer(502, fatalReason)
     end if
 
+    ' Ensure cache/task infrastructure exists before handling segments
     sabr_ensureInfrastructure()
     metadataManager = m.sabrRequestMetadataManager
     debugUploadUrl = m.top.debugUploadUrl ?? ""
@@ -98,21 +107,21 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR formats available`, false)
         end if
     end if
-    
+
     sabrAbrUrl = sabr?.serverAbrStreamingUrl
     if not isValid(sabrAbrUrl) or sabrAbrUrl = ""
         ok = false
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR URL provided`, false)
     end if
 
-    ' increment the request number
+    ' Assign a unique request number and patch SABR URL
     ' nextRequestId = generateSabrRequestNumber(playbackContext, contentType)
     nextRequestId = m.top.utilsTask.callFunc("getNextId", "sabrRequestNumber")
     playbackContext["requestNumber"] = nextRequestId
     requestLogTag = sabr_utilLogTag(contentType, nextRequestId)
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} SABR playback request number: ${nextRequestId}`)
 
-    ' update the URL's rn param (or create it) to be the request number
+    ' Update SABR URL with request number token param (or create it) to be the request number
     regexRn = CreateObject("roRegex", "([&?])rn=[^&]*", "i")
     if regexRn.match(sabrAbrUrl).count() > 0
         sabrAbrUrl = regexRn.replaceAll(sabrAbrUrl, `\1rn=${nextRequestId}`)
@@ -122,7 +131,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     end if
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} URL: ${sabrAbrUrl}`)
 
-    ' originalUrl = request.path
+    ' Resolve requested format from query params
     try
         if not isValid(request.search.key) or request.search.key = ""
             ok = false
@@ -149,12 +158,14 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     activeFormats = sabr_getActiveFormats(currentFormat, sabr, playbackContext)
 
+    ' Normalize requested byte range for downstream lookups
     requestByteRange = sabr_getHeaderByteRange(request)
     requestByteRange = sabr_normalizeByteRange(requestByteRange, {
         "mediaIdHash": mediaIdHash
         "contentType": contentType
         "format": currentFormat
     })
+    ' Log normalized range for diagnostics
     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Normalized byteRange start=${requestByteRange?.startRange ?? ""} end=${requestByteRange?.endRange ?? ""} seq=${requestByteRange?.sequenceNumber ?? ""}`)
     streamInfoForFormat = sabr_fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
     isInitSegmentRequest = sabr_isInit(contentType, currentFormat, requestByteRange, nextRequestId)
@@ -176,6 +187,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     storedPruneThresholdMs = sabr_toInt(playbackContext?.bufferPruneThresholdMs)
     toleranceMs = 1000
 
+    ' Resolve player-time prediction and update context
     playerTimeOverride = sabr_toInt(playerTimeInfo?.value)
     if playerTimeOverride = invalid or playerTimeOverride < 0
         playerTimeOverride = 0
@@ -207,6 +219,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         playbackContext["maxResolvedPlayerTimeMs"] = newMaxResolvedPlayerTime
     end if
 
+    ' Work out requested segment indices/timing for logging
     targetSegmentIndex = invalid
     segmentIndexInfo = requestByteRange?.segmentIndexInfo
     if IsAssociativeArray(segmentIndexInfo)
@@ -222,6 +235,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         targetSegmentIndex = sabr_toInt(requestByteRange?.sequenceNumber)
     end if
 
+    ' Track buffer prune thresholds to help repeat guard
     pruneCutoffMs = storedPruneThresholdMs
     if playerTimeOverride <> invalid
         if pruneCutoffMs = invalid or playerTimeOverride < pruneCutoffMs
@@ -249,10 +263,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     sabrRequestJson = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, playerTimeOverride, videoNode, nextRequestId)
 
-     if isValid(currentFormat.height) 
+    if isValid(currentFormat.height)
         sabrRequestJson.clientAbrState["stickyResolution"] = currentFormat.height
         sabrRequestJson.clientAbrState["lastManualSelectedResolution"] = currentFormat.height
-     end if
+    end if
 
     formatToDiscard = sabr_applyBufferedStateToRequest(sabrRequestJson, bufferState)
 
@@ -374,13 +388,16 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Cache hit path=${pathLabel} range=${cacheLookupRange} bytes=${cacheEntry.data.count()}`)
     end if
 
+    ' Track cache misses for logging
     if cacheHit = false
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cache miss key=${cacheLookupLabel} range=${cacheLookupRange}`)
     end if
-    batchCounter =  m.top.utilsTask.callFunc("getNextId", "sabrBatchCounter")
+    batchCounter = m.top.utilsTask.callFunc("getNextId", "sabrBatchCounter")
     playbackContext["lastDumpIndex"] = batchCounter
     requestMetadataEntry["batchIndex"] = batchCounter
 
+    ' Build and send SABR request when cache misses
+    ' Build and send SABR request when cache misses
     if ok and not cacheHit
         if not isInitSegmentRequest and isValid(currentFormat)
             sabrRequestJson.selectedFormatIds.push(currentFormat)
@@ -402,6 +419,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
         ' clone the object as the encode will add snake case object keys alongside camel case ones
         playbackContext["lastSabrRequest"] = sabrRequestJson
+        ' Optionally upload debug artifacts for the response
         if debugUploadUrl <> ""
             requestPayloadJson = FormatJson(sabrRequestJson)
             if isValid(requestPayloadJson) and requestPayloadJson <> ""
@@ -485,7 +503,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 if requestSpan <> invalid
                     m.logs.printTime(log_level_Type.INFO, `${requestLogTag} SABR proxy round-trip`, requestSpan, -1)
                 end if
-                if not isValid(res?.status) 
+                if not isValid(res?.status)
                     ok = false
                     sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} No response status from SABR UMP request`, false)
                     response = sabr_buildErrorResponseForPlayer(500, "SABR request failed")
@@ -642,6 +660,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} ${fatalReason}`, false)
                             else
                                 sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Following SABR redirect to ${redirectUrl}`)
+                                ' Cleanup temp files for proto/response
                                 sabr_deleteFileIfExists(responseFilePath)
                                 sabr_deleteFileIfExists(protoFilePath)
                                 writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
@@ -820,6 +839,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         sabr_debugUploadText(debugUploadUrl, dumpBase + "-meta.json", FormatJson(responseInfo), m.logs)
     end if
 
+    ' Cleanup temp files for proto/response
     sabr_deleteFileIfExists(responseFilePath)
     sabr_deleteFileIfExists(protoFilePath)
 
@@ -833,7 +853,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         response.headers["X-Cache-Range"] = sabr_formatRequestedRangeForPath(requestByteRange)
     end if
 
-    ' write the playbackContext to the playbackContext.json file to preserve state
+    ' Persist playback context to tmp so next request sees fresh state to preserve state
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
     if isValid(playbackContext?.sidxIndexByFormat)
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} SIDX map snapshot ${FormatJson(playbackContext.sidxIndexByFormat)}`)
@@ -873,6 +893,8 @@ function sabr_getHeaderByteRange(request as object) as object
     return { "startRange": startRange, "endRange": endRange }
 end function
 
+' Collects cached segment coverage for a given format so we can seed SABR
+' buffering metadata. Returns an array of entries sorted newest-first.
 function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object) as object
     ranges = []
     if not isValid(activeFormat) then return ranges
@@ -934,6 +956,8 @@ function sabr_currentPlayerPositionMs(videoNode as object, playbackContext as ob
     return int((positionSeconds ?? 0) * 1000)
 end function
 
+' Builds the buffered state payload that we attach to SABR requests so the
+' server knows what segments already exist locally for video/audio tracks.
 function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object, activeFormats as object, playbackContext as object, requestedFormatType as string) as object
     rangesByType = {}
     rangesByType["AUDIO"] = []
@@ -945,7 +969,7 @@ function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object,
     }
 
     currentFormatKey = sabr_formatToKey(currentFormat)
-    activeFormatKeys = [ "audioFormat", "videoFormat" ]
+    activeFormatKeys = ["audioFormat", "videoFormat"]
 
     for each fieldName in activeFormatKeys
         format = activeFormats[fieldName]
@@ -969,7 +993,7 @@ function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object,
         shouldDiscard = sabr_formatToKey(format) <> currentFormatKey
         bufferedRanges = []
         if shouldDiscard
-            bufferedRanges = [ sabr_createFullBufferRange(format) ]
+            bufferedRanges = [sabr_createFullBufferRange(format)]
             if not isValid(state["formatToDiscard"])
                 state["formatToDiscard"] = format
             end if
@@ -991,6 +1015,8 @@ function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object,
     return state
 end function
 
+' Writes buffer state information onto the outgoing SABR protobuf request.
+' Returns the modified request to support call chaining.
 function sabr_applyBufferedStateToRequest(videoPlaybackAbrRequest as object, bufferState as object) as dynamic
     if not IsAssociativeArray(bufferState) then return invalid
 
@@ -1144,17 +1170,19 @@ function sabr_requestedByteStart(byteRange as object) as dynamic
     return startVal
 end function
 
+' Resolves the playerTimeMs and coverage metadata SABR requires for the current
+' byte-range request. Returns a small object describing the result and source.
 function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
     sabr_ensurePlayerTimeStrategy(playbackContext)
 
     strategy = sabr_determinePlayerTimeStrategy(playbackContext)
     attempts = []
     if strategy = PLAYER_TIME_STRATEGY_SIDX
-        attempts = [ PLAYER_TIME_STRATEGY_SIDX ]
+        attempts = [PLAYER_TIME_STRATEGY_SIDX]
     else if strategy = PLAYER_TIME_STRATEGY_METADATA
-        attempts = [ PLAYER_TIME_STRATEGY_METADATA ]
+        attempts = [PLAYER_TIME_STRATEGY_METADATA]
     else
-        attempts = [ PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA ]
+        attempts = [PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA]
     end if
 
     if isValid(m?.logs)
@@ -1286,6 +1314,8 @@ sub sabr_seedMetadataFromSidx(playbackContext as object, contentType as string, 
 
 end sub
 
+' Attempts to map the requested byte-range to a SIDX entry gathered from the
+' init segment. Returns timing details when a match (or nearest predecessor) exists.
 function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
     result = {
         "value": invalid
@@ -1464,6 +1494,8 @@ function sabr_predictPlayerTimeFromSidxEntry(entry as object, targetStart as dyn
     return startMs + int((offset * durationMs) / span)
 end function
 
+' Uses previously delivered SABR metadata to estimate the requested segment’s
+' start time and duration when no SIDX entry is available.
 function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
     result = {
         "value": invalid
@@ -1806,6 +1838,8 @@ function sabr_resolveFormatIdForCacheEntry(entry as object, fallback as dynamic,
     return formatId
 end function
 
+' Convert a local cache entry + metadata blob into the shape expected by SABR
+' buffering logic (mirrors SegmentInitializationMetadata proto fields).
 function sabr_buildMetadataFromCacheEntry(entry as object, activeFormat as object, formatType as string) as dynamic
     if not IsAssociativeArray(entry) then return invalid
 
@@ -2160,6 +2194,8 @@ function sabr_fetchStreamInfoForFormat(playbackContext as object, contentType as
     return invalid
 end function
 
+' Tracks repeated byte-range requests that may indicate playback stalls.
+' Returns an error response when the repeat guard trips, otherwise invalid.
 function sabr_guardRepeatedRequests(playbackContext as object, contentType as string, currentFormat as object, requestMetadataEntry as object, requestNumber as string, videoNode as object, mediaIdHash as string) as dynamic
     if not isValid(playbackContext) then return invalid
     if requestMetadataEntry?.isInit = true then return invalid
@@ -2562,6 +2598,8 @@ function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic)
     return `[YTSABR-Util-${contentType}-${rn}]`
 end function
 
+' Determines the currently active video/audio formats to use for buffering and
+' SABR requests, falling back to recently used formats in playbackContext.
 function sabr_getActiveFormats(currentFormat as object, sabr as object, playbackContext as object) as object
     formats = sabr.adaptiveFormats
     videoFormat = invalid
@@ -2629,6 +2667,8 @@ function sabr_pickMeasuredBitrate(info as dynamic) as dynamic
     return invalid
 end function
 
+' Builds the VideoPlaybackAbrRequest protobuf payload for the current segment.
+' Handles buffered ranges, player-time resolution, and metadata annotations.
 function sabr_createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic) as object
     ' Create the ABR request object
     logTag = sabr_utilLogTag(contentType, requestRef)
@@ -2705,8 +2745,8 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
         },
         "bufferedRanges": [],
         "selectedFormatIds": [],
-        "preferredAudioFormatIds": [ activeFormats.audioFormat ?? {} ],
-        "preferredVideoFormatIds": [ activeFormats.videoFormat ?? {} ],
+        "preferredAudioFormatIds": [activeFormats.audioFormat ?? {}],
+        "preferredVideoFormatIds": [activeFormats.videoFormat ?? {}],
         "preferredSubtitleFormatIds": [],
         "videoPlaybackUstreamerConfig": sabr.ustreamerConfig,
         "streamerContext": streamerContext,
@@ -2717,6 +2757,8 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
 
 end function
 
+' Generates a best-effort estimate of player time when both SIDX and metadata
+' lookups fail, using historical counters tracked in playbackContext.
 function sabr_resolveFallbackPlayerTimeMsInfo(playbackContext as object, format as object) as object
     info = {
         "value": 0
@@ -2917,6 +2959,8 @@ sub sabr_normalizeSegmentTiming(metadata as object)
     metadata["timeRange"] = timeRange
 end sub
 
+' Converts SABR UMP results into an HTTP response suitable for the Roku player.
+' Streams from disk when possible to avoid large in-memory buffers.
 function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dynamic, currentFormat as object, requestByteRange as object, contentType as string) as object
     headers = CreateObject("roAssociativeArray")
     itagLabelForHeader = sabr_valueToLabel(currentFormat?.itag)
@@ -3189,6 +3233,8 @@ function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dyn
     }
 end function
 
+' Builds a bare 204 response when no body is available but the request should
+' still be considered handled by the local server.
 function sabr_buildEmptyResponseForPlayer(contentType as string, currentFormat as object) as object
     body = CreateObject("roByteArray")
 
@@ -3234,6 +3280,7 @@ function sabr_fsGetFileSize(path as string) as dynamic
     return invalid
 end function
 
+' Utility for generating an HTTP error response to propagate back to the player.
 function sabr_buildErrorResponseForPlayer(status as integer, message as string) as object
     body = CreateObject("roByteArray")
     if isValid(message) and message <> ""

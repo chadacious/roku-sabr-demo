@@ -106,6 +106,8 @@ function sabr_ump_getProcessorContext() as object
 end function
 
 ' Consume the raw bytes returned in SabrStreamingAdapter's sabrUmpResponse (roByteArray).
+' Feeds raw SABR/UMP response bytes into the processor state machine,
+' handling chunk accumulation, part parsing, and downstream segment assembly.
 function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
     chunkTimer = sabr_ump_perfStart(ctx, "process_chunk")
     incomingType = Type(incoming)
@@ -558,6 +560,8 @@ function sabr_ump_handleReloadPlayerResponse(ctx as object, part as object) as d
     return invalid
 end function
 
+' Processes a MEDIA_HEADER part, caching init metadata and preparing the
+' segment assembly tracking structures used by subsequent media chunks.
 function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
     mediaHeader = sabr_ump_decodePart(MediaHeaderDecode, part.data, ctx, "media_header")
     if not isValid(mediaHeader)
@@ -628,6 +632,8 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
     return invalid
 end function
 
+' Streams MEDIA part bytes into the temp file backing the in-progress segment,
+' updating byte counts and chunk metadata as chunks arrive.
 function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     mediaTimer = sabr_ump_perfStart(ctx, "media_chunk")
     sourceBuffer = invalid
@@ -722,6 +728,9 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     return invalid
 end function
 
+' Finalizes a MEDIA segment once all chunks have been received, assembling the
+' full payload and invoking cache storage.
+' Finalizes MEDIA segments once SABR signals completion, flushing metadata and delivery.
 function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
     mediaEndTimer = sabr_ump_perfStart(ctx, "media_end")
     if part.data.count() = 0
@@ -992,6 +1001,8 @@ function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
     return invalid
 end function
 
+' Persists a fully assembled segment into the SABR cache and returns the
+' metadata structure consumed by the streaming adapter.
 function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segmentInfo as object) as object
     if not isValid(ctx) then return invalid
     if not IsAssociativeArray(segmentInfo) then return invalid
@@ -1056,7 +1067,7 @@ function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, se
     if isInitSeg
         sidxUpdate = sabr_ump_buildSidxIndexUpdate(ctx, mediaHeader, segmentData)
         if IsAssociativeArray(sidxUpdate)
-            sabr_ump_mergeStreamInfo(ctx, { "sidxIndexUpdates": [ sidxUpdate ] })
+            sabr_ump_mergeStreamInfo(ctx, { "sidxIndexUpdates": [sidxUpdate] })
             reason = sidxUpdate?.unsupportedReason
             if isValid(reason) and reason <> ""
                 sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] SIDX index ignored for format ${sidxUpdate?.formatKey ?? ""}: ${reason}`)
@@ -1092,6 +1103,8 @@ function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, se
     return cacheResult
 end function
 
+' Merges stream-level telemetry (coverage, init metadata) back into the
+' request metadata so future SABR calls have richer context.
 function sabr_ump_mergeStreamInfo(ctx as object, newInfo as object) as void
     streamInfo = ctx.requestMetadata?.streamInfo
     if not isValid(streamInfo) then streamInfo = {}
@@ -1121,6 +1134,8 @@ function sabr_ump_headerMatchesRequest(ctx as object, mediaHeader as object) as 
     return headerStart = requestedStart
 end function
 
+' Resolves the desired byte-range start for the current SABR request using
+' metadata tracked on the processor context.
 function sabr_ump_resolveRequestedStart(ctx as object) as dynamic
     byteRange = ctx.requestMetadata?.byteRange
     if not isValid(byteRange) then return invalid
@@ -1129,6 +1144,7 @@ function sabr_ump_resolveRequestedStart(ctx as object) as dynamic
     return startVal
 end function
 
+' Resolves the desired byte-range end for the current SABR request.
 function sabr_ump_resolveRequestedEnd(ctx as object) as dynamic
     byteRange = ctx.requestMetadata?.byteRange
     if not isValid(byteRange) then return invalid
@@ -1193,18 +1209,18 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
     else if byteLength = 2
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 AND &h3f) + 64 * byte2
+        value = (byte1 and &h3f) + 64 * byte2
     else if byteLength = 3
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 AND &h1f) + 32 * (byte2 + 256 * byte3)
+        value = (byte1 and &h1f) + 32 * (byte2 + 256 * byte3)
     else if byteLength = 4
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
         byte4 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 AND &h0f) + 16 * (byte2 + 256 * (byte3 + 256 * byte4))
+        value = (byte1 and &h0f) + 16 * (byte2 + 256 * (byte3 + 256 * byte4))
     else
         ' 5-byte variant
         cursor = cursor + 1
@@ -1213,7 +1229,7 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
         byte4 = buffer[cursor] : cursor = cursor + 1
-        value = byte0 AND &h07
+        value = byte0 and &h07
         value = value + 8 * (byte1 + 256 * (byte2 + 256 * (byte3 + 256 * byte4)))
     end if
 
@@ -1350,6 +1366,8 @@ function sabr_ump_concatenateChunks(ctx as object, chunkSource as object, totalB
     return output
 end function
 
+' Sets up the tracking object used while assembling a segment, optionally
+' provisioning in-memory buffers when required.
 function sabr_ump_prepareSegmentAssembly(ctx as object, segment as object, needBytes as boolean) as object
     totalBytes = sabr_ump_toInt(segment?.bytesWritten)
     if totalBytes = invalid then totalBytes = 0
@@ -1416,6 +1434,7 @@ function sabr_ump_perfShouldLog(ctx as dynamic, durationMs as integer) as boolea
     return durationMs >= threshold
 end function
 
+' Starts a perf timer (and optional memory snapshot) for instrumentation blocks.
 function sabr_ump_perfStart(ctx as dynamic, label as string) as dynamic
     if not sabr_ump_perfEnabled(ctx) then return invalid
     marker = invalid
@@ -1485,6 +1504,7 @@ function sabr_ump_perfShouldCaptureMemory(label as string) as boolean
     return false
 end function
 
+' Captures a lightweight memory snapshot when perf logging indicates it’s needed.
 function sabr_ump_perfCaptureMemory(ctx as dynamic) as dynamic
     if not isValid(ctx) then return invalid
     if IsString(ctx?._perfMemoryMonitor) and ctx?._perfMemoryMonitor = "unsupported" then return invalid
@@ -1568,6 +1588,7 @@ function sabr_ump_perfFormatMemory(snapshot as dynamic) as string
     return `mem{${labels.Join(" ")}}`
 end function
 
+' Helper that invokes a protobuf decoder while catching/annotating failures for logs.
 function sabr_ump_decodePart(decoderFn as dynamic, data as object, ctx = invalid, label = "" as string) as dynamic
     decodeTimer = sabr_ump_perfStart(ctx, "decode_part")
     bytesIn = sabr_ump_countBytes(data)
@@ -1878,6 +1899,7 @@ function sabr_ump_segmentTempRoot() as string
     return subDir
 end function
 
+' Computes the directory and base filename used to stream a segment to disk.
 function sabr_ump_prepareSegmentTempInfo(ctx as object, headerId as dynamic) as object
     root = sabr_ump_segmentTempRoot()
     mediaId = sabr_ump_toSafeString(ctx?.requestMetadata?.mediaIdHash)
@@ -1928,6 +1950,8 @@ function sabr_ump_getSegmentTempPath(ctx as object, segment as object, headerId 
     return tempPath
 end function
 
+' Writes the provided payload chunk into the segment’s temp file, handling offsets
+' and tracking written byte counts for later assembly.
 function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object, payloadOffset = 0 as integer, payloadLength = invalid as dynamic) as boolean
     if GetInterface(payload, "ifByteArray") = invalid then return false
     tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
@@ -2249,6 +2273,10 @@ function sabr_ump_formatKeyFromFormat(format as object) as string
     return `${itagPart}:${xtagPart}`
 end function
 
+' Parses MP4 SIDX boxes from an init segment and returns structured entries
+' that can seed player-time predictions or metadata maps.
+' Parses MP4 SIDX boxes from an init segment and returns structured entries
+' that can seed player-time predictions or metadata maps.
 function sabr_ump_buildSidxIndexUpdate(ctx as object, mediaHeader as object, segmentData as object) as dynamic
     if not isValid(mediaHeader) then return invalid
     if not isValid(segmentData) then return invalid

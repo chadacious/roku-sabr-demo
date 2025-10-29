@@ -23,6 +23,7 @@ npm install
 
 ### Build and packaging
 - `npm run build` – Compile the app into `dist/` without zipping.
+- `npm run build:prod` – Run the optimizer script that strips debug-only code and produces a lean production bundle.
 - `npm run package` – Compile and create a side-loadable package zip in `dist/`.
 - `npm run watch` – Run the compiler in watch mode for local development.
 
@@ -71,7 +72,7 @@ artifacts/                # Log and screenshot outputs from automation
 2. A SABR payload embedded in the manifest is decoded and cached under `tmp:/<mediaIdHash>/`.
 3. Manifest references to `sabr://` URLs are rewritten to local HTTP endpoints (`http://0.0.0.0:7011/` for video, `7012/` for audio).
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
-5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, store segment metadata via `SabrCacheManager`, and feed playable data back to the Roku video stack.
+5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, stream media chunks directly to disk, store segment metadata via `SabrSimpleCache`, and feed playable data back to the Roku video stack without large in-memory buffers.
 
 ## Player Time Strategies
 
@@ -109,6 +110,22 @@ For automated testing, the constant `DEFAULT_PLAYER_TIME_STRATEGY` (in `src/sour
 3. If no coverage exists yet, the SIDX entries are used to seed the metadata map so the prediction can still succeed.
 
 Both strategies ultimately write the resolved values back to `playbackContext` (`lastResolvedPlayerTimeMs` / `…Source`) for diagnostics and future fallbacks.
+
+## Cache Management & Culling
+Segment data is delivered into `tmp:/sabr-cache/<mediaIdHash>/…`. The cache is aggressively self-managed:
+
+- Every delivery marks the segment metadata (`delivered=true`, timestamps, seek guards). Once the guard window expires, a background maintenance pass removes the file.
+- Maintenance runs automatically at the start of each SABR request and after deliveries. It enforces a rolling **10 MB** quota (`SABR_CACHE_TOTAL_SIZE_LIMIT`) and evicts the oldest files when the total directory size exceeds the limit.
+- Delivered segments within the last ~1.5 s, or those that fall inside an active seek guard (e.g., after a rewind), are temporarily preserved to avoid thrash.
+- Metadata snapshots are logged (see `[SabrCache] state phase=… total=…`) so you can audit how many pending/delivered entries remain across maintenance runs.
+
+If playback stops and no further SABR requests arrive, the cached set remains untouched until the next request triggers maintenance. For automated cleanup you can issue a manual `sabr_cacheRunMaintenance("")` or rely on the next playback session to trim the directory.
+
+## Instrumentation & Debugging
+- `SabrDebug.bs` provides `sabr_log` helpers that honor the global debug flag. Toggle `SABR_DEBUG_ENABLED` when preparing production builds.
+- HTTP dumps (request/response bodies, metadata) are uploaded through the debug upload URL when configured; file-backed responses stream via `bodyPath` to keep memory usage low.
+- The repeat-guard instrumentation logs state transitions (`RepeatState …`) so you can see when the player is requesting the same range repeatedly.
+- Performance timers in `SabrUmpProcessor` (`SABR_PERF_LOGGING_ENABLED`) emit duration/memory snapshots for each major step of UMP processing.
 
 ## Customizing the Demo
 - Swap in your own manifests under `src/assets/mpds/` and adjust `MainScene.bs` to load the file you want.

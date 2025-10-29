@@ -19,6 +19,9 @@ sub init()
     m.contentType = invalid
 end sub
 
+' Task entry point for the SABR HTTP server (video or audio). Accepts
+' incoming TCP connections, delegates to the HTTP parser, and feeds requests
+' into the SABR streaming adapter.
 sub YtsabrServer()
     port = CreateObject("roMessagePort")
     tcp = createobject("roStreamSocket")
@@ -80,6 +83,8 @@ sub YtsabrServer()
     end while
 end sub
 
+' Reads data from a client socket until an HTTP request is complete, then
+' dispatches it to `process_request`. Manages connection lifetime bookkeeping.
 sub handle_tcp(connection as object, port as object)
     request = m.connections[Stri(connection.getID())]
     if request = invalid then
@@ -111,6 +116,9 @@ sub handle_tcp(connection as object, port as object)
     end if
 end sub
 
+' Handles a fully parsed HTTP request for the SABR server. Intercepts SABR
+' segment URLs, loads the cached payload metadata, and forwards the request
+' to `sabr_handleRequest`, returning `true` when the socket should close.
 function process_request(request as object, connection as object, port as object)
     sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Processing request: ${request?.path}`)
     ' port = CreateObject("roMessagePort")
