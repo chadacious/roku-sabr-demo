@@ -1,0 +1,14 @@
+{
+  "project": "roku-sabr-core",
+  "createPackage": false,
+  "rootDir": ".",
+  "stagingDir": "out/core",
+  "sourceDirs": [
+    "build/core/source"
+  ],
+  "autoImportComponentScript": false,
+  "allowBrighterScriptInBrightScript": true,
+  "roku-deploy": {
+    "failOnDeployWarning": false
+  }
+}

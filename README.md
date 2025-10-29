@@ -24,9 +24,11 @@ npm install
 
 ### Build and packaging
 - `npm run build` – Compile the app into `dist/` without zipping.
-- `npm run build:prod` – Run the optimizer script that strips debug-only code and produces a lean production bundle.
+- `npm run build:prod` – Run the optimizer script that strips debug-only code, disables debug uploads, and produces a lean production bundle.
+- `npm run build:core` – Copy only the reusable SABR runtime sources into `build/core/` with debug utilities stubbed out (see _Reusing the SABR core_ below).
 - `npm run package` – Compile and create a side-loadable package zip in `dist/`.
 - `npm run watch` – Run the compiler in watch mode for local development.
+- `bsc --project bsconfig.prod.json` – Compile/deploy against the production-pruned sources under `build/prod/` (run `npm run build:prod` first).
 
 ### Deploy to a Roku device
 Provide your Roku credentials via environment variables:
@@ -46,6 +48,7 @@ npm run test:e2e -- --host 192.168.1.42 --password your_dev_password
 Optional flags:
 - `--profile` – Name of a VS Code launch profile (reads from `.vscode/launch.json`).
 - `--username`, `--logPort`, `--ecpPort` – Override defaults (8085 and 8060 respectively).
+- `--bundle prod` (or `--prod`) – Exercise the production bundle. The smoke test runs `npm run build:prod` and deploys using `bsconfig.prod.json`.
 
 ## Project Layout
 ```
@@ -140,6 +143,16 @@ If playback stops and no further SABR requests arrive, the cached set remains un
 - Update branding assets (splash, icons) in `src/assets/images/` and refresh `src/manifest` entries if sizes change.
 - Extend `VideoPlayer.bs` to add controls, overlays, or analytics hooks.
 - Additional diagnostics can be added by expanding `logger.bs` or toggling log levels in individual tasks.
+
+## Reusing the SABR core
+The app ships with a stripped-down “core” bundle that contains just the runtime pieces needed to integrate SABR processing into another project.
+
+1. Run `npm run build:core`. This populates `build/core/source/` with the SABR adapters, cache, MP4 parser, protobuf bindings, and a no-op `SabrDebug.bs`.
+2. Copy everything under `build/core/source/` into the target project (for example under `source/` or `vendor/sabr/`).
+3. Add the copied files to the consuming project’s `bsconfig.json` so BrighterScript can compile them.
+4. To sanity-check the generated bundle in this repo, run `bsc --project bsconfig.core.json` (after `npm run build:core`). The config targets `build/core/source/` exclusively, so any syntax or typing problems in the exported files surface before you ship them.
+
+Because the generated stub disables all debug uploads and verbose logging by default, the core bundle is safe to ship in production channels. If you need diagnostics in the host app, replace the stub `SabrDebug.bs` with your own implementation before compiling.
 
 ## Troubleshooting
 - Check `artifacts/logs-*.txt` for deployment/test run logs.

@@ -7,6 +7,7 @@ out
 src/manifest.in
 dump.rdb
 
+build/**
 dist/**
 package-lock.json
 node_modules/**

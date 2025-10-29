@@ -8,12 +8,16 @@
     "watch": "bsc --project bsconfig.json --watch",
     "deploy": "bsc --project bsconfig.json --createPackage --deploy",
     "test:e2e": "node scripts/e2e-smoke.js",
-    "build:prod": "node scripts/build-prod.js"
+    "build:prod": "node scripts/build-prod.js",
+    "build:core": "node scripts/build-core.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "brighterscript": "^0.70.2"
+  },
+  "dependencies": {
+    "glob": "^11.0.3"
   }
 }

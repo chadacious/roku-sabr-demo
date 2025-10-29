@@ -15,6 +15,10 @@
  *   ROKU_DEV_TARGET / ROKU_DEV_PASSWORD environment variables
  *   .vscode/launch.json (first configuration by default, or pass --profile "name")
  *
+ * Optional bundle choice:
+ *   --bundle dev|prod                      (default: dev; prod runs npm run build:prod before deploy)
+ *   --prod                                 (equivalent to --bundle prod)
+ *
  * Optional playback stress flags:
  *   --seekPattern predictable|random|none   (default: none; predictable when flag provided without value)
  *   --seekIterations <n>                    (default: 8 when seekPattern enabled)
@@ -44,6 +48,20 @@ const ARTIFACTS_DIR = path.resolve("artifacts");
 const MAX_RECENT_LOG_CHARS = 200000;
 const VSCODE_LAUNCH_PATH = path.resolve(".vscode/launch.json");
 const DEFAULT_PROFILE_NAME = "Debug Ultra: Launch (with logs)";
+const DEFAULT_BUNDLE_NAME = "dev";
+const BUNDLE_CONFIGS = {
+    dev: {
+        name: "dev",
+        label: "development",
+        project: "bsconfig.json",
+    },
+    prod: {
+        name: "prod",
+        label: "production",
+        project: "bsconfig.prod.json",
+        prebuildScript: "build:prod",
+    },
+};
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
@@ -61,14 +79,23 @@ async function main() {
 
     const logPort = Number(options.logPort) || DEFAULT_LOG_PORT;
     const ecpPort = Number(options.ecpPort) || DEFAULT_ECP_PORT;
+    const bundleConfig = determineBundleConfig(options);
+
+    await prepareBundle(bundleConfig);
     await prepareExternalDumpDirectories();
     await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true });
     const runId = new Date().toISOString().replace(/[:]/g, "-");
     const logPath = path.join(ARTIFACTS_DIR, `logs-${runId}.txt`);
 
     console.log(`[test] Using host ${host} (profile: ${credentials.profileName || "n/a"})`);
+    console.log(`[test] Using ${bundleConfig.label} bundle via ${bundleConfig.project}`);
     console.log(`[test] Deploying channel ...`);
-    await deployWithBsc({ host, username, password });
+    await deployWithBsc({
+        host,
+        username,
+        password,
+        projectPath: bundleConfig.project,
+    });
 
     let logStream;
     try {
@@ -363,14 +390,67 @@ async function relaunchDevChannel({ host, port }) {
     await postEcp({ host, port, path: "/launch/dev" });
 }
 
-async function deployWithBsc({ host, username, password }) {
+function determineBundleConfig(options) {
+    const explicitBundle = options.bundle;
+    const shorthandProd = options.prod;
+    const targetNameRaw = explicitBundle !== undefined
+        ? `${explicitBundle}`
+        : (shorthandProd ? "prod" : DEFAULT_BUNDLE_NAME);
+    const targetName = targetNameRaw.trim().toLowerCase();
+    const config = BUNDLE_CONFIGS[targetName];
+    if (!config) {
+        const available = Object.keys(BUNDLE_CONFIGS).join(", ");
+        throw new Error(`Unknown bundle "${targetNameRaw}". Expected one of: ${available}`);
+    }
+    const projectPath = path.resolve(config.project);
+    if (!fs.existsSync(projectPath)) {
+        throw new Error(`Bundle project file not found: ${projectPath}. Run the matching build step first.`);
+    }
+    return {
+        ...config,
+        project: projectPath,
+    };
+}
+
+async function prepareBundle(config) {
+    if (!config.prebuildScript) {
+        return;
+    }
+    console.log(`[test] Running npm run ${config.prebuildScript} to prepare ${config.label} bundle ...`);
+    await runNpmScript(config.prebuildScript);
+    console.log(`[test] Finished npm run ${config.prebuildScript}`);
+}
+
+async function runNpmScript(scriptName) {
+    const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
+    await runCommand(npmExecutable, ["run", scriptName]);
+}
+
+function runCommand(command, args) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(command, args, {
+            stdio: "inherit",
+            shell: process.platform === "win32",
+        });
+        child.on("error", (err) => reject(err));
+        child.on("exit", (code) => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`${command} ${args.join(" ")} exited with status ${code}`));
+            }
+        });
+    });
+}
+
+async function deployWithBsc({ host, username, password, projectPath }) {
     const bscExecutable = process.platform === "win32"
         ? path.resolve("node_modules/.bin/bsc.cmd")
         : path.resolve("node_modules/.bin/bsc");
 
     const args = [
         "--project",
-        "bsconfig.json",
+        projectPath,
         "--createPackage",
         "--deploy",
         "--host",
