@@ -11,6 +11,7 @@ const SABR_CACHE_DELIVERED_MIN_AGE_MS = 1500
 const SABR_CACHE_PENDING_SEQUENCE_DISTANCE = 4
 const SABR_CACHE_PENDING_RANGE_DISTANCE = 400000
 const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
+const SABR_CACHE_SEEK_GUARD_MS = 30 * 1000
 const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024
 const SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS = 30 * 1000
 
@@ -367,6 +368,7 @@ function sabr_cacheStoreSegment(options as object) as object
     extra.storedAtMs = nowMs
     extra.lastAccessMs = nowMs
     extra.delivered = false
+    extra.seekProtectedUntil = nowMs + SABR_CACHE_SEEK_GUARD_MS
     sabr_cacheRememberMetadata(fileName, extra)
     sizeLabel = totalBytesOpt
     if sizeLabel = invalid and GetInterface(bytes, "ifByteArray") <> invalid
@@ -627,6 +629,46 @@ function sabr_cacheEnsureDeliveryProgressKey(contentType as dynamic, itag as dyn
     return info
 end function
 
+sub sabr_cacheUpdateProgressForSeek(contentType as dynamic, format as dynamic, sequenceNumber as dynamic, rangeStart as dynamic, playerTimeMs as dynamic)
+    itag = invalid
+    trackId = invalid
+    if IsAssociativeArray(format)
+        itag = format?.itag
+        trackId = format?.audioTrackId
+    end if
+
+    info = sabr_cacheEnsureDeliveryProgressKey(contentType, itag, trackId)
+    if not IsAssociativeArray(info) then return
+
+    seqVal = sabr_cacheNormalizeNumber(sequenceNumber)
+    if seqVal <> invalid then info.lastSequence = seqVal
+
+    rangeVal = sabr_cacheNormalizeNumber(rangeStart)
+    if rangeVal <> invalid then info.lastRangeStart = rangeVal
+
+    playerVal = sabr_cacheNormalizeNumber(playerTimeMs)
+    if playerVal <> invalid then info.lastPlayerTimeMs = playerVal
+
+    info.updatedAtMs = sabr_cacheCurrentTimestampMs()
+    if rangeVal <> invalid
+        currentGuard = sabr_cacheNormalizeNumber(info?.seekGuardRange)
+        if currentGuard = invalid or rangeVal <= currentGuard
+            info.seekGuardRange = rangeVal
+            info.seekGuardExpiresAt = info.updatedAtMs + SABR_CACHE_SEEK_GUARD_MS
+        end if
+    end if
+
+    progress = sabr_cacheDeliveryProgress()
+    itagKey = sabr_cacheSanitize(itag)
+    trackKey = sabr_cacheSanitize(trackId)
+    typeKey = sabr_cacheSanitize(contentType)
+    if typeKey = "" then typeKey = "unknown"
+    if itagKey = "" then itagKey = "none"
+    if trackKey = "" then trackKey = "main"
+    progress[`${typeKey}|${itagKey}|${trackKey}`] = info
+    m.sabr_cacheDeliveryProgress = progress
+end sub
+
 function sabr_cacheBuildDeliveryKey(entry as object) as string
     if not IsAssociativeArray(entry) then return ""
     typeKey = sabr_cacheSanitize(entry?.contentType)
@@ -714,6 +756,18 @@ function sabr_cacheShouldDeferDeliveredRemoval(entry as object, metadata as obje
     info = progress.Lookup(key)
     if not IsAssociativeArray(info) then return false
 
+    guardRange = sabr_cacheNormalizeNumber(info?.seekGuardRange)
+    guardExpiry = sabr_cacheNormalizeNumber(info?.seekGuardExpiresAt)
+    rangeStartValue = sabr_cacheNormalizeNumber(metadata?.rangeStart)
+    if rangeStartValue = invalid and IsAssociativeArray(entry)
+        rangeStartValue = sabr_cacheNormalizeNumber(entry?.rangeStart)
+    end if
+    if guardRange <> invalid and guardExpiry <> invalid and nowMs <= guardExpiry
+        if rangeStartValue <> invalid and rangeStartValue <= guardRange
+            return true
+        end if
+    end if
+
     seqVal = sabr_cacheExtractSequence(entry, metadata)
     lastSeq = sabr_cacheNormalizeNumber(info?.lastSequence)
     if seqVal <> invalid and lastSeq <> invalid
@@ -743,6 +797,8 @@ function sabr_cacheShouldCullPending(entry as object, metadata as object) as boo
     info = progress.Lookup(key)
     if not IsAssociativeArray(info) then return false
 
+    nowMs = sabr_cacheCurrentTimestampMs()
+
     seqVal = sabr_cacheExtractSequence(entry, metadata)
     lastSeq = sabr_cacheNormalizeNumber(info?.lastSequence)
     if seqVal <> invalid and lastSeq <> invalid
@@ -757,6 +813,13 @@ function sabr_cacheShouldCullPending(entry as object, metadata as object) as boo
         rangeStart = sabr_cacheNormalizeNumber(entry?.rangeStart)
     end if
     lastRange = sabr_cacheNormalizeNumber(info?.lastRangeStart)
+    guardRange = sabr_cacheNormalizeNumber(info?.seekGuardRange)
+    guardExpiry = sabr_cacheNormalizeNumber(info?.seekGuardExpiresAt)
+    if guardRange <> invalid and guardExpiry <> invalid and nowMs <= guardExpiry
+        if rangeStart <> invalid and rangeStart <= guardRange
+            return false
+        end if
+    end if
     if rangeStart <> invalid and lastRange <> invalid
         diffRange = lastRange - rangeStart
         if diffRange > SABR_CACHE_PENDING_RANGE_DISTANCE
@@ -872,8 +935,23 @@ sub sabr_cacheRunMaintenance(activePath as string)
             else
                 lastTouchMs = storedAtMs
             end if
-            metadata["lastAccessMs"] = lastTouchMs
-            table[name] = metadata
+        metadata["lastAccessMs"] = lastTouchMs
+        table[name] = metadata
+    end if
+
+        protectUntil = sabr_cacheNormalizeNumber(metadata?.seekProtectedUntil)
+        if protectUntil <> invalid and nowMs < protectUntil
+            sabr_cacheLog(log_level_Type.DEBUG, `[SabrCache] skip removal file=${name} reason=seek-guard`)
+            sizeVal = sabr_cacheExtractSize(fs, path)
+            info = {
+                "entry": entryInfo,
+                "metadata": metadata,
+                "size": sizeVal,
+                "storedAt": storedAtMs
+            }
+            remaining.push(info)
+            totalBytes = totalBytes + sizeVal
+            continue for
         end if
 
         shouldRemove = false
