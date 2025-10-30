@@ -24,7 +24,8 @@ npm install
 
 ### Build and packaging
 - `npm run build` – Compile the app into `dist/` without zipping.
-- `npm run build:prod` – Run the optimizer script that strips debug-only code, disables debug uploads, and produces a lean production bundle.
+- `npm run build:prod` – Run the optimizer script that strips debug-only code, disables debug uploads, drops demo-only assets (MainScene/VideoPlayer/sample MPDs), and copies the reusable sources to `build/prod/`.
+- `npx bsc --project bsconfig.prod.json` – Compile and package the production bundle in `dist/prod/` (requires running `npm run build:prod` first).
 - `npm run build:core` – Copy only the reusable SABR runtime sources into `build/core/` with debug utilities stubbed out (see _Reusing the SABR core_ below).
 - `npm run package` – Compile and create a side-loadable package zip in `dist/`.
 - `npm run watch` – Run the compiler in watch mode for local development.

@@ -45,6 +45,25 @@ function disableDebugUploadUrl(targetRoot) {
     }
 }
 
+function pruneDemoAssets(targetRoot) {
+    const entries = [
+        path.join(targetRoot, "components", "MainScene.xml"),
+        path.join(targetRoot, "components", "MainScene.bs"),
+        path.join(targetRoot, "components", "VideoPlayer.xml"),
+        path.join(targetRoot, "components", "VideoPlayer.bs"),
+        path.join(targetRoot, "assets", "mpds")
+    ];
+    for (const entry of entries) {
+        if (fs.existsSync(entry)) {
+            try {
+                fs.rmSync(entry, { recursive: true, force: true });
+            } catch (err) {
+                console.warn(`[build:prod] Warning: failed to remove ${entry}: ${err.message}`);
+            }
+        }
+    }
+}
+
 function main() {
     if (!fs.existsSync(SRC_DIR)) {
         console.error("src directory not found");
@@ -58,6 +77,7 @@ function main() {
     copyRecursive(SRC_DIR, BUILD_DIR);
     rewriteSabrDebug(BUILD_DIR);
     disableDebugUploadUrl(BUILD_DIR);
+    pruneDemoAssets(BUILD_DIR);
 
     console.log(`Production-ready sources copied to ${BUILD_DIR}`);
     console.log(`SABR_DEBUG_ENABLED set to false in build output.`);

@@ -5,6 +5,7 @@
   "retainStagingDir": false,
   "createPackage": true,
   "sourceMap": false,
+  "allowBrighterScriptInBrightScript": true,
   "autoImportComponentScript": true,
   "files": [
     "manifest",
