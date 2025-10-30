@@ -323,8 +323,9 @@ end function
 
 ' Streams an HTTP response back to the client, optionally reading payload
 ' bytes from disk to avoid large in-memory buffers.
-function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid, dataPath = invalid as dynamic, dataOffset = 0 as dynamic, dataLength = invalid as dynamic)
+function http_sendHeaders(connection as object, response_code as integer, headers as object) as boolean
     loggers = logger()
+
     resStatus = ""
     if response_code = 200
         resStatus = "OK"
@@ -368,10 +369,13 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
     headerBytes.FromAsciiString(packet + chr(13) + chr(10))
     sent = connection.send(headerBytes, 0, headerBytes.Count())
     if sent <= 0 then
-        loggers.printl(log_level_Type.FATAL, "Send failed while writing headers: " + str(sent))
-        return sent
+        loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket before headers completed; status=${sent}`)
+        return false
     end if
+    return true
+end function
 
+function http_resolveTotalBytes(headers as object, data as dynamic, dataPath as dynamic, dataLength as dynamic) as dynamic
     totalBytes = dataLength
     if totalBytes = invalid
         if IsAssociativeArray(headers)
@@ -393,6 +397,14 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             totalBytes = 0
         end if
     end if
+    return totalBytes
+end function
+
+function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid, dataPath = invalid as dynamic, dataOffset = 0 as dynamic, dataLength = invalid as dynamic)
+    if http_sendHeaders(connection, response_code, headers) = false then return -1
+
+    loggers = logger()
+    totalBytes = http_resolveTotalBytes(headers, data, dataPath, dataLength)
 
     bytesSent = 0
     chunkSize = 32768
@@ -407,7 +419,7 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             if sendLen <= 0 then exit while
             sent = connection.send(data, offset, sendLen)
             if sent <= 0
-                loggers.printl(log_level_Type.WARN, `[HTTP] Send aborted while writing body (byte array) offset=${offset} remaining=${data.Count() - offset} status=${sent}`)
+                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (byte array) offset=${offset} remaining=${data.Count() - offset} status=${sent}`)
                 try
                     connection.Close()
                 catch e
@@ -435,7 +447,7 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             if chunkLen <= 0 then exit while
             sent = connection.send(chunk, 0, chunkLen)
             if sent <= 0
-                loggers.printl(log_level_Type.WARN, `[HTTP] Send aborted while streaming file path=${dataPath} offset=${currentOffset} chunk=${chunkLen} status=${sent}`)
+                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset} chunk=${chunkLen} status=${sent}`)
                 try
                     connection.Close()
                 catch e
@@ -452,6 +464,60 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
     end if
 
     loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body`)
+    return bytesSent
+end function
+
+function send_http_reply_stream(connection as object, response_code as integer, headers as object, dataPath as string, dataOffset = 0 as dynamic, dataLength = invalid as dynamic) as integer
+    loggers = logger()
+    if not IsString(dataPath) or dataPath = ""
+        loggers.printl(log_level_Type.WARN, `[HTTP] Stream requested without valid dataPath; falling back to empty response`)
+        return send_http_reply_raw(connection, response_code, headers, CreateObject("roByteArray"))
+    end if
+    if http_sendHeaders(connection, response_code, headers) = false then return -1
+
+    totalBytes = http_resolveTotalBytes(headers, invalid, dataPath, dataLength)
+    chunkSize = 32768
+    currentOffset = dataOffset
+    if currentOffset = invalid or currentOffset < 0 then currentOffset = 0
+    remaining = totalBytes
+    bytesSent = 0
+    chunk = CreateObject("roByteArray")
+
+    while remaining = invalid or remaining > 0
+        readLen = chunkSize
+        if remaining <> invalid and readLen > remaining
+            readLen = remaining
+        end if
+        if readLen <= 0 then exit while
+
+        if chunk.ReadFile(dataPath, currentOffset, readLen) <> true then exit while
+        chunkLen = chunk.Count()
+        if chunkLen <= 0 then exit while
+
+        offset = 0
+        while offset < chunkLen
+            sendLen = chunkLen - offset
+            sent = connection.send(chunk, offset, sendLen)
+            if sent <= 0
+                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset + offset} chunk=${sendLen} status=${sent}`)
+                try
+                    connection.Close()
+                catch e
+                end try
+                return sent
+            end if
+            offset = offset + sent
+            bytesSent = bytesSent + sent
+        end while
+
+        currentOffset = currentOffset + chunkLen
+        if remaining <> invalid
+            remaining = remaining - chunkLen
+            if remaining <= 0 then exit while
+        end if
+    end while
+
+    loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body (file stream)`)
     return bytesSent
 end function
 

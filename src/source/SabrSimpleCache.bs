@@ -24,7 +24,7 @@ const SABR_CACHE_PENDING_PLAYER_TIME_MS = 15 * 1000
 ' Seek guard duration (ms) to keep segments around after a seek/back operation
 const SABR_CACHE_SEEK_GUARD_MS = 30 * 1000
 ' Hard cap on total cache size (bytes); oldest entries are removed when exceeded
-const SABR_CACHE_TOTAL_SIZE_LIMIT = 2 * 1024 * 1024 ' 10 * 1024 * 1024 ` 10MB
+const SABR_CACHE_TOTAL_SIZE_LIMIT = 10 * 1024 * 1024 ' 10 * 1024 * 1024 ` 10MB
 ' Lifetime (ms) for temporary streamed segment chunks under tmp:/sabr-cache/segments
 const SABR_CACHE_SEGMENT_TEMP_MAX_AGE_MS = 30 * 1000
 
@@ -412,8 +412,8 @@ function sabr_cacheLoadSegment(params as object) as object
     entries = sabr_cacheListEntries(params?.mediaIdHash, params?.contentType, params?.itag, params?.trackId ?? "")
     if entries.count() = 0 then return invalid
 
-    requestedStart = Val(params?.requestedStart)
-    requestedEnd = Val(params?.requestedEnd)
+    requestedStart = sabr_cacheNormalizeNumber(params?.requestedStart)
+    requestedEnd = sabr_cacheNormalizeNumber(params?.requestedEnd)
     hasStart = requestedStart <> invalid
     hasEnd = requestedEnd <> invalid
 
@@ -471,71 +471,89 @@ function sabr_cacheLoadSegment(params as object) as object
 
     if best = invalid then return invalid
 
-    bytes = CreateObject("roByteArray")
-    if not bytes.readFile(best.path) then return invalid
+    filePath = best?.path
+    if not IsString(filePath) or filePath = "" then return invalid
+
+    fileSize = sabr_cacheGetFileSize(filePath)
 
     sabr_cacheRecordAccess(best)
 
-    coverageStart = best?.rangeStart
-    coverageEnd = best?.rangeEnd
+    coverageStart = sabr_cacheNormalizeNumber(best?.rangeStart)
+    coverageEnd = sabr_cacheNormalizeNumber(best?.rangeEnd)
     if best.isInit = true
         coverageStart = 0
-        coverageEnd = bytes.count() - 1
+        if fileSize <> invalid
+            coverageEnd = coverageStart + fileSize - 1
+        end if
     end if
+
+    requestedStartVal = requestedStart
+    requestedEndVal = requestedEnd
 
     sabr_cacheLogSnapshot("load", best.path)
 
     result = invalid
 
-    if params?.isInit = true
+    if params?.isInit = true or best.isInit = true
+        initBytes = CreateObject("roByteArray")
+        if initBytes.readFile(filePath) <> true then return invalid
+        if fileSize = invalid then fileSize = initBytes.count()
+        coverageStart = 0
+        if fileSize <> invalid
+            coverageEnd = coverageStart + fileSize - 1
+        else
+            coverageEnd = initBytes.count() - 1
+        end if
         result = {
-            "data": bytes
+            "data": initBytes
             "rangeStart": coverageStart
             "rangeEnd": coverageEnd
-            "path": best.path
+            "path": filePath
+            "coverage": {
+                "rangeStart": coverageStart
+                "rangeEnd": coverageEnd
+            }
         }
+        result["coverageStart"] = coverageStart
+        result["coverageEnd"] = coverageEnd
     else
-        if hasStart and coverageStart <> invalid and requestedStart > coverageStart
-            offset = requestedStart - coverageStart
-        else
-            offset = 0
+        emptyBytes = CreateObject("roByteArray")
+        inferredCoverageStart = coverageStart
+        if inferredCoverageStart = invalid and requestedStartVal <> invalid
+            inferredCoverageStart = requestedStartVal
+        end if
+        if inferredCoverageStart = invalid then inferredCoverageStart = 0
+
+        inferredCoverageEnd = coverageEnd
+        if inferredCoverageEnd = invalid and requestedEndVal <> invalid
+            inferredCoverageEnd = requestedEndVal
+        end if
+        if inferredCoverageEnd = invalid and fileSize <> invalid
+            inferredCoverageEnd = inferredCoverageStart + fileSize - 1
         end if
 
-        if hasEnd and coverageEnd <> invalid
-            desiredLength = (requestedEnd - (coverageStart + offset)) + 1
-            if desiredLength < 0 then desiredLength = 0
-        else
-            desiredLength = bytes.count() - offset
-        end if
+        effectiveStart = inferredCoverageStart
+        if requestedStartVal <> invalid then effectiveStart = requestedStartVal
 
-        if offset <= 0 and desiredLength >= bytes.count()
-            sliced = bytes
-        else
-            sliced = CreateObject("roByteArray")
-            if desiredLength < 0 then desiredLength = 0
-            if desiredLength > bytes.count() - offset then desiredLength = bytes.count() - offset
-            if desiredLength < 0 then desiredLength = 0
-            if desiredLength = 0
-                ' return empty array
-            else
-                for i = 0 to desiredLength - 1
-                    sliced[i] = bytes[offset + i]
-                end for
-            end if
+        effectiveEnd = inferredCoverageEnd
+        if requestedEndVal <> invalid then effectiveEnd = requestedEndVal
+        if effectiveEnd <> invalid and effectiveStart <> invalid and effectiveEnd < effectiveStart
+            effectiveEnd = effectiveStart - 1
         end if
-
-        effectiveStart = coverageStart
-        if hasStart and requestedStart <> invalid
-            effectiveStart = requestedStart
-        end if
-        effectiveEnd = effectiveStart + sliced.count() - 1
 
         result = {
-            "data": sliced
+            "data": emptyBytes
             "rangeStart": effectiveStart
             "rangeEnd": effectiveEnd
-            "path": best.path
+            "path": filePath
+            "coverage": {
+                "rangeStart": inferredCoverageStart
+                "rangeEnd": inferredCoverageEnd
+            }
         }
+        result["coverageStart"] = inferredCoverageStart
+        result["coverageEnd"] = inferredCoverageEnd
+        if fileSize <> invalid then result["dataLength"] = fileSize
     end if
 
     if not IsAssociativeArray(result) then return invalid
@@ -543,6 +561,23 @@ function sabr_cacheLoadSegment(params as object) as object
     sabr_cacheMarkDelivered(best)
     sabr_cacheRunMaintenance(best.path)
     return result
+end function
+
+function sabr_cacheGetFileSize(path as string) as dynamic
+    if not IsString(path) or path = "" then return invalid
+    fs = CreateObject("roFileSystem")
+    stat = invalid
+    try
+        stat = fs.Stat(path)
+    catch e
+        stat = invalid
+    end try
+    if IsAssociativeArray(stat)
+        sizeVal = stat.Lookup("size")
+        if sizeVal = invalid then sizeVal = stat.Lookup("length")
+        return sizeVal
+    end if
+    return invalid
 end function
 
 sub sabr_cacheRecordAccess(entry as object)
@@ -1403,9 +1438,8 @@ function sabr_cacheCopyFile(sourcePath as string, destPath as string) as boolean
     end try
     if copyOk = true then return true
 
-    tempBytes = CreateObject("roByteArray")
-    if tempBytes.ReadFile(sourcePath) <> true then return false
-    return tempBytes.WriteFile(destPath)
+    ' Disabled fallback: avoid loading entire file into memory
+    return false
 end function
 
 function sabr_cacheWriteChunksToFile(destPath as string, chunkFiles as object) as boolean
@@ -1456,22 +1490,8 @@ function sabr_cacheWriteChunksToFile(destPath as string, chunkFiles as object) a
         return true
     end if
 
-    combined = CreateObject("roByteArray")
-    for each chunkPath in chunkFiles
-        if not IsString(chunkPath) or chunkPath = "" then continue for
-        chunkBytes = CreateObject("roByteArray")
-        if chunkBytes.ReadFile(chunkPath) <> true then return false
-        chunkLen = chunkBytes.count()
-        if chunkLen <= 0 then continue for
-        startIndex = combined.count()
-        combined[startIndex + chunkLen - 1] = 0
-        destIndex = startIndex
-        for i = 0 to chunkLen - 1
-            combined[destIndex] = chunkBytes[i]
-            destIndex = destIndex + 1
-        end for
-    end for
-    return combined.WriteFile(destPath)
+    ' Disabled fallback: would require concatenating entire segment in memory
+    return false
 end function
 
 sub sabr_cacheLogSnapshot(reason as string, focusPath as string)

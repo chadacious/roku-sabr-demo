@@ -187,7 +187,30 @@ function process_request(request as object, connection as object, port as object
             if responseHeaders.DoesExist("Connection") = false
                 responseHeaders["Connection"] = "close"
             end if
-            status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
+            if GetInterface(responseBody, "ifByteArray") = invalid
+                responseBody = CreateObject("roByteArray")
+            end if
+
+            bodyCount = 0
+            if GetInterface(responseBody, "ifByteArray") <> invalid
+                bodyCount = responseBody.count()
+            end if
+
+            if sabr_isFileStreamingEnabled() and isValid(responseBodyPath) and responseBodyPath <> ""
+                streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, responseBodyPath, responseBodyOffset, responseBodyLength)
+                if streamStatus <= 0
+                    sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Streaming reply ended early status=${streamStatus}`, false)
+                    if bodyCount > 0
+                        status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
+                    else
+                        status = streamStatus
+                    end if
+                else
+                    status = streamStatus
+                end if
+            else
+                status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
+            end if
         else
             status = send_http_reply(connection, "204", "text/plain", "")
         end if

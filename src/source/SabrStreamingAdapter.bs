@@ -49,6 +49,8 @@ const MAX_BUFFERED_RANGES_PER_TYPE = 1
 const SABR_BANDWIDTH_OVERRIDE_BPS = 0 ' i.e. 25000000
 ' Scale measured bandwidth by this factor when override is zero
 const SABR_BANDWIDTH_MULTIPLIER = 1.0 ' i.e. 1.5
+' Toggle between streaming cached segments from disk and loading them into memory.
+const SABR_ENABLE_FILE_STREAMING = true
 
 ' Player-time resolution strategies supported by the adapter
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
@@ -353,7 +355,28 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         "isInit": isInitSegmentRequest
     })
 
-    if IsAssociativeArray(cacheEntry) and GetInterface(cacheEntry?.data, "ifByteArray") <> invalid and cacheEntry.data.count() > 0
+    cacheBody = invalid
+    cacheBodyCount = 0
+    cachePath = ""
+    if IsAssociativeArray(cacheEntry)
+        cacheBody = cacheEntry?.data
+        if GetInterface(cacheBody, "ifByteArray") = invalid
+            cacheBody = CreateObject("roByteArray")
+        end if
+        cacheBodyCount = cacheBody.count()
+        cachePath = sabr_toSafeString(cacheEntry?.path)
+        if cacheBodyCount <= 0 and cachePath <> ""
+            pathLength = sabr_toInt(cacheEntry?.dataLength)
+            if pathLength = invalid
+                pathLength = sabr_fsGetFileSize(cachePath)
+            end if
+            if pathLength <> invalid and pathLength > 0
+                cacheBodyCount = pathLength
+            end if
+        end if
+    end if
+
+    if IsAssociativeArray(cacheEntry) and (cacheBodyCount > 0 or cachePath <> "")
         if not isValid(requestMetadataEntry.streamInfo)
             storedInfo = sabr_fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
             if isValid(storedInfo)
@@ -364,13 +387,20 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         end if
 
         cachedResult = {
-            "data": cacheEntry.data
+            "data": cacheBody
             "done": true
             "coverage": {
                 "rangeStart": cacheEntry.rangeStart
                 "rangeEnd": cacheEntry.rangeEnd
             }
         }
+        if IsAssociativeArray(cacheEntry?.coverage)
+            cachedResult["coverage"] = cacheEntry.coverage
+        end if
+        if cacheEntry.DoesExist("coverageStart") then cachedResult["coverageStart"] = cacheEntry.coverageStart
+        if cacheEntry.DoesExist("coverageEnd") then cachedResult["coverageEnd"] = cacheEntry.coverageEnd
+        if cachePath <> "" then cachedResult["path"] = cachePath
+        if cacheEntry.DoesExist("dataLength") then cachedResult["dataLength"] = cacheEntry.dataLength
 
         if cacheEntry?.path <> ""
             playerTimeForDelivery = sabr_toInt(requestMetadataEntry?.playerTimeMs)
@@ -398,7 +428,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             parts = pathLabel.Split("/")
             pathLabel = parts[parts.count() - 1]
         end if
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Cache hit path=${pathLabel} range=${cacheLookupRange} bytes=${cacheEntry.data.count()}`)
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Cache hit path=${pathLabel} range=${cacheLookupRange} bytes=${cacheBodyCount}`)
     end if
 
     ' Track cache misses for logging
@@ -3218,9 +3248,21 @@ function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dyn
                 "body": responseBody
             }
             if responsePath <> ""
-                result["bodyPath"] = responsePath
-                result["bodyOffset"] = responseOffset
-                result["bodyLength"] = finalLength
+                if sabr_isFileStreamingEnabled()
+                    result["bodyPath"] = responsePath
+                    result["bodyOffset"] = responseOffset
+                    result["bodyLength"] = finalLength
+                    fullBody = responseBody
+                else
+                    loadedBytes = sabr_readSegmentRange(responsePath, responseOffset, finalLength)
+                    if GetInterface(loadedBytes, "ifByteArray") <> invalid
+                        responseBody = loadedBytes
+                        fullBody = loadedBytes
+                    else
+                        responseBody = CreateObject("roByteArray")
+                    end if
+                    result["body"] = responseBody
+                end if
             end if
             result["fullBody"] = fullBody
             return result
@@ -3317,6 +3359,23 @@ function sabr_buildErrorResponseForPlayer(status as integer, message as string) 
         "headers": headers
         "body": body
     }
+end function
+
+function sabr_isFileStreamingEnabled() as boolean
+    return SABR_ENABLE_FILE_STREAMING = true
+end function
+
+function sabr_readSegmentRange(path as string, offset as integer, length as integer) as dynamic
+    if not IsString(path) or path = "" then return invalid
+    if length <= 0 then
+        empty = CreateObject("roByteArray")
+        return empty
+    end if
+    safeOffset = offset
+    if safeOffset = invalid or safeOffset < 0 then safeOffset = 0
+    bytes = CreateObject("roByteArray")
+    if bytes.ReadFile(path, safeOffset, length) <> true then return invalid
+    return bytes
 end function
 
 sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
