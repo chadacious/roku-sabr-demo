@@ -39,8 +39,10 @@ const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
 ' Controls performance instrumentation emitted by the processor
 const SABR_PERF_LOGGING_ENABLED = true
-const SABR_PERF_CAPTURE_MEMORY = true
+const SABR_PERF_CAPTURE_MEMORY = false
 const SABR_PERF_THRESHOLD_MS = 0
+' Threshold (ms) for flagging slow varint reads when perf logging is enabled
+const SABR_VARINT_SLOW_THRESHOLD_MS = 1
 
 ' Usage: call from SabrStreamingAdapter once you receive sabrUmpResponse bytes.
 '   processor = sabr_ump_createProcessor(requestMetadata, logs)
@@ -72,6 +74,7 @@ function sabr_ump_createProcessor(requestMetadata as object, logs = invalid) as 
         "_unsupportedPartTypes": createObject("roAssociativeArray")
         "_largePartTypes": createObject("roAssociativeArray")
         "_pendingPart": invalid
+        "_mode": requestMetadata?.umpMode ?? "target"
     }
 
     if IsAssociativeArray(requestMetadata)
@@ -254,6 +257,7 @@ function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
         "partsSeen": partsProcessed
         "resultReady": isValid(pending)
     })
+    sabr_ump_logVarintChunk(ctx)
     if isValid(pending) then return pending
     return invalid
 end function
@@ -697,7 +701,7 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
 
         segmentKeyStr = str(headerId)
         tempFiles = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
-        ctx._partialSegments[segmentKeyStr] = {
+        segmentEntry = {
             "headerId": headerId
             "mediaHeader": mediaHeader
             "chunkDir": tempFiles?.dir ?? ""
@@ -706,7 +710,10 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
             "lastChunkSize": 0
             "tempBaseName": tempFiles?.base ?? ""
             "tempFilePath": ""
+            "skipWrite": false
+            "isTarget": false
         }
+        ctx._partialSegments[segmentKeyStr] = segmentEntry
 
         if ctx._requestSatisfied <> true
             matchesRequest = sabr_ump_headerMatchesRequest(ctx, mediaHeader)
@@ -720,10 +727,14 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
                     end if
                     sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Marked header ${headerId} as target for start ${startLabel}`)
                 end if
+                segmentEntry.isTarget = true
             else if not isValid(ctx._desiredHeaderId)
                 requestedStartVal = sabr_ump_resolveRequestedStart(ctx)
                 headerStartVal = sabr_ump_toInt(mediaHeader?.startRange)
                 sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Header ${headerId} start=${sabr_ump_toSafeString(headerStartVal)} does not match requested start=${sabr_ump_toSafeString(requestedStartVal)}; continuing to scan`)
+            end if
+            if ctx._mode = "target" and segmentEntry.isTarget <> true
+                segmentEntry.skipWrite = true
             end if
         end if
         sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Cached media header ${headerId}; targetKey='${targetKey}' segmentKey='${segmentKey}' isSABR=${ctx.requestMetadata?.isSABR}`)
@@ -787,7 +798,12 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     if ctx._partialSegments.doesExist(key)
         segment = ctx._partialSegments.Lookup(key)
         segment.lastChunkSize = chunkBytes
-        if chunkBytes = 0 or sabr_ump_appendChunkToTemp(ctx, segment, headerId, sourceBuffer, payloadOffset, chunkBytes) = true
+        skipWrite = segment?.skipWrite = true
+        if skipWrite = true
+            segment.chunkCount = segment.chunkCount + 1
+            segment.bytesWritten = segment.bytesWritten + chunkBytes
+            appendOk = true
+        else if chunkBytes = 0 or sabr_ump_appendChunkToTemp(ctx, segment, headerId, sourceBuffer, payloadOffset, chunkBytes) = true
             segment.chunkCount = segment.chunkCount + 1
             segment.bytesWritten = segment.bytesWritten + chunkBytes
             appendOk = true
@@ -1116,6 +1132,16 @@ function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, se
     end if
     if totalBytes = invalid or totalBytes <= 0 then return invalid
 
+    segmentKey = `${mediaHeader?.headerId ?? ""}`
+    segmentRecord = invalid
+    if IsString(segmentKey) and segmentKey <> "" and ctx._partialSegments.doesExist(segmentKey)
+        segmentRecord = ctx._partialSegments.Lookup(segmentKey)
+        if segmentRecord?.skipWrite = true
+            sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Skipping store for header ${mediaHeader?.headerId} (pre-target segment)`) 
+            return invalid
+        end if
+    end if
+
     isInitSeg = mediaHeader?.isInitSeg = true
     startVal = sabr_ump_toInt(mediaHeader?.startRange)
     if startVal = invalid then startVal = 0
@@ -1294,12 +1320,25 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
         "complete": false
     }
 
-    if offset >= buffer.count() then return info
+    ctx = sabr_ump_getProcessorContext()
+    statsEnabled = sabr_ump_varintMetricsEnabled(ctx)
+    timer = invalid
+    if statsEnabled
+        timer = CreateObject("roTimespan")
+        if timer <> invalid then timer.mark()
+    end if
+    consumedBytes = 0
+
+    if offset >= buffer.count()
+        sabr_ump_recordVarintMetrics(ctx, timer, consumedBytes, false, "offset_oob")
+        return info
+    end if
 
     firstByte = buffer[offset]
     byteLength = sabr_ump_inferVarintLength(firstByte)
 
     if byteLength <= 0 or (offset + byteLength) > buffer.count()
+        sabr_ump_recordVarintMetrics(ctx, timer, consumedBytes, false, "incomplete_length")
         return info
     end if
 
@@ -1334,9 +1373,11 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
         value = byte1 + 256.0 * byte2 + 65536.0 * byte3 + 16777216.0 * byte4
     end if
 
+    consumedBytes = cursor - offset
     info.value = sabr_ump_finalizeVarintValue(value)
     info.nextOffset = cursor
     info.complete = true
+    sabr_ump_recordVarintMetrics(ctx, timer, consumedBytes, true, "ok")
     return info
 end function
 
@@ -1362,6 +1403,98 @@ function sabr_ump_inferVarintLength(firstByte as integer) as integer
     if firstByte < 240 then return 4
     return 5
 end function
+
+function sabr_ump_varintMetricsEnabled(ctx as object) as boolean
+    if not IsAssociativeArray(ctx) then return false
+    return ctx?._perfEnabled = true
+end function
+
+function sabr_ump_getVarintMetrics(ctx as object) as object
+    if not IsAssociativeArray(ctx) then return invalid
+    metrics = ctx?._perfVarint
+    if not IsAssociativeArray(metrics)
+        metrics = {
+            "count": 0
+            "bytes": 0
+            "totalMs": 0
+            "maxMs": 0
+            "maxBytes": 0
+            "slowCount": 0
+            "incompleteCount": 0
+            "chunkCount": 0
+            "chunkBytes": 0
+            "chunkTimeMs": 0
+            "chunkMaxMs": 0
+            "chunkMaxBytes": 0
+            "chunkSlowCount": 0
+            "chunkIncomplete": 0
+            "slowThresholdMs": SABR_VARINT_SLOW_THRESHOLD_MS
+        }
+        ctx._perfVarint = metrics
+    end if
+    return metrics
+end function
+
+sub sabr_ump_recordVarintMetrics(ctx as object, timer as dynamic, consumedBytes as integer, complete as boolean, reason as string)
+    if not sabr_ump_varintMetricsEnabled(ctx) then return
+    metrics = sabr_ump_getVarintMetrics(ctx)
+    if not IsAssociativeArray(metrics) then return
+
+    durationMs = 0
+    if timer <> invalid
+        iface = GetInterface(timer, "ifTimespan")
+        if iface <> invalid
+            durationMs = int(timer.TotalMilliseconds())
+        end if
+    end if
+
+    metrics.count = metrics.count + 1
+    if complete
+        metrics.bytes = metrics.bytes + consumedBytes
+        metrics.totalMs = metrics.totalMs + durationMs
+        if consumedBytes > metrics.maxBytes then metrics.maxBytes = consumedBytes
+        if durationMs > metrics.maxMs then metrics.maxMs = durationMs
+        metrics.chunkCount = metrics.chunkCount + 1
+        metrics.chunkBytes = metrics.chunkBytes + consumedBytes
+        metrics.chunkTimeMs = metrics.chunkTimeMs + durationMs
+        if consumedBytes > metrics.chunkMaxBytes then metrics.chunkMaxBytes = consumedBytes
+        if durationMs > metrics.chunkMaxMs then metrics.chunkMaxMs = durationMs
+        if durationMs >= metrics.slowThresholdMs
+            metrics.slowCount = metrics.slowCount + 1
+            metrics.chunkSlowCount = metrics.chunkSlowCount + 1
+        end if
+    else
+        metrics.incompleteCount = metrics.incompleteCount + 1
+        metrics.chunkIncomplete = metrics.chunkIncomplete + 1
+    end if
+    if reason <> ""
+        metrics.lastReason = reason
+    end if
+end sub
+
+sub sabr_ump_logVarintChunk(ctx as object)
+    metrics = ctx?._perfVarint
+    if not IsAssociativeArray(metrics) then return
+    if metrics.chunkCount <= 0 and metrics.chunkIncomplete <= 0 then return
+
+    avgMs = 0
+    if metrics.chunkCount > 0 and metrics.chunkTimeMs > 0
+        avgMs = metrics.chunkTimeMs / metrics.chunkCount
+    end if
+    message = `[SabrUmpPerf] varint_scan chunkCount=${metrics.chunkCount} chunkBytes=${metrics.chunkBytes} chunkTimeMs=${metrics.chunkTimeMs} avgMs=${Int(avgMs)} maxMs=${metrics.chunkMaxMs} maxBytes=${metrics.chunkMaxBytes} slow=${metrics.chunkSlowCount}`
+    if metrics.chunkIncomplete > 0
+        message = `${message} incomplete=${metrics.chunkIncomplete}`
+    end if
+    sabr_ump_log(ctx, log_level_Type.DEBUG, message)
+
+    metrics.chunkCount = 0
+    metrics.chunkBytes = 0
+    metrics.chunkTimeMs = 0
+    metrics.chunkMaxMs = 0
+    metrics.chunkMaxBytes = 0
+    metrics.chunkSlowCount = 0
+    metrics.chunkIncomplete = 0
+end sub
 
 function sabr_ump_appendBytes(target as object, source as object) as void
     if not isValid(target) then return

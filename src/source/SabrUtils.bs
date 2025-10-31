@@ -22,6 +22,15 @@ function sabr_toSafeString(value as dynamic) as string
     if not isValid(value) then return ""
     if IsString(value) then return value.trim()
     if IsBoolean(value) then return value = true ? "true" : "false"
+    if IsInteger(value) then return value.toStr()
+    if IsFloat(value) or IsDouble(value)
+        precise = FormatJson(value)
+        if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0 then return precise
+        intVal = int(value)
+        if Abs(value - intVal) < 0.000001 then return intVal.toStr()
+        ' fallback to manual formatting without scientific notation
+        return Str(value).trim()
+    end if
     return Str(value).trim()
 end function
 

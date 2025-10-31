@@ -229,5 +229,7 @@ function sabr_debugBuildDumpLabel(playbackContext as object, prefix as string, r
     end if
     if counterLabel = "" then counterLabel = `${seqLabel}`
 
-    return `roku-player/${sabr_debugZeroPadDigits(seqLabel, 6)}-${prefix}-${contentLabel}-itag${itagLabel}-${batchIndex}-${counterLabel}-${rn}-${rangePart}`
+    rnLabel = sabr_debugZeroPadDigits(rn, 4)
+    seqLabelPadded = sabr_debugZeroPadDigits(seqLabel, 6)
+    return `roku-player/${rnLabel}-${seqLabelPadded}-${prefix}-${contentLabel}-itag${itagLabel}-${batchIndex}-${counterLabel}-${rn}-${rangePart}`
 end function

@@ -42,7 +42,7 @@ const SABR_UMP_STREAM_CHUNK_SIZE = 131072
 ' Max number of ByteArray buffers kept in the chunk pool
 const SABR_CHUNK_BUFFER_POOL_LIMIT = 6
 ' Base limit for buffered ranges reported to SABR per content type
-const SABR_BASE_BUFFERED_RANGE_LIMIT = 4
+const SABR_BASE_BUFFERED_RANGE_LIMIT = 1
 
 ' Optional knobs to push the SABR server toward higher-bitrate renditions
 ' Force all ABR requests to advertise this bandwidth (0 disables override)
@@ -51,6 +51,8 @@ const SABR_BANDWIDTH_OVERRIDE_BPS = 0 ' i.e. 25000000
 const SABR_BANDWIDTH_MULTIPLIER = 1.0 ' i.e. 1.5
 ' Toggle between streaming cached segments from disk and loading them into memory.
 const SABR_ENABLE_FILE_STREAMING = true
+' Default fallback amount (ms) to bump playerTimeMs beyond the segment start to avoid repeat coverage.
+const SABR_PLAYER_TIME_DEFAULT_BUMP_MS = 2000
 
 ' Buffered range synthesis modes used to influence SABR responses.
 const SABR_BUFFER_MODE_BASELINE = "baseline"
@@ -256,6 +258,48 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         playerTimeOverride = 0
     end if
     playerTimeSourceLabel = `${playerTimeInfo?.source ?? "unknown"}`
+    segmentStartMs = sabr_toInt(playerTimeInfo?.segmentStartMs)
+    segmentDurationMs = sabr_toInt(playerTimeInfo?.segmentDurationMs)
+    if segmentStartMs <> invalid
+        if playerTimeOverride < segmentStartMs
+            playerTimeOverride = segmentStartMs
+        end if
+        fudgeMs = 1
+        if segmentDurationMs <> invalid and segmentDurationMs > 0
+            fudgeMs = Int(segmentDurationMs / 100)
+            if fudgeMs < 1 then fudgeMs = 1
+            if fudgeMs > 50 then fudgeMs = 50
+        end if
+        candidateOverride = playerTimeOverride
+        if candidateOverride <= segmentStartMs
+            candidateOverride = segmentStartMs + fudgeMs
+            if segmentDurationMs <> invalid and segmentDurationMs > 0
+                maxAllowed = segmentStartMs + segmentDurationMs
+                if candidateOverride > maxAllowed then candidateOverride = maxAllowed
+            end if
+        end if
+        if candidateOverride > playerTimeOverride
+            sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} PlayerTime cheat bump start=${segmentStartMs} duration=${segmentDurationMs} bump=${candidateOverride - playerTimeOverride}`)
+            playerTimeOverride = candidateOverride
+        end if
+    end if
+    defaultBumpMs = SABR_PLAYER_TIME_DEFAULT_BUMP_MS
+    if segmentDurationMs <> invalid and segmentDurationMs > 0
+        computedBump = Int(segmentDurationMs / 2)
+        if computedBump <= 0 then computedBump = SABR_PLAYER_TIME_DEFAULT_BUMP_MS
+        defaultBumpMs = computedBump
+    end if
+    if defaultBumpMs > 0
+        targetOverride = playerTimeOverride + defaultBumpMs
+        if segmentStartMs <> invalid and segmentDurationMs <> invalid and segmentDurationMs > 0
+            maxAllowedOverride = segmentStartMs + segmentDurationMs
+            if targetOverride > maxAllowedOverride then targetOverride = maxAllowedOverride
+        end if
+        if targetOverride > playerTimeOverride
+            sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} PlayerTime default bump applied value=${playerTimeOverride} -> ${targetOverride}`)
+            playerTimeOverride = targetOverride
+        end if
+    end if
     playbackContext["lastResolvedPlayerTimeMs"] = playerTimeOverride
     playbackContext["lastResolvedPlayerTimeSource"] = playerTimeSourceLabel
 
@@ -533,7 +577,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     dumpCounter = m.top.utilsTask.callFunc("getNextId", "sabrDumpCounterBatch")
                 end if
                 dumpLabel = sabr_debugBuildDumpLabel(playbackContext, "sabr-request", `${nextRequestId}`, rangeLabel, contentType, currentFormat, dumpCounter)
-                sabr_debugUploadText(debugUploadUrl, `${dumpLabel}.json`, requestPayloadJson, m.logs)
+                debugFolder = LCase(contentType) = "audio" ? "audio" : "video"
+                sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpLabel}.json`, requestPayloadJson, m.logs)
             end if
         end if
         encodedProto = ""
@@ -567,7 +612,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 dumpCounterDecode = m.top.utilsTask.callFunc("getNextId", "sabrDumpCounterBatch")
                             end if
                             dumpLabel = sabr_debugBuildDumpLabel(playbackContext, "sabr-request-decode", `${nextRequestId}`, rangeLabelDecode, contentType, currentFormat, dumpCounterDecode)
-                            sabr_debugUploadText(debugUploadUrl, `${dumpLabel}.json`, requestPayloadJson, m.logs)
+                            debugFolder = LCase(contentType) = "audio" ? "audio" : "video"
+                            sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpLabel}.json`, requestPayloadJson, m.logs)
                         end if
                     end if
                 end if
@@ -646,6 +692,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             "debugUploadUrl": debugUploadUrl
                             "mediaIdHash": mediaIdHash
                             "contentType": contentType
+                            "umpMode": "target"
                         }
                         requestMetadata["chunkBufferPool"] = sabr_chunkBufferPool()
                         requestMetadata["chunkBufferPoolLimit"] = SABR_CHUNK_BUFFER_POOL_LIMIT
@@ -983,12 +1030,13 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             dumpCounterResponse = m.top.utilsTask.callFunc("getNextId", "sabrDumpCounterBatch")
         end if
         dumpBase = sabr_debugBuildDumpLabel(playbackContext, "response", `${nextRequestId}`, rangeLabelResponse, contentType, currentFormat, dumpCounterResponse)
+        debugFolder = LCase(contentType) = "audio" ? "audio" : "video"
         if isValid(bodyByteArray)
             sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId}`)
-            sabr_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", bodyByteArray, m.logs)
+            sabr_debugUploadBytes(debugUploadUrl, `${debugFolder}/${dumpBase}-bytes`, bodyByteArray, m.logs)
         else if bodyPathForDump <> ""
             sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId} (streaming)`)
-            sabr_debugUploadBytes(debugUploadUrl, dumpBase + "-bytes", bodyPathForDump, m.logs)
+            sabr_debugUploadBytes(debugUploadUrl, `${debugFolder}/${dumpBase}-bytes`, bodyPathForDump, m.logs)
         else
             sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Response body size=${bytesCount} bytes for request ${nextRequestId} (no body data)`)
         end if
@@ -1001,7 +1049,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             "requestNumber": nextRequestId
             "contentType": contentType
         }
-        sabr_debugUploadText(debugUploadUrl, dumpBase + "-meta.json", FormatJson(responseInfo), m.logs)
+        sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpBase}-meta.json`, FormatJson(responseInfo), m.logs)
     end if
 
     if isValid(sessionKey) and sessionKey <> ""
@@ -1784,10 +1832,19 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
             adjustedValue = sabr_toInt(adjusted?.value)
             if adjustedValue = invalid then adjustedValue = candidate
             adjustedSource = `${adjusted?.source ?? label}`
-            return {
+            segmentStartMs = sabr_toInt(result?.segmentStartMs)
+            segmentDurationMs = sabr_toInt(result?.segmentDurationMs)
+            output = {
                 "value": adjustedValue
                 "source": adjustedSource
             }
+            if segmentStartMs <> invalid
+                output["segmentStartMs"] = segmentStartMs
+            end if
+            if segmentDurationMs <> invalid
+                output["segmentDurationMs"] = segmentDurationMs
+            end if
+            return output
         end if
     end for
 
@@ -1797,10 +1854,19 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
         adjustedValue = sabr_toInt(adjusted?.value)
         if adjustedValue = invalid then adjustedValue = actualPositionMs
         adjustedSource = `${adjusted?.source ?? "playerPosition"}`
-        return {
+        output = {
             "value": adjustedValue
             "source": adjustedSource
         }
+        segmentStartMs = sabr_toInt(result?.segmentStartMs)
+        if segmentStartMs <> invalid
+            output["segmentStartMs"] = segmentStartMs
+        end if
+        segmentDurationMs = sabr_toInt(result?.segmentDurationMs)
+        if segmentDurationMs <> invalid
+            output["segmentDurationMs"] = segmentDurationMs
+        end if
+        return output
     end if
 
     fallbackInfo = sabr_resolveFallbackPlayerTimeMsInfo(playbackContext, currentFormat)
@@ -1812,10 +1878,19 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
     finalValue = sabr_toInt(adjustedFallback?.value)
     if finalValue = invalid then finalValue = fallbackValue
     finalSource = `${adjustedFallback?.source ?? fallbackSource}`
-    return {
+    output = {
         "value": finalValue
         "source": `fallback:${finalSource}`
     }
+    segmentStartMs = sabr_toInt(adjustedFallback?.segmentStartMs)
+    if segmentStartMs <> invalid
+        output["segmentStartMs"] = segmentStartMs
+    end if
+    segmentDurationMs = sabr_toInt(adjustedFallback?.segmentDurationMs)
+    if segmentDurationMs <> invalid
+        output["segmentDurationMs"] = segmentDurationMs
+    end if
+    return output
 end function
 
 function sabr_buildPlayerTimeIndexKey(contentType as string, format as object) as string
@@ -2046,9 +2121,46 @@ function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType 
             label = "sidx:exact"
         end if
     else
-        candidateEntry = neighbors?.previous
-        if IsAssociativeArray(candidateEntry)
-            label = "sidx:nearest"
+        prevEntry = neighbors?.previous
+        nextEntry = neighbors?.next
+
+        prevStart = invalid
+        nextStart = invalid
+        if IsAssociativeArray(prevEntry)
+            prevStart = sabr_toInt(prevEntry?.rangeStart)
+            if prevStart = invalid and prevEntry.DoesExist("rangeStartLabel")
+                prevLabel = `${prevEntry.rangeStartLabel ?? ""}`
+                if prevLabel <> "" then prevStart = Val(prevLabel)
+            end if
+        end if
+        if IsAssociativeArray(nextEntry)
+            nextStart = sabr_toInt(nextEntry?.rangeStart)
+            if nextStart = invalid and nextEntry.DoesExist("rangeStartLabel")
+                nextLabel = `${nextEntry.rangeStartLabel ?? ""}`
+                if nextLabel <> "" then nextStart = Val(nextLabel)
+            end if
+        end if
+
+        if IsAssociativeArray(prevEntry) and IsAssociativeArray(nextEntry)
+            diffPrev = 2147483647
+            diffNext = 2147483647
+            if prevStart <> invalid then diffPrev = targetValue - prevStart
+            if nextStart <> invalid then diffNext = nextStart - targetValue
+            if diffNext < 0 then diffNext = 2147483647
+            if diffPrev < 0 then diffPrev = 2147483647
+            if diffNext < diffPrev
+                candidateEntry = nextEntry
+                label = "sidx:nearest-next"
+            else
+                candidateEntry = prevEntry
+                label = "sidx:nearest-prev"
+            end if
+        else if IsAssociativeArray(nextEntry)
+            candidateEntry = nextEntry
+            label = "sidx:nearest-next"
+        else if IsAssociativeArray(prevEntry)
+            candidateEntry = prevEntry
+            label = "sidx:nearest-prev"
         end if
     end if
 
@@ -2071,8 +2183,13 @@ function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType 
 
     result["value"] = predicted
     result["source"] = label
+    segmentStartMs = sabr_toInt(candidateEntry?.startTimeMs)
+    if segmentStartMs <> invalid
+        result["segmentStartMs"] = segmentStartMs
+    end if
     if durationMs <> invalid and durationMs > 0
         result["durationMs"] = durationMs
+        result["segmentDurationMs"] = durationMs
     end if
     return result
 end function
@@ -2112,7 +2229,14 @@ function sabr_predictPlayerTimeFromSidxEntry(entry as object, targetStart as dyn
     offset = targetStart - rangeStart
     if offset <= 0 then return startMs
 
-    return startMs + int((offset * durationMs) / span)
+    predicted = startMs + int((offset * durationMs) / span)
+    if predicted < startMs then predicted = startMs
+    maxMs = startMs
+    if durationMs <> invalid and durationMs >= 0
+        maxMs = startMs + durationMs
+    end if
+    if predicted > maxMs then predicted = maxMs
+    return predicted
 end function
 
 ' Uses previously delivered SABR metadata to estimate the requested segment’s
@@ -2171,8 +2295,12 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
             end if
             result["value"] = predicted
             result["source"] = "metadata:exact"
+            if startMs <> invalid
+                result["segmentStartMs"] = startMs
+            end if
             if durationMs <> invalid and durationMs > 0
                 result["durationMs"] = durationMs
+                result["segmentDurationMs"] = durationMs
             end if
             return result
         end if
@@ -2197,13 +2325,19 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
                 if isValid(m?.logs)
                     sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata within start=${startVal} end=${endVal} startMs=${meta?.startTimeMs ?? "?"} durationMs=${meta?.durationMs ?? "?"} predicted=${predicted}`)
                 end if
-                result["value"] = predicted
-                result["source"] = "metadata:within"
-                if durationMs <> invalid and durationMs > 0
-                    result["durationMs"] = durationMs
-                end if
-                return result
-            end if
+        result["value"] = predicted
+        result["source"] = "metadata:within"
+        startMs = sabr_segmentStartMs(meta)
+        if startMs = invalid then startMs = sabr_toInt(meta?.startTimeMs)
+        if startMs <> invalid
+            result["segmentStartMs"] = startMs
+        end if
+        if durationMs <> invalid and durationMs > 0
+            result["durationMs"] = durationMs
+            result["segmentDurationMs"] = durationMs
+        end if
+        return result
+    end if
         end if
 
         if targetStart >= startVal and startVal > bestStart
@@ -2224,8 +2358,14 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
 
     result["value"] = predicted
     result["source"] = bestLabel
+    startMs = sabr_segmentStartMs(bestCandidate)
+    if startMs = invalid then startMs = sabr_toInt(bestCandidate?.startTimeMs)
+    if startMs <> invalid
+        result["segmentStartMs"] = startMs
+    end if
     if durationMs <> invalid and durationMs > 0
         result["durationMs"] = durationMs
+        result["segmentDurationMs"] = durationMs
     end if
     return result
 end function
@@ -2251,7 +2391,14 @@ function sabr_predictPlayerTimeFromMetadata(metadata as object, targetStart as i
     offset = targetStart - rangeStart
     if offset <= 0 then return startMs
 
-    return startMs + int((offset * durationMs) / span)
+    predicted = startMs + int((offset * durationMs) / span)
+    if predicted < startMs then predicted = startMs
+    maxMs = startMs
+    if durationMs <> invalid and durationMs >= 0
+        maxMs = startMs + durationMs
+    end if
+    if predicted > maxMs then predicted = maxMs
+    return predicted
 end function
 
 function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, baseValue as integer, durationMs = invalid as dynamic, sourceLabel = "" as string) as object
@@ -3606,6 +3753,12 @@ function sabr_buildBufferedRangeFromMetadata(originalMetadata as dynamic) as dyn
             "durationTicks": durationTicksStr
         }
     }
+
+    ' SABR expects buffered coverage to be normalized relative to zero so that
+    ' each entry simply advertises length. Matching the TS client keeps the
+    ' server from inferring gaps that precede the requested segment.
+    formatted["startTimeMs"] = "0"
+    formatted.timeRange["startTicks"] = "0"
 
     rangeStartVal = sabr_toInt(metadata?.rangeStart)
     if rangeStartVal = invalid
