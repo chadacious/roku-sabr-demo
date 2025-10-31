@@ -2,12 +2,68 @@ import "pkg:/source/logger.bs"
 import "pkg:/source/http.bs"
 import "pkg:/source/SabrStreamingAdapter.bs"
 import "pkg:/source/SabrDebug.bs"
+import "pkg:/source/SabrUtils.bs"
+
+function sabr_normalizeMessageType(value as dynamic) as string
+    if value = invalid then return ""
+    typeName = Type(value)
+    if typeName = "String" or typeName = "roString"
+        return LCase(value)
+    else if typeName = "roByteArray"
+        typeBytes = value
+        if GetInterface(typeBytes, "ifByteArray") <> invalid
+            return LCase(typeBytes.ToAsciiString())
+        end if
+    else if typeName = "Integer" or typeName = "roInt" or typeName = "roLong" or typeName = "Float" or typeName = "Double"
+        return LCase(Str(value))
+    end if
+    return LCase(Type(value))
+end function
+
+function sabr_buildServerCacheKey(request as object, contentType as string) as string
+    if not IsAssociativeArray(request) then return ""
+    method = "get"
+    if IsString(request?.method)
+        method = LCase(request.method)
+    else
+        methodLabel = sabr_valueToLabel(request?.method)
+        if methodLabel <> "" then method = LCase(methodLabel)
+    end if
+    path = ""
+    if IsString(request?.path)
+        path = LCase(request.path)
+    else
+        path = LCase(sabr_valueToLabel(request?.path))
+    end if
+    headers = request?.headers
+    rangeHeader = ""
+    if IsAssociativeArray(headers)
+        rangeHeader = sabr_valueToLabel(headers.Lookup("range"))
+        if rangeHeader = "" then rangeHeader = sabr_valueToLabel(headers.Lookup("Range"))
+    end if
+    if rangeHeader <> "" then rangeHeader = LCase(rangeHeader)
+    searchKey = ""
+    if IsAssociativeArray(request?.search)
+        searchKey = sabr_valueToLabel(request.search.Lookup("key"))
+    end if
+    if searchKey = "" and IsAssociativeArray(request?.search)
+        searchKey = sabr_valueToLabel(request.search.Lookup("itag"))
+    end if
+    if searchKey = "" and IsAssociativeArray(request?.headers)
+        searchKey = sabr_valueToLabel(request.headers.Lookup("X-Cache-Itag"))
+    end if
+    return `${method}|${path}|${LCase(contentType)}|${rangeHeader}|${LCase(searchKey)}`
+end function
 
 sub init()
     m.logs = logger()
     m.top.functionName = "YtsabrServer"
     m.connections = {}
     m.sockets = {}
+    m.pendingRequests = {}
+    m.pendingSegments = {}
+    m.workerTask = invalid
+    m.workerRequestSeq = 0
     m.ut = CreateObject("roUrlTransfer")
     m.ut.RetainBodyOnError(true)
     m.ut.enableEncodings(true)
@@ -39,10 +95,11 @@ sub YtsabrServer()
     end if
     sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] address is ${tcp_bind_addr.getAddress()}`)
 
+    sabr_ensureWorkerTask(port)
+
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
-        ' if msgType <> "Invalid" then sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] got something ${msgType}`)
         if msgType = "roSocketEvent"
             try
                 if msg.getSocketID() = tcp.getID()
@@ -90,9 +147,365 @@ sub YtsabrServer()
                 sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling", false)
                 sabr_log(m.logs, log_level_Type.WARN, FormatJson(e), false)
             end try
+        else if msgType = "roSGNodeEvent"
+            field = msg.GetField()
+            if field = "workerMessage"
+                data = msg.GetData()
+                sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Worker message received: ${FormatJson(data)}`)
+                sabr_handleWorkerMessage(data)
+            end if
         end if
     end while
 end sub
+
+sub sabr_ensureWorkerTask(port as object)
+    if isValid(m.workerTask) then return
+    worker = CreateObject("roSGNode", "sabrWorkerTask")
+    worker.id = `sabrWorker_${m.contentType}`
+    worker.contentType = m.contentType
+    worker.videoNode = m.top.videoNode
+    worker.utilsTask = m.top.utilsTask
+    if isValid(m.top.debugUploadUrl) and m.top.debugUploadUrl <> ""
+        worker.debugUploadUrl = m.top.debugUploadUrl
+    end if
+    worker.observeField("workerMessage", port)
+    worker.control = "RUN"
+    m.workerTask = worker
+end sub
+
+sub sabr_handleWorkerMessage(message as object)
+    if message = invalid then return
+    if not IsAssociativeArray(message) then return
+    rawType = message.Lookup("type")
+    messageType = sabr_normalizeMessageType(rawType)
+    requestId = sabr_valueToLabel(message.id)
+    if requestId = "" then
+        sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] Worker message missing request id")
+        return
+    end if
+    pending = m.pendingRequests.Lookup(requestId)
+    if not IsAssociativeArray(pending)
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] No pending entry for worker response id=${requestId}`)
+        return
+    end if
+
+    requestLogTag = pending.requestLogTag
+    if requestLogTag = invalid or requestLogTag = ""
+        requestLogTag = `[YTSABR-${m.contentType}-Worker]`
+    end if
+    cacheKey = sabr_valueToLabel(message?.cacheKey)
+    if cacheKey = "" then cacheKey = sabr_valueToLabel(pending.cacheKey)
+
+    segmentEntry = sabr_pendingSegment(cacheKey)
+    if not IsAssociativeArray(segmentEntry)
+        connection = pending.connection
+        if not isValid(connection)
+            m.pendingRequests.Delete(requestId)
+            return
+        end if
+        if messageType = "response"
+            response = message.response
+            sabr_sendResponseForConnection(connection, response, requestLogTag)
+        else
+            reason = sabr_valueToLabel(message.reason)
+            if reason = "" then reason = "Worker error"
+            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Worker reported error: ${reason}`)
+            send_http_reply(connection, "500", "text/plain", reason)
+        end if
+        m.sockets[Stri(pending.connectionId)] = invalid
+        connection.close()
+        m.pendingRequests.Delete(requestId)
+        return
+    end if
+
+    if messageType = "response"
+        response = message.response
+        sabr_completePendingSegment(cacheKey, response, false, "")
+    else if messageType = "error"
+        reason = sabr_valueToLabel(message.reason)
+        if reason = "" then reason = "Worker error"
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Worker reported error: ${reason}`)
+        sabr_completePendingSegment(cacheKey, invalid, true, reason)
+    else
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Unknown worker message type=${messageType}`)
+        sabr_completePendingSegment(cacheKey, invalid, true, "unknown_worker_message")
+    end if
+end sub
+
+function sabr_queueWorkerRequest(port as object, request as object, connection as object, mediaIdHash as string, sabrPayload as object, cacheKey as string) as boolean
+    sabr_ensureWorkerTask(port)
+    if not isValid(m.workerTask)
+        sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] Worker task unavailable; falling back to synchronous processing")
+        return false
+    end if
+
+    requestId = invalid
+    if isValid(m.top?.utilsTask)
+        requestId = m.top.utilsTask.callFunc("getNextId", "sabrWorkerRequest")
+    end if
+    if requestId = invalid then
+        m.workerRequestSeq = m.workerRequestSeq + 1
+        requestId = m.workerRequestSeq
+    end if
+    requestIdStr = `${requestId}`
+
+    if not IsAssociativeArray(m.pendingRequests)
+        m.pendingRequests = {}
+    end if
+
+    pendingEntry = {
+        "connection": connection
+        "connectionId": connection.getID()
+        "request": request
+        "mediaIdHash": mediaIdHash
+        "startedAt": sabr_currentTimestampMs()
+        "requestLogTag": sabr_utilLogTag(m.contentType, requestId)
+        "cacheKey": cacheKey
+        "isPrimary": true
+    }
+    m.pendingRequests[requestIdStr] = pendingEntry
+    connection.notifyReadable(false)
+    m.connections.Delete(Stri(connection.getID()))
+
+    ' keep worker fields fresh
+    m.workerTask.contentType = m.contentType
+    m.workerTask.videoNode = m.top.videoNode
+    m.workerTask.utilsTask = m.top.utilsTask
+    if isValid(m.top.debugUploadUrl) and m.top.debugUploadUrl <> ""
+        m.workerTask.debugUploadUrl = m.top.debugUploadUrl
+    end if
+
+    workerMessage = {
+        "id": requestIdStr
+        "contentType": m.contentType
+        "request": request
+        "mediaIdHash": mediaIdHash
+        "cacheKey": cacheKey
+        "debugUploadUrl": m.top.debugUploadUrl
+        "queuedAtMs": pendingEntry.startedAt
+    }
+
+    ' Trigger field change
+    m.workerTask.REQUEST = invalid
+    m.workerTask.REQUEST = workerMessage
+    sabr_log(m.logs, log_level_Type.INFO, `${pendingEntry.requestLogTag} Queued request ${requestIdStr} for worker processing`)
+    sabr_addPendingSegment(cacheKey, requestIdStr)
+    return true
+end function
+
+sub sabr_addPendingSegment(cacheKey as string, primaryId as string)
+    if cacheKey = "" then return
+    segment = {
+        "primaryId": primaryId
+        "waiterIds": []
+        "startedAt": sabr_currentTimestampMs()
+    }
+    segment.waiterIds.push(primaryId)
+    m.pendingSegments[cacheKey] = segment
+end sub
+
+function sabr_pendingSegment(cacheKey as string) as dynamic
+    if cacheKey = "" then return invalid
+    return m.pendingSegments.Lookup(cacheKey)
+end function
+
+function sabr_pendingSegmentExpired(entry as object) as boolean
+    if not IsAssociativeArray(entry) then return false
+    startedAt = sabr_toInt(entry?.startedAt)
+    if startedAt = invalid then return false
+    return sabr_currentTimestampMs() - startedAt > SABR_PENDING_SEGMENT_TIMEOUT_MS
+end function
+
+function sabr_registerWaiter(cacheKey as string, request as object, connection as object, mediaIdHash as string) as boolean
+    if cacheKey = "" then return false
+    segment = sabr_pendingSegment(cacheKey)
+    if not IsAssociativeArray(segment) then return false
+
+    waiterId = invalid
+    if isValid(m.top?.utilsTask)
+        waiterId = m.top.utilsTask.callFunc("getNextId", "sabrWorkerWaiter")
+    end if
+    if waiterId = invalid
+        m.workerRequestSeq = m.workerRequestSeq + 1
+        waiterId = m.workerRequestSeq
+    end if
+    waiterIdStr = `${waiterId}`
+
+    pendingEntry = {
+        "connection": connection
+        "connectionId": connection.getID()
+        "request": request
+        "mediaIdHash": mediaIdHash
+        "startedAt": sabr_currentTimestampMs()
+        "requestLogTag": sabr_utilLogTag(m.contentType, waiterId)
+        "cacheKey": cacheKey
+        "isPrimary": false
+    }
+    m.pendingRequests[waiterIdStr] = pendingEntry
+    segment.waiterIds.push(waiterIdStr)
+    m.pendingSegments[cacheKey] = segment
+    connection.notifyReadable(false)
+    m.connections.Delete(Stri(connection.getID()))
+    sabr_log(m.logs, log_level_Type.INFO, `${pendingEntry.requestLogTag} Registered waiter ${waiterIdStr} for cacheKey=${cacheKey}`)
+    return true
+end function
+
+sub sabr_failPendingSegment(cacheKey as string, reason as string, statusCode = "504" as string)
+    segment = sabr_pendingSegment(cacheKey)
+    if not IsAssociativeArray(segment) then return
+    ids = segment?.waiterIds
+    if not IsArray(ids) then ids = []
+    for each idStr in ids
+        pending = m.pendingRequests.Lookup(idStr)
+        if not IsAssociativeArray(pending) then continue for
+        conn = pending.connection
+        if isValid(conn)
+            send_http_reply(conn, statusCode, "text/plain", reason)
+            m.sockets[Stri(pending.connectionId)] = invalid
+            conn.close()
+        end if
+        m.pendingRequests.Delete(idStr)
+    end for
+    m.pendingSegments.Delete(cacheKey)
+end sub
+
+sub sabr_completePendingSegment(cacheKey as string, response as dynamic, isError as boolean, errorReason as string)
+    segment = sabr_pendingSegment(cacheKey)
+    if not IsAssociativeArray(segment) then return
+    ids = segment?.waiterIds
+    if not IsArray(ids) then ids = []
+    for each idStr in ids
+        pending = m.pendingRequests.Lookup(idStr)
+        if not IsAssociativeArray(pending) then
+            m.pendingRequests.Delete(idStr)
+            continue for
+        end if
+        conn = pending.connection
+        if not isValid(conn)
+            m.pendingRequests.Delete(idStr)
+            continue for
+        end if
+        logTag = pending.requestLogTag
+        if isError
+            send_http_reply(conn, "500", "text/plain", errorReason)
+        else
+            sabr_sendResponseForConnection(conn, response, logTag)
+        end if
+        m.sockets[Stri(pending.connectionId)] = invalid
+        m.pendingRequests.Delete(idStr)
+        conn.close()
+    end for
+    m.pendingSegments.Delete(cacheKey)
+end sub
+
+function sabr_sendResponseForConnection(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
+    if not IsAssociativeArray(sabrResponse)
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Invalid SABR response from worker; sending 204`)
+        return send_http_reply(connection, "204", "text/plain", "")
+    end if
+
+    responseBody = sabrResponse.body
+    responseBodyPath = sabrResponse?.bodyPath
+    responseBodyOffset = sabr_toInt(sabrResponse?.bodyOffset)
+    responseBodyLength = sabr_toInt(sabrResponse?.bodyLength)
+    responseHeaders = sabrResponse.headers
+    if not isValid(responseHeaders)
+        responseHeaders = CreateObject("roAssociativeArray")
+    end if
+    statusCode = sabrResponse.status
+    if not isValid(statusCode)
+        statusCode = 204
+    end if
+    if responseHeaders.DoesExist("Content-Length") = false
+        if responseBodyLength <> invalid and responseBodyLength >= 0
+            responseHeaders["Content-Length"] = responseBodyLength.toStr()
+        else if GetInterface(responseBody, "ifByteArray") <> invalid
+            responseHeaders["Content-Length"] = responseBody.count().toStr()
+        else
+            responseHeaders["Content-Length"] = "0"
+        end if
+    end if
+    if responseHeaders.DoesExist("Content-Type") = false
+        responseHeaders["Content-Type"] = "text/plain"
+    end if
+    if responseHeaders.DoesExist("Connection") = false
+        responseHeaders["Connection"] = "keep-alive"
+    end if
+    if GetInterface(responseBody, "ifByteArray") = invalid
+        responseBody = CreateObject("roByteArray")
+    end if
+
+    bodyCount = 0
+    if GetInterface(responseBody, "ifByteArray") <> invalid
+        bodyCount = responseBody.count()
+    end if
+
+    status = 0
+    timingInfo = sabrResponse?.timing
+    sendStartMs = sabr_currentTimestampMs()
+    if IsAssociativeArray(timingInfo)
+        timingInfo["sendStartMs"] = sendStartMs
+        queuedMs = sabr_toInt(timingInfo.Lookup("queuedAtMs"))
+        readyMs = sabr_toInt(timingInfo.Lookup("targetReadyMs"))
+        buildMs = sabr_toInt(timingInfo.Lookup("responseBuildMs"))
+        totalDelayLabel = ""
+        queuedToReadyLabel = ""
+        readyToSendLabel = ""
+        buildLabel = ""
+        if queuedMs <> invalid and readyMs <> invalid
+            queuedToReadyLabel = ` queuedToReady=${readyMs - queuedMs}ms`
+        end if
+        if readyMs <> invalid
+            readyToSendLabel = ` readyToSend=${sendStartMs - readyMs}ms`
+        end if
+        if queuedMs <> invalid
+            totalDelayLabel = ` totalSinceQueued=${sendStartMs - queuedMs}ms`
+        end if
+        if buildMs <> invalid and queuedMs <> invalid
+            buildLabel = ` queuedToBuild=${buildMs - queuedMs}ms`
+        end if
+        contentLenHeader = sabr_valueToLabel(responseHeaders.Lookup("Content-Length"))
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming response start len=${contentLenHeader} source=${isValid(responseBodyPath) and responseBodyPath <> "" ? "file" : "memory"}${queuedToReadyLabel}${readyToSendLabel}${buildLabel}${totalDelayLabel}`)
+    end if
+
+    streamUsed = false
+    if sabr_isFileStreamingEnabled() and isValid(responseBodyPath) and responseBodyPath <> ""
+        streamUsed = true
+        streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, responseBodyPath, responseBodyOffset, responseBodyLength)
+        if streamStatus <= 0
+            sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
+            if bodyCount > 0
+                status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
+            else
+                status = streamStatus
+            end if
+        else
+            status = streamStatus
+        end if
+    else
+        status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
+    end if
+
+    sendEndMs = sabr_currentTimestampMs()
+    if IsAssociativeArray(timingInfo)
+        timingInfo["sendEndMs"] = sendEndMs
+        sendDuration = sendEndMs - sendStartMs
+        readyMs = sabr_toInt(timingInfo.Lookup("targetReadyMs"))
+        queuedMs = sabr_toInt(timingInfo.Lookup("queuedAtMs"))
+        readyDurationLabel = ""
+        queueTotalLabel = ""
+        if readyMs <> invalid
+            readyDurationLabel = ` readyToFinish=${sendEndMs - readyMs}ms`
+        end if
+        if queuedMs <> invalid
+            queueTotalLabel = ` totalSinceQueued=${sendEndMs - queuedMs}ms`
+        end if
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming response complete bytesSent=${status} sendDuration=${sendDuration}ms${readyDurationLabel}${queueTotalLabel} via=${streamUsed ? "file" : "memory"}`)
+    else
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Status: ${status}`)
+    end if
+    return status
+end function
 
 ' Reads data from a client socket until an HTTP request is complete, then
 ' dispatches it to `process_request`. Manages connection lifetime bookkeeping.
@@ -165,70 +578,46 @@ function process_request(request as object, connection as object, port as object
             sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
         else
             sabrPayload = m.sabrPayloads[mediaIdHash]
-            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
+        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
+    end if
+        rangeHeader = ""
+        if IsAssociativeArray(request?.headers)
+            rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
         end if
-        sabrResponse = invalid
-        sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
-
-        if isValid(sabrResponse)
-            responseBody = sabrResponse.body
-            responseBodyPath = sabrResponse?.bodyPath
-            responseBodyOffset = sabr_toInt(sabrResponse?.bodyOffset)
-            responseBodyLength = sabr_toInt(sabrResponse?.bodyLength)
-            responseHeaders = sabrResponse.headers
-            if not isValid(responseHeaders)
-                responseHeaders = CreateObject("roAssociativeArray")
-            end if
-            statusCode = sabrResponse.status
-            if not isValid(statusCode)
-                statusCode = 204
-            end if
-            if responseHeaders.DoesExist("Content-Length") = false
-                if responseBodyLength <> invalid and responseBodyLength >= 0
-                    responseHeaders["Content-Length"] = responseBodyLength.toStr()
-                else if GetInterface(responseBody, "ifByteArray") <> invalid
-                    responseHeaders["Content-Length"] = responseBody.count().toStr()
+        keyParam = ""
+        if IsAssociativeArray(request?.search)
+            keyParam = sabr_valueToLabel(request.search.Lookup("key"))
+        end if
+        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} range=${rangeHeader}`)
+        cacheKey = sabr_buildServerCacheKey(request, m.contentType)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request cacheKey=${cacheKey}`)
+        if cacheKey <> ""
+            existingSegment = sabr_pendingSegment(cacheKey)
+            if IsAssociativeArray(existingSegment)
+                if sabr_pendingSegmentExpired(existingSegment)
+                    sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] Pending segment timeout for ${cacheKey}; aborting waiters`)
+                    sabr_failPendingSegment(cacheKey, "Segment timeout")
                 else
-                    responseHeaders["Content-Length"] = "0"
+                    sabr_registerWaiter(cacheKey, request, connection, mediaIdHash)
+                    return false
                 end if
             end if
-            if responseHeaders.DoesExist("Content-Type") = false
-                responseHeaders["Content-Type"] = "text/plain"
-            end if
-            if responseHeaders.DoesExist("Connection") = false
-                responseHeaders["Connection"] = "keep-alive"
-            end if
-            if GetInterface(responseBody, "ifByteArray") = invalid
-                responseBody = CreateObject("roByteArray")
-            end if
-
-            bodyCount = 0
-            if GetInterface(responseBody, "ifByteArray") <> invalid
-                bodyCount = responseBody.count()
-            end if
-
-            if sabr_isFileStreamingEnabled() and isValid(responseBodyPath) and responseBodyPath <> ""
-                streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, responseBodyPath, responseBodyOffset, responseBodyLength)
-                if streamStatus <= 0
-                    sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Streaming reply ended early status=${streamStatus}`, false)
-                    if bodyCount > 0
-                        status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
-                    else
-                        status = streamStatus
-                    end if
-                else
-                    status = streamStatus
-                end if
-            else
-                status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
-            end if
-        else
-            status = send_http_reply(connection, "204", "text/plain", "")
         end if
+
+        if sabr_queueWorkerRequest(port, request, connection, mediaIdHash, sabrPayload, cacheKey) = true
+            return false
+        end if
+
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Worker queue unavailable; processing synchronously`)
+        sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid)
+
+        status = sabr_sendResponseForConnection(connection, sabrResponse, `[YTSABR-${m.contentType}-Fallback]`)
+        m.sockets[Stri(connection.getID())] = invalid
+        m.connections[Stri(connection.getID())] = invalid
+        connection.close()
     else
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`, false)
     end if
 
-    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Status: ${status}`)
     return false ' false = Keep-alive
 end function

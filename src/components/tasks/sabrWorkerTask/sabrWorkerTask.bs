@@ -1,0 +1,120 @@
+import "pkg:/source/logger.bs"
+import "pkg:/source/SabrStreamingAdapter.bs"
+import "pkg:/source/SabrDebug.bs"
+import "pkg:/source/SabrUtils.bs"
+
+sub init()
+    m.logs = logger()
+    m.top.functionName = "workerLoop"
+    m.commandPort = CreateObject("roMessagePort")
+    m.top.ObserveField("REQUEST", m.commandPort)
+    m.payloadCache = CreateObject("roAssociativeArray")
+end sub
+
+sub workerLoop()
+    while true
+        msg = wait(0, m.commandPort)
+        if type(msg) = "roSGNodeEvent"
+            field = msg.GetField()
+            if field = "REQUEST"
+                data = msg.GetData()
+                if IsAssociativeArray(data)
+                    sabr_workerProcessRequest(data)
+                end if
+            end if
+        end if
+    end while
+end sub
+
+sub sabr_workerProcessRequest(payload as object)
+    requestId = sabr_valueToLabel(payload?.id)
+    if requestId = ""
+        sabr_workerPostMessage({ "type": "error", "id": "", "reason": "missing_request_id" })
+        return
+    end if
+
+    request = payload?.request
+    mediaIdHash = sabr_valueToLabel(payload?.mediaIdHash)
+    sabrPayload = sabr_workerResolveSabrPayload(mediaIdHash, payload?.sabrPayload)
+    queuedAtMs = payload?.queuedAtMs
+    contentType = sabr_valueToLabel(payload?.contentType)
+    if contentType = "" then contentType = m.top.contentType
+    cacheKey = ""
+    if IsString(payload?.cacheKey)
+        cacheKey = payload.cacheKey
+    else
+        cacheKey = sabr_valueToLabel(payload?.cacheKey)
+    end if
+
+    if not IsAssociativeArray(request)
+        sabr_workerPostMessage({ "type": "error", "id": requestId, "reason": "invalid_request", "cacheKey": cacheKey })
+        return
+    end if
+    if not IsAssociativeArray(sabrPayload)
+        sabr_workerPostMessage({ "type": "error", "id": requestId, "reason": "missing_sabr_payload", "cacheKey": cacheKey })
+        return
+    end if
+
+    sabr_log(m.logs, log_level_Type.INFO, `[SabrWorker-${contentType}] Processing request ${requestId} path=${request?.path}`)
+
+    response = invalid
+    fatalReason = ""
+    try
+        response = sabr_handleRequest(request, contentType, mediaIdHash, sabrPayload, m.top.videoNode, queuedAtMs)
+    catch e
+        fatalReason = sabr_formatExceptionDetail(e)
+        if fatalReason = "" then fatalReason = "worker_exception"
+        sabr_log(m.logs, log_level_Type.WARN, `[SabrWorker-${contentType}] Exception: ${fatalReason}`, false)
+    end try
+
+    if fatalReason <> ""
+        sabr_workerPostMessage({ "type": "error", "id": requestId, "reason": fatalReason, "cacheKey": cacheKey })
+    else
+        sabr_workerPostMessage({ "type": "response", "id": requestId, "response": response, "cacheKey": cacheKey })
+    end if
+end sub
+
+function sabr_workerResolveSabrPayload(mediaIdHash as string, inlinePayload as dynamic) as dynamic
+    if IsAssociativeArray(inlinePayload) then return inlinePayload
+
+    if not IsAssociativeArray(m.payloadCache)
+        m.payloadCache = CreateObject("roAssociativeArray")
+    end if
+
+    cacheKey = sabr_valueToLabel(mediaIdHash)
+    if cacheKey <> "" and m.payloadCache.DoesExist(cacheKey)
+        cached = m.payloadCache.Lookup(cacheKey)
+        if IsAssociativeArray(cached) then return cached
+    end if
+
+    if cacheKey = "" then return invalid
+
+    filePath = `tmp:/${cacheKey}/sabrPayload.json`
+    fileContent = ReadAsciiFile(filePath)
+    if not IsString(fileContent) or fileContent = ""
+        sabr_log(m.logs, log_level_Type.WARN, `[SabrWorker] Unable to read sabrPayload from ${filePath}`)
+        return invalid
+    end if
+
+    parsed = invalid
+    parseOk = true
+    try
+        parsed = ParseJson(fileContent)
+    catch e
+        parseOk = false
+        sabr_log(m.logs, log_level_Type.WARN, `[SabrWorker] Failed to parse sabrPayload for ${cacheKey}: ${sabr_formatExceptionDetail(e)}`)
+    end try
+
+    if parseOk and IsAssociativeArray(parsed)
+        m.payloadCache[cacheKey] = parsed
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SabrWorker] Loaded sabrPayload for ${cacheKey} (size=${Len(fileContent)})`)
+        return parsed
+    end if
+
+    return invalid
+end function
+
+sub sabr_workerPostMessage(message as object)
+    m.top.workerMessage = invalid
+    m.top.workerMessage = message
+end sub
