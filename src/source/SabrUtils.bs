@@ -31,6 +31,37 @@ function sabr_currentTimestampMs() as integer
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function
 
+function sabr_formatExceptionDetail(err as dynamic) as string
+    if not isValid(err) then return ""
+    if IsString(err) then return err
+    if IsAssociativeArray(err)
+        serializable = {}
+        for each key in err
+            serializable[key] = err[key]
+        end for
+        detail = invalid
+        try
+            detail = FormatJson(serializable)
+        catch jsonErr
+            detail = invalid
+        end try
+        if isValid(detail) and detail <> ""
+            return detail
+        end if
+        return Str(err).trim()
+    end if
+    detail = invalid
+    try
+        detail = FormatJson(err)
+    catch jsonErr
+        detail = invalid
+    end try
+    if isValid(detail) and detail <> ""
+        return detail
+    end if
+    return Str(err).trim()
+end function
+
 function sabr_joinWithPipe(parts as object) as string
     if not IsArray(parts) then return ""
     total = parts.count()

@@ -445,17 +445,22 @@ function send_http_reply_raw(connection as object, response_code as integer, hea
             end if
             chunkLen = chunk.Count()
             if chunkLen <= 0 then exit while
-            sent = connection.send(chunk, 0, chunkLen)
-            if sent <= 0
-                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset} chunk=${chunkLen} status=${sent}`)
-                try
-                    connection.Close()
-                catch e
-                end try
-                return sent
-            end if
+            offset = 0
+            while offset < chunkLen
+                sendLen = chunkLen - offset
+                sent = connection.send(chunk, offset, sendLen)
+                if sent <= 0
+                    loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset + offset} chunk=${sendLen} status=${sent}`)
+                    try
+                        connection.Close()
+                    catch e
+                    end try
+                    return sent
+                end if
+                offset = offset + sent
+                bytesSent = bytesSent + sent
+            end while
             currentOffset = currentOffset + chunkLen
-            bytesSent = bytesSent + chunkLen
             if remaining <> invalid
                 remaining = remaining - chunkLen
                 if remaining <= 0 then exit while

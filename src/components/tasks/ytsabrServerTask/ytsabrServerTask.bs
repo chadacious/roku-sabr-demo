@@ -60,7 +60,18 @@ sub YtsabrServer()
                     ' If connection is invalid, what does that mean?
                     if isValid(connection)
                         ' FIXME: Do we actually correctly close sockets?
-                        if connection.isReadable() and connection.getCountRcvBuf() = 0 and connection.isListening() = false then
+                        safeCountRcv = invalid
+                        errOnCount = false
+                        if connection.isReadable()
+                            try
+                                safeCountRcv = connection.getCountRcvBuf()
+                            catch e
+                                errOnCount = true
+                                safeCountRcv = -1
+                            end try
+                        end if
+
+                        if connection.isReadable() and (safeCountRcv = 0 or errOnCount) and connection.isListening() = false then
                             ' Apparently this means the connection has been closed
                             ' What a terrible way to indicate it
                             sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
@@ -185,7 +196,7 @@ function process_request(request as object, connection as object, port as object
                 responseHeaders["Content-Type"] = "text/plain"
             end if
             if responseHeaders.DoesExist("Connection") = false
-                responseHeaders["Connection"] = "close"
+                responseHeaders["Connection"] = "keep-alive"
             end if
             if GetInterface(responseBody, "ifByteArray") = invalid
                 responseBody = CreateObject("roByteArray")

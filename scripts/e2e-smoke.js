@@ -577,12 +577,22 @@ function shouldContinueAfterRepeat(options) {
 
 async function performSeekPattern({ host, port, pattern, iterations, delayMs, seed }) {
     const normalizedPattern = pattern ? pattern.toLowerCase() : "predictable";
-    console.log(`[test] Starting seek pattern "${normalizedPattern}" for ${iterations} iterations (delay ${delayMs}ms)`);    
+    console.log(`[test] Starting seek pattern "${normalizedPattern}" for ${iterations} iterations (delay ${delayMs}ms)`);
 
     const steps = buildSeekSteps({ pattern: normalizedPattern, iterations, seed });
+    if (normalizedPattern === "predictable" && iterations !== 1) {
+        console.log(`[test] Predictable pattern overrides seekIterations (${iterations}); running scripted timeline once.`);
+    }
     for (let index = 0; index < steps.length; index += 1) {
         const step = steps[index];
-        console.log(`[test] Seek ${index + 1}/${steps.length}: ${step.direction} x${step.repeats}`);
+        if (step.waitMs !== undefined) {
+            const waitLabel = step.label ? `${step.label} ` : "";
+            console.log(`[test] Seek ${index + 1}/${steps.length}: ${waitLabel}waiting ${step.waitMs}ms`);
+            await pause(step.waitMs);
+            continue;
+        }
+        const stepLabel = step.label ? ` (${step.label})` : "";
+        console.log(`[test] Seek ${index + 1}/${steps.length}: ${step.direction} x${step.repeats}${stepLabel}`);
         await sendTrickPlay({ host, port, direction: step.direction, repeats: step.repeats });
         await pause(delayMs);
     }
@@ -597,16 +607,18 @@ function buildSeekSteps({ pattern, iterations, seed }) {
 
     if (pattern === "predictable") {
         const template = [
-            { direction: "forward", repeats: 1 },
-            { direction: "forward", repeats: 2 },
-            { direction: "backward", repeats: 1 },
-            { direction: "forward", repeats: 1 },
-            { direction: "backward", repeats: 2 },
-            { direction: "forward", repeats: 3 },
+            { waitMs: 10000, label: "initial playback" },
+            { direction: "forward", repeats: 3, label: "skip towards mid" },
+            { direction: "forward", repeats: 3, label: "push closer to 2m" },
+            { direction: "forward", repeats: 3, label: "approach end" },
+            { direction: "forward", repeats: 2, label: "final alignment" },
+            { waitMs: 30000, label: "end playback" },
         ];
-        for (let i = 0; i < iterations; i += 1) {
-            const item = template[i % template.length];
-            steps.push({ direction: item.direction, repeats: item.repeats });
+        const loopCount = 1;
+        for (let loop = 0; loop < loopCount; loop += 1) {
+            for (let i = 0; i < template.length; i += 1) {
+                steps.push(template[i]);
+            }
         }
     } else {
         const rng = createDeterministicRandom(seed);
