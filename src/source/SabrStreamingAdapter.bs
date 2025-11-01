@@ -681,6 +681,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     requestMetadata = invalid
 
                     if isValid(responseFilePath) and responseFilePath <> ""
+                        spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16)
+                        sabr_logSpoolSummary(m.logs, requestLogTag, spoolMap)
                         requestMetadata = {
                             "isUMP": true
                             "isSABR": true
@@ -4428,4 +4430,60 @@ sub sabr_releaseChunkBuffer(buffer as dynamic)
     if limit <= 0 then limit = 8
     if pool.count() >= limit then return
     pool.push(buffer)
+end sub
+
+sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
+    if not IsAssociativeArray(spoolMap) then return
+
+    parts = spoolMap?.parts
+    partCount = 0
+    if IsArray(parts)
+        partCount = parts.count()
+    end if
+
+    durationMs = sabr_toInt(spoolMap?.durationMs)
+    if durationMs = invalid then durationMs = 0
+    totalBytes = sabr_toInt(spoolMap?.totalbytes)
+    if totalBytes = invalid then totalBytes = 0
+    readsVal = sabr_toInt(spoolMap?.reads)
+    actualBytes = sabr_toInt(spoolMap?.actualBytesRead)
+
+    summary = `${logTag} UMP spool scan duration=${durationMs}ms parts=${partCount} bytes=${totalBytes}`
+    if readsVal <> invalid then summary = `${summary} reads=${readsVal}`
+    if actualBytes <> invalid then summary = `${summary} actualBytesRead=${actualBytes}`
+    if spoolMap?.containsInit = true then summary = `${summary} init=true`
+    sabr_log(logs, log_level_Type.INFO, summary)
+
+    if not IsArray(parts) then return
+    previewCount = parts.count()
+    if previewCount <= 0 then return
+    if previewCount > 5 then previewCount = 5
+
+    previews = []
+    for idx = 0 to previewCount - 1
+        part = parts[idx]
+        typeLabel = sabr_toSafeString(part?.typeLabel)
+        if typeLabel = "" then typeLabel = sabr_toSafeString(part?.type)
+        offsetLabel = sabr_toSafeString(part?.offset)
+        sizeLabel = sabr_toSafeString(part?.payloadSize)
+        preview = `${typeLabel}@${offsetLabel}+${sizeLabel}`
+        header = part?.mediaHeader
+        if IsAssociativeArray(header)
+            startVal = sabr_toInt(header?.startRange)
+            if startVal = invalid then startVal = sabr_toInt(header?.start)
+            lengthVal = sabr_toInt(header?.contentLength)
+            if startVal <> invalid and lengthVal <> invalid and lengthVal > 0
+                preview = `${preview}[${startVal}-${startVal + lengthVal - 1}]`
+            end if
+            if header.DoesExist("isInitSeg") and header.isInitSeg = true
+                preview = `${preview}{init}`
+            end if
+        end if
+        previews.push(preview)
+    end for
+
+    previewSummary = previews.Join(", ")
+    if previewSummary <> ""
+        sabr_log(logs, log_level_Type.DEBUG, `${logTag} UMP spool preview ${previewSummary}`)
+    end if
 end sub

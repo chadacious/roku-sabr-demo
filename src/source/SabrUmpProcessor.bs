@@ -2898,3 +2898,230 @@ function sabr_ump_loadSegmentFromChunks(ctx as object, segment as object) as obj
     if totalBytes = invalid then totalBytes = 0
     return sabr_ump_concatenateChunks(ctx, chunkFiles, totalBytes)
 end function
+
+function sabr_ump_partTypeLabel(partType as dynamic) as string
+    value = sabr_ump_toInt(partType)
+    if value = invalid then return "unknown"
+
+    if value = UMP_PART_ID_MEDIA_HEADER
+        return "MEDIA_HEADER"
+    else if value = UMP_PART_ID_MEDIA
+        return "MEDIA"
+    else if value = UMP_PART_ID_MEDIA_END
+        return "MEDIA_END"
+    else if value = UMP_PART_ID_FORMAT_INIT_METADATA
+        return "FORMAT_INIT_METADATA"
+    else if value = UMP_PART_ID_NEXT_REQUEST_POLICY
+        return "NEXT_REQUEST_POLICY"
+    else if value = UMP_PART_ID_SABR_REDIRECT
+        return "SABR_REDIRECT"
+    else if value = UMP_PART_ID_SABR_ERROR
+        return "SABR_ERROR"
+    else if value = UMP_PART_ID_SABR_CONTEXT_UPDATE
+        return "SABR_CONTEXT_UPDATE"
+    else if value = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY
+        return "SABR_CONTEXT_SENDING_POLICY"
+    else if value = UMP_PART_ID_STREAM_PROTECTION_STATUS
+        return "STREAM_PROTECTION_STATUS"
+    else if value = UMP_PART_ID_SNACKBAR_MESSAGE
+        return "SNACKBAR_MESSAGE"
+    else if value = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+        return "RELOAD_PLAYER_RESPONSE"
+    else
+        return `TYPE_${value}`
+    end if
+end function
+
+function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 10 as integer) as dynamic
+    result = {
+        "parts": []
+        "durationMs": 0
+        "totalBytes": 0
+        "reads": 0
+        "sliceBytes": maxHeaderBytes
+    }
+    if not IsString(path) or path = "" then return result
+
+    fs = CreateObject("roFileSystem")
+    stat = invalid
+    try
+        stat = fs.Stat(path)
+    catch e
+        stat = invalid
+    end try
+    totalSize = invalid
+    if IsAssociativeArray(stat)
+        totalSize = stat.Lookup("size")
+        if totalSize = invalid then totalSize = stat.Lookup("length")
+    end if
+    if totalSize = invalid then return result
+    if totalSize <= 0 then
+        result.totalBytes = 0
+        return result
+    end if
+
+    if maxHeaderBytes <= 0 then maxHeaderBytes = 10
+    timer = CreateObject("roTimespan")
+    if timer <> invalid then timer.Mark()
+
+    parts = []
+    headerIndex = createObject("roAssociativeArray")
+    currentHeaderId = invalid
+    offset = 0
+    actualBytesRead = 0
+    while offset < totalSize
+        remaining = totalSize - offset
+        sliceLength = maxHeaderBytes
+        if sliceLength > remaining then sliceLength = remaining
+        if sliceLength <= 0 then exit while
+
+        headerBytes = CreateObject("roByteArray")
+        if headerBytes.ReadFile(path, offset, sliceLength) <> true
+            result["error"] = "read_failed"
+            result["errorOffset"] = offset
+            exit while
+        end if
+        result.reads = result.reads + 1
+        actualBytesRead = actualBytesRead + sliceLength
+
+        typeInfo = sabr_ump_readVarint(headerBytes, 0)
+        if typeInfo.complete <> true
+            result["error"] = "type_incomplete"
+            result["errorOffset"] = offset
+            exit while
+        end if
+
+        sizeInfo = sabr_ump_readVarint(headerBytes, typeInfo.nextOffset)
+        if sizeInfo.complete <> true
+            result["error"] = "size_incomplete"
+            result["errorOffset"] = offset
+            exit while
+        end if
+
+        partType = sabr_ump_toInt(typeInfo.value)
+        partSize = sabr_ump_toInt(sizeInfo.value)
+        headerLength = sizeInfo.nextOffset
+
+        if partSize = invalid or partSize < 0
+            result["error"] = "invalid_size"
+            result["errorOffset"] = offset
+            exit while
+        end if
+
+        partEntry = {
+            "type": partType
+            "typeLabel": sabr_ump_partTypeLabel(partType)
+            "offset": offset
+            "headerBytes": headerLength
+            "payloadOffset": offset + headerLength
+            "payloadSize": partSize
+            "payloadEnd": (offset + headerLength + partSize) - 1
+            "totalLength": headerLength + partSize
+        }
+
+        if partType = UMP_PART_ID_MEDIA_HEADER
+            headerData = CreateObject("roByteArray")
+            if partSize > 0 and headerData.ReadFile(path, partEntry.payloadOffset, partSize) = true
+                result.reads = result.reads + 1
+                actualBytesRead = actualBytesRead + partSize
+                decodedHeader = sabr_ump_decodePart(MediaHeaderDecode, headerData, invalid, "spool_media_header")
+                headerRecord = decodedHeader
+            else
+                currentHeaderId = invalid
+            end if
+        else if partType = UMP_PART_ID_MEDIA or partType = UMP_PART_ID_MEDIA_END
+            headerIdVal = invalid
+            if partSize > 0
+                peekLength = maxHeaderBytes
+                if partType = UMP_PART_ID_MEDIA_END and peekLength > 1 then peekLength = 1
+                if peekLength > partSize then peekLength = partSize
+                if peekLength > 0
+                    peekBytes = CreateObject("roByteArray")
+                    if peekBytes.ReadFile(path, partEntry.payloadOffset, peekLength) = true
+                        result.reads = result.reads + 1
+                        actualBytesRead = actualBytesRead + peekLength
+                        if partType = UMP_PART_ID_MEDIA
+                            headerVar = sabr_ump_readVarint(peekBytes, 0)
+                            if headerVar.complete = true
+                                headerIdVal = sabr_ump_toInt(headerVar.value)
+                            end if
+                        else if partType = UMP_PART_ID_MEDIA_END
+                            if peekBytes.count() > 0
+                                headerIdVal = peekBytes[0]
+                            else
+                                headerIdVal = invalid
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+
+            if headerIdVal <> invalid
+                partEntry["headerId"] = headerIdVal
+                headerKey = sabr_ump_toSafeString(headerIdVal)
+                headerRecord = invalid
+                if headerKey <> "" and headerIndex.DoesExist(headerKey)
+                    headerRecord = headerIndex.Lookup(headerKey)
+                else if currentHeaderId <> invalid and headerIdVal = currentHeaderId
+                    currentKey = sabr_ump_toSafeString(currentHeaderId)
+                    if currentKey <> "" and headerIndex.DoesExist(currentKey)
+                        headerRecord = headerIndex.Lookup(currentKey)
+                    end if
+                end if
+                if IsAssociativeArray(headerRecord)
+                    if headerRecord.DoesExist("itag") then partEntry["itag"] = headerRecord.itag
+                    if headerRecord.DoesExist("segmentIsInit") and headerRecord.segmentIsInit = true
+                        partEntry["segmentIsInit"] = true
+                    end if
+                    if headerRecord.DoesExist("mediaHeader") then partEntry["mediaHeader"] = headerRecord.mediaHeader
+                    if headerRecord.DoesExist("segmentRangeStart")
+                        partEntry["segmentRangeStart"] = headerRecord.segmentRangeStart
+                    end if
+                    if headerRecord.DoesExist("segmentRangeEnd")
+                        partEntry["segmentRangeEnd"] = headerRecord.segmentRangeEnd
+                    end if
+                    if headerRecord.DoesExist("segmentContentLength")
+                        partEntry["segmentContentLength"] = headerRecord.segmentContentLength
+                    end if
+                end if
+            end if
+
+            if partType = UMP_PART_ID_MEDIA_END
+                currentHeaderId = invalid
+            end if
+        end if
+
+        parts.push(partEntry)
+
+        nextOffset = offset + headerLength + partSize
+        if nextOffset <= offset
+            result["error"] = "non_progress"
+            result["errorOffset"] = offset
+            exit while
+        end if
+        offset = nextOffset
+    end while
+
+    result.parts = parts
+    result.totalBytes = totalSize
+    result["actualBytesRead"] = actualBytesRead
+    result.partCount = parts.count()
+    containsInit = false
+    for each partSummary in parts
+        if IsAssociativeArray(partSummary)
+            if partSummary.DoesExist("segmentIsInit") and partSummary.segmentIsInit = true
+                containsInit = true
+                exit for
+            end if
+        end if
+    end for
+    if containsInit then result["containsInit"] = true
+    if timer <> invalid
+        result.durationMs = Int(timer.TotalMilliseconds())
+    end if
+    if not result.DoesExist("error") and offset >= totalSize
+        result["complete"] = true
+    end if
+    result["bytesScanned"] = offset
+    return result
+end function
