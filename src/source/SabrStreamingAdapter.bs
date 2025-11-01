@@ -197,15 +197,19 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} URL: ${sabrAbrUrl}`)
 
     ' Resolve requested format from query params
+
+    keyParam = request.search.key
     try
-        if not isValid(request.search.key) or request.search.key = ""
+        if not isValid(keyParam) or keyParam = ""
             ok = false
             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} No SABR itag key provided`, false)
         else
-            currentKey = sabr_toInt(request.search.key)
+            keyParts = keyParam.split(":")
+            currentKeyItag = sabr_toInt(keyParts[0])
+            currentKeyXTag = keyParts.count() > 1 ? keyParts[1] : ""
             currentFormat = invalid
             for each format in formats
-                if format.itag = currentKey
+                if format.itag = currentKeyItag and (format?.xTag ?? "") = currentKeyXTag
                     currentFormat = format
                     exit for
                 end if
@@ -213,12 +217,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         end if
     catch e
         ok = false
-        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Error finding format for itag: ${request.search.key} - ${e.message}`, false)
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Error finding format for itag: ${keyParam} - ${e.message}`, false)
     end try
 
     if not isValid(currentFormat)
         ok = false
-        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} No matching format for itag: ${request.search.key}`, false)
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} No matching format for itag: ${keyParam}`, false)
     end if
 
     activeFormats = sabr_getActiveFormats(currentFormat, sabr, playbackContext)
@@ -242,6 +246,25 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         totalLogValue = totalsForLog.Lookup(formatKeyForLog)
     end if
     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Resolving segment start; init=${isInitSegmentRequest} formatKey=${formatKeyForLog} totals=${totalLogValue}`)
+
+    cachedSpoolSegment = invalid
+    ' spoolKey = `${requestByteRange?.startRange}:${keyParam}`
+    cachedSegment = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
+    if IsAssociativeArray(cachedSegment)
+        spooledSegment = cachedSegment.spooledSegment
+        spoolKey = cachedSegment.spoolKey
+        coverageStart = sabr_toInt(spooledSegment?.startRange)
+        coverageEnd = sabr_toInt(spooledSegment?.endRange)
+        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Spool map hit key=${spoolKey} isInitSeg=${spooledSegment.isInitSeg} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange} coverage=${coverageStart}-${coverageEnd}`)
+        if coverageEnd <> sabr_toInt(requestByteRange?.endRange) and not spooledSegment.isInitSeg
+            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Spool map miss key=${spoolKey} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange}`)
+        else
+            ' immediately stream this identified spooled segment to the player through the socket
+            
+        end if
+    else
+        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} No cached spool map for lookup keys key=${sabr_valueToLabel(keyParam)} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange}`)
+    end if
 
     bufferState = sabr_buildBufferedState(mediaIdHash, currentFormat, activeFormats, playbackContext, contentType, requestByteRange)
 
@@ -396,11 +419,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     sabr_logBufferedRanges(requestLogTag, sabrRequestJson)
 
     cacheKey = sabr_buildCacheKey(mediaIdHash, contentType, currentFormat, requestByteRange, isInitSegmentRequest)
-
-    keyParam = request.search.key
-    if keyParam = "" and isValid(request.search?.itag)
-        keyParam = request.search.itag
-    end if
 
     requestMetadataEntry = {
         "requestNumber": nextRequestId
@@ -681,8 +699,37 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     requestMetadata = invalid
 
                     if isValid(responseFilePath) and responseFilePath <> ""
-                        spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16)
+                        spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16, keyParam)
                         sabr_logSpoolSummary(m.logs, requestLogTag, spoolMap)
+                        if IsAssociativeArray(spoolMap) and (spoolMap?.error ?? "") = ""
+                            ' spoolStore = playbackContext?.umpSpoolMaps
+                            if not IsAssociativeArray(playbackContext["umpSpoolMaps"]) then playbackContext["umpSpoolMaps"] = {}
+                            for each partKey in spoolMap.segmentMap.Keys()
+                                playbackContext["umpSpoolMaps"][partKey] = spoolMap.segmentMap[partKey]
+                            end for
+                            
+                            ' sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cached spool map under key ${keyParam}`)
+                            ' spoolKeys = []
+                            ' formatKeyForSpool = sabr_formatToKey(currentFormat)
+                            ' if formatKeyForSpool <> "" then spoolKeys.push(formatKeyForSpool)
+                            ' itagLabel = sabr_valueToLabel(currentFormat?.itag)
+                            ' if itagLabel <> "" then spoolKeys.push(`itag:${itagLabel}`)
+                            ' requestKeyLabel = sabr_valueToLabel(keyParam)
+                            ' if requestKeyLabel <> "" then spoolKeys.push(`key:${requestKeyLabel}`)
+                            ' if spoolKeys.count() = 0 and itagLabel = ""
+                            '     spoolKeys.push("default")
+                            ' end if
+                            ' storedKeys = []
+                            ' for each spoolKey in spoolKeys
+                            '     if spoolKey = "" then continue for
+                            '     spoolStore[spoolKey] = spoolMap
+                            '     storedKeys.push(spoolKey)
+                            ' end for
+                            ' playbackContext["umpSpoolMaps"] = spoolStore
+                            ' if storedKeys.count() > 0
+                            '     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cached spool map under keys ${storedKeys.Join(", ")}`)
+                            ' end if
+                        end if
                         requestMetadata = {
                             "isUMP": true
                             "isSABR": true
@@ -1277,6 +1324,30 @@ sub sabr_bufferingAugmentState(bufferState as object, params as object)
         sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} finalRanges=${trimmed.count()}`)
     end if
 end sub
+
+function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRange as object, keyParam as string) as dynamic
+    spoolMaps = playbackContext?.umpSpoolMaps
+    if not IsAssociativeArray(spoolMaps) then return invalid
+    startRange = sabr_toInt(requestByteRange?.startRange)
+    endRange = sabr_toInt(requestByteRange?.endRange)
+    spoolKey = `${startRange}:${keyParam}`
+    spoolEntry = spoolMaps.Lookup(spoolKey)
+    if IsAssociativeArray(spoolEntry) then
+        return { spooledSegment: spoolEntry, spoolKey: spoolKey }
+    end if
+    ' if we get a miss, it could be an init segment request;
+    for each key in spoolMaps
+        if Instr(key, `0:${keyParam}`) = 1
+            entry = spoolMaps.Lookup(key)
+            entryEnd = sabr_toInt(entry?.endRange)
+            if entryEnd = endRange
+                return { spooledSegment: entry, spoolKey: key }
+            end if
+        end if
+    end for
+
+    return invalid
+end function
 
 ' Attempts to inject synthetic coverage for the segment prior to the request.
 function sabr_bufferingMaybeInjectPreviousRange(ranges as object, playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, logTag as string, reason as string) as object
@@ -4487,3 +4558,44 @@ sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
         sabr_log(logs, log_level_Type.DEBUG, `${logTag} UMP spool preview ${previewSummary}`)
     end if
 end sub
+
+function sabr_selectSpoolPart(spoolMap as object, requestedRange as object) as dynamic
+    if not IsAssociativeArray(spoolMap) then return invalid
+    parts = spoolMap?.parts
+    if not IsArray(parts) or parts.count() = 0 then return invalid
+
+    normalizedRange = sabr_normalizeByteRange(requestedRange, invalid)
+    startVal = sabr_toInt(normalizedRange?.startRange)
+    if startVal = invalid then startVal = sabr_toInt(normalizedRange?.start)
+    endVal = sabr_toInt(normalizedRange?.endRange)
+    if endVal = invalid then endVal = sabr_toInt(normalizedRange?.end)
+
+    for each part in parts
+        header = part?.mediaHeader
+        if not IsAssociativeArray(header) then continue for
+
+        partStart = sabr_toInt(header?.startRange)
+        if partStart = invalid then partStart = sabr_toInt(header?.start)
+        contentLength = sabr_toInt(header?.contentLength)
+        if partStart = invalid or contentLength = invalid or contentLength <= 0 then continue for
+        partEnd = partStart + contentLength - 1
+
+        requestedEnd = endVal
+        if requestedEnd = invalid then requestedEnd = partEnd
+        if startVal <> invalid and startVal >= partStart and requestedEnd <= partEnd
+            payloadOffset = sabr_toInt(part?.payloadOffset)
+            if payloadOffset = invalid then payloadOffset = part?.payloadOffset
+            if payloadOffset = invalid then payloadOffset = 0
+            streamOffset = payloadOffset + (startVal - partStart)
+            return {
+                "streamOffset": streamOffset
+                "rangeStart": partStart
+                "rangeEnd": partEnd
+                "payloadSize": part?.payloadSize
+                "mediaHeader": header
+            }
+        end if
+    end for
+
+    return invalid
+end function
