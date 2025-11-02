@@ -499,6 +499,13 @@ function send_http_reply_stream(connection as object, response_code as integer, 
         chunkLen = chunk.Count()
         if chunkLen <= 0 then exit while
 
+        ' if chunkLen < 2000 convert to base64 for logging
+        if chunkLen < 2000 then
+            b64Chunk = chunk.ToBase64String()
+            loggers.printl(log_level_Type.DEBUG, `[HTTP] Streamed chunk (file stream) path=${dataPath} offset=${currentOffset} size=${chunkLen} base64=${b64Chunk}`)
+        end if
+
+
         offset = 0
         while offset < chunkLen
             sendLen = chunkLen - offset
@@ -523,6 +530,67 @@ function send_http_reply_stream(connection as object, response_code as integer, 
     end while
 
     loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body (file stream)`)
+    return bytesSent
+end function
+
+function send_http_reply_stream_chunks(connection as object, response_code as integer, headers as object, dataPath as string, chunks as object, totalBytes = invalid as dynamic) as integer
+    loggers = logger()
+    if not IsString(dataPath) or dataPath = ""
+        loggers.printl(log_level_Type.WARN, `[HTTP] Chunk stream requested without valid dataPath; falling back to empty response`)
+        return send_http_reply_raw(connection, response_code, headers, CreateObject("roByteArray"))
+    end if
+    if not IsArray(chunks) or chunks.count() = 0
+        loggers.printl(log_level_Type.WARN, `[HTTP] Chunk stream requested without chunks; falling back to standard stream`)
+        return send_http_reply_stream(connection, response_code, headers, dataPath, 0, totalBytes)
+    end if
+    if not IsAssociativeArray(headers)
+        headers = CreateObject("roAssociativeArray")
+    end if
+
+    if totalBytes = invalid
+        totalBytes = 0
+        for each chunk in chunks
+            chunkLen = chunk?.length
+            if chunkLen <> invalid and chunkLen > 0
+                totalBytes = totalBytes + chunkLen
+            end if
+        end for
+    end if
+    if totalBytes <> invalid and headers.DoesExist("Content-Length") = false
+        headers["Content-Length"] = totalBytes.toStr()
+    end if
+
+    if http_sendHeaders(connection, response_code, headers) = false then return -1
+
+    bytesSent = 0
+    for each chunk in chunks
+        chunkOffset = chunk?.offset
+        chunkLength = chunk?.length
+        if chunkOffset = invalid or chunkLength = invalid or chunkLength <= 0 then continue for
+
+        buffer = CreateObject("roByteArray")
+        if buffer.ReadFile(dataPath, chunkOffset, chunkLength) <> true then exit for
+        chunkLen = buffer.Count()
+        if chunkLen <= 0 then exit for
+
+        offset = 0
+        while offset < chunkLen
+            sendLen = chunkLen - offset
+            sent = connection.send(buffer, offset, sendLen)
+            if sent <= 0
+                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (chunk stream) path=${dataPath} offset=${chunkOffset + offset} chunk=${sendLen} status=${sent}`)
+                try
+                    connection.Close()
+                catch e
+                end try
+                return sent
+            end if
+            offset = offset + sent
+            bytesSent = bytesSent + sent
+        end while
+    end for
+
+    loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes chunked body`)
     return bytesSent
 end function
 

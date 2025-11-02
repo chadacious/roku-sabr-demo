@@ -37,6 +37,8 @@ function sabr_mp4_parseBoxes(bytes as object, maxBoxes as integer) as object
 end function
 
 function sabr_mp4_extractSidxIndex(bytes as object) as dynamic
+    ' base64 log of bytes can be passed in to extract SIDX box info
+    sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-MP4] Extracting SIDX index from bytes: ${bytes.ToHexString()}`)
     if not isValid(bytes) then return invalid
     boxes = sabr_mp4_parseBoxes(bytes, 40)
     for each boxInfo in boxes

@@ -260,7 +260,69 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Spool map miss key=${spoolKey} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange}`)
         else
             ' immediately stream this identified spooled segment to the player through the socket
-            
+            ' requestMetadataEntry = {
+            '     "requestNumber": nextRequestId
+            '     "isInit": spooledSegment.isInitSeg
+            '     "byteRange": {
+            '         "start": coverageStart
+            '         "end": coverageEnd
+            '         "startRange": coverageStart
+            '         "endRange": coverageEnd
+            '         "sequenceNumber": spooledSegment.mediaHeader.sequenceNumber
+            '         "segmentIndexInfo": invalid ' requestByteRange.DoesExist("segmentIndexInfo") ? requestByteRange.segmentIndexInfo : invalid
+            '     }
+            '     "format": currentFormat
+            '     "contentType": contentType
+            '     "mediaIdHash": mediaIdHash
+            '     "cacheKey": spoolKey
+            '     "streamInfo": streamInfoForFormat
+            '     "timestamp": sabr_currentTimestampMs()
+            '     "debugUploadUrl": debugUploadUrl
+            '     "sabrKey": keyParam
+            '     "requestPath": request.path
+            ' }
+            ' umpResult = {
+            '     "path": spooledSegment.path
+            '     "coverage": {
+            '         "rangeStart": coverageStart
+            '         "rangeEnd": coverageEnd
+            '     }
+            ' }
+            ' response = sabr_buildResponseForPlayer(requestMetadataEntry, umpResult, currentFormat, requestByteRange, contentType)
+            ' return response
+            chunks = spooledSegment?.chunks
+            totalBytes = sabr_toInt(spooledSegment?.totalBytes)
+            if totalBytes = invalid
+                totalBytes = 0
+                if IsArray(chunks)
+                    for each chunk in chunks
+                        chunkLen = sabr_toInt(chunk?.length)
+                        if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
+                    end for
+                end if
+            end if
+            if spooledSegment?.isInitSeg = true
+                trimmed = sabr_trimSegmentChunksForRange(chunks, spooledSegment?.startRange, requestByteRange)
+                if IsAssociativeArray(trimmed)
+                    trimmedChunks = trimmed?.chunks
+                    trimmedBytes = sabr_toInt(trimmed?.totalBytes)
+                    if IsArray(trimmedChunks) and trimmedChunks.count() > 0 and trimmedBytes <> invalid and trimmedBytes > 0
+                        chunks = trimmedChunks
+                        totalBytes = trimmedBytes
+                    end if
+                end if
+            end if
+            responseForPlayer = {
+                "path": spooledSegment.path
+                "chunks": chunks
+                "totalBytes": totalBytes
+                "isInitSeg": spooledSegment?.isInitSeg = true
+                "startRange": spooledSegment?.startRange
+                "endRange": spooledSegment?.endRange
+            }
+            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Serving spooled segment to player key=${spoolKey} requestByteRange=${formatJson(requestByteRange)} isInitSeg=${spooledSegment.isInitSeg}`)
+            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Serving spooled segment to player key=${spoolKey} chunkCount=${IsArray(chunks) ? chunks.count() : 0} totalBytes=${totalBytes}`)
+            return responseForPlayer
         end if
     else
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} No cached spool map for lookup keys key=${sabr_valueToLabel(keyParam)} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange}`)
@@ -702,12 +764,13 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                         spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16, keyParam)
                         sabr_logSpoolSummary(m.logs, requestLogTag, spoolMap)
                         if IsAssociativeArray(spoolMap) and (spoolMap?.error ?? "") = ""
-                            ' spoolStore = playbackContext?.umpSpoolMaps
                             if not IsAssociativeArray(playbackContext["umpSpoolMaps"]) then playbackContext["umpSpoolMaps"] = {}
-                            for each partKey in spoolMap.segmentMap.Keys()
-                                playbackContext["umpSpoolMaps"][partKey] = spoolMap.segmentMap[partKey]
-                            end for
-                            
+                            segmentIndex = spoolMap?.segmentIndex
+                            if IsAssociativeArray(segmentIndex)
+                                for each segmentKey in segmentIndex.Keys()
+                                    playbackContext["umpSpoolMaps"][segmentKey] = segmentIndex.Lookup(segmentKey)
+                                end for
+                            end if
                             ' sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cached spool map under key ${keyParam}`)
                             ' spoolKeys = []
                             ' formatKeyForSpool = sabr_formatToKey(currentFormat)
@@ -914,7 +977,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             else
                                 sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Following SABR redirect to ${redirectUrl}`)
                                 ' Cleanup temp files for proto/response
-                                sabr_deleteFileIfExists(responseFilePath)
+                                ' sabr_deleteFileIfExists(responseFilePath)
                                 sabr_deleteFileIfExists(protoFilePath)
                                 writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
                                 return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtValue, redirectDepth + 1)
@@ -1106,7 +1169,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     end if
 
     ' Cleanup temp files for proto/response
-    sabr_deleteFileIfExists(responseFilePath)
+    ' sabr_deleteFileIfExists(responseFilePath)
     sabr_deleteFileIfExists(protoFilePath)
 
     sabr_recordRepeatResult(playbackContext, requestMetadataEntry, response, contentType, `${nextRequestId}`)
@@ -1332,7 +1395,7 @@ function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRang
     endRange = sabr_toInt(requestByteRange?.endRange)
     spoolKey = `${startRange}:${keyParam}`
     spoolEntry = spoolMaps.Lookup(spoolKey)
-    if IsAssociativeArray(spoolEntry) then
+    if IsAssociativeArray(spoolEntry) and IsArray(spoolEntry?.chunks)
         return { spooledSegment: spoolEntry, spoolKey: spoolKey }
     end if
     ' if we get a miss, it could be an init segment request;
@@ -1340,13 +1403,66 @@ function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRang
         if Instr(key, `0:${keyParam}`) = 1
             entry = spoolMaps.Lookup(key)
             entryEnd = sabr_toInt(entry?.endRange)
-            if entryEnd = endRange
+            if IsAssociativeArray(entry) and IsArray(entry?.chunks) and entryEnd = endRange
                 return { spooledSegment: entry, spoolKey: key }
             end if
         end if
     end for
 
     return invalid
+end function
+
+function sabr_trimSegmentChunksForRange(chunks as object, segmentStart as dynamic, requestRange as object) as dynamic
+    if not IsArray(chunks) then return invalid
+    segmentStartVal = sabr_toInt(segmentStart)
+    if segmentStartVal = invalid then return invalid
+    requestStartVal = sabr_toInt(requestRange?.startRange)
+    requestEndVal = sabr_toInt(requestRange?.endRange)
+    if requestStartVal = invalid or requestEndVal = invalid then return invalid
+    if requestEndVal < requestStartVal then return invalid
+
+    offsetToSkip = requestStartVal - segmentStartVal
+    if offsetToSkip < 0 then offsetToSkip = 0
+    bytesNeeded = (requestEndVal - requestStartVal) + 1
+    if bytesNeeded <= 0 then return invalid
+
+    trimmedChunks = []
+    remaining = bytesNeeded
+    skip = offsetToSkip
+
+    for each chunk in chunks
+        chunkOffset = sabr_toInt(chunk?.offset)
+        chunkLength = sabr_toInt(chunk?.length)
+        if chunkOffset = invalid or chunkLength = invalid or chunkLength <= 0 then continue for
+
+        if skip >= chunkLength
+            skip = skip - chunkLength
+            continue for
+        end if
+
+        effectiveOffset = chunkOffset + skip
+        effectiveLength = chunkLength - skip
+        if effectiveLength > remaining then effectiveLength = remaining
+
+        if effectiveLength > 0
+            trimmedChunks.push({
+                "offset": effectiveOffset
+                "length": effectiveLength
+            })
+            remaining = remaining - effectiveLength
+        end if
+
+        skip = 0
+        if remaining <= 0 then exit for
+    end for
+
+    trimmedTotal = bytesNeeded - remaining
+    if trimmedTotal <= 0 then return invalid
+
+    return {
+        "chunks": trimmedChunks
+        "totalBytes": trimmedTotal
+    }
 end function
 
 ' Attempts to inject synthetic coverage for the segment prior to the request.

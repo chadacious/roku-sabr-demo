@@ -2965,6 +2965,9 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
 
     parts = []
     headerIndex = createObject("roAssociativeArray")
+    segmentIndex = createObject("roAssociativeArray")
+    headerToSegmentKey = createObject("roAssociativeArray")
+    suffixBase = sabr_ump_toSafeString(keyParam)
     currentHeaderId = invalid
     offset = 0
     actualBytesRead = 0
@@ -3134,6 +3137,109 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
 
         parts.push(partEntry)
 
+        if IsAssociativeArray(partEntry)
+            partTypeVal = sabr_ump_toInt(partEntry?.type)
+            headerIdForPart = sabr_ump_toInt(partEntry?.headerId)
+            if headerIdForPart <> invalid and (partTypeVal = UMP_PART_ID_MEDIA_HEADER or partTypeVal = UMP_PART_ID_MEDIA)
+                headerKeyLabel = sabr_ump_toSafeString(headerIdForPart)
+                existingSegmentKey = invalid
+                if headerKeyLabel <> "" and headerToSegmentKey.DoesExist(headerKeyLabel)
+                    existingSegmentKey = headerToSegmentKey.Lookup(headerKeyLabel)
+                end if
+
+                if partTypeVal = UMP_PART_ID_MEDIA_HEADER or existingSegmentKey = invalid
+                    startRangeVal = sabr_ump_toInt(partEntry?.segmentRangeStart)
+                    mediaHeader = partEntry?.mediaHeader
+                    if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                        startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+                        if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+                    end if
+
+                    endRangeVal = sabr_ump_toInt(partEntry?.segmentRangeEnd)
+                    if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                        contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+                        if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+                            endRangeVal = startRangeVal + contentLengthVal - 1
+                        end if
+                    end if
+
+                    suffixLabel = suffixBase
+                    if suffixLabel = "" then suffixLabel = sabr_ump_toSafeString(partEntry?.itag)
+                    if suffixLabel <> ""
+                        suffixLastChar = Mid(suffixLabel, Len(suffixLabel), 1)
+                        if suffixLastChar <> ":"
+                            suffixLabel = `${suffixLabel}:`
+                        end if
+                    end if
+
+                    startLabel = sabr_ump_toSafeString(startRangeVal)
+                    if startLabel = "" then startLabel = "0"
+                    segmentKey = suffixLabel <> "" ? `${startLabel}:${suffixLabel}` : `${startLabel}:`
+
+                    segmentRecord = invalid
+                    if segmentKey <> "" and segmentIndex.DoesExist(segmentKey)
+                        segmentRecord = segmentIndex.Lookup(segmentKey)
+                    end if
+                    if segmentRecord = invalid
+                        segmentRecord = {
+                            "path": path
+                            "headerId": headerIdForPart
+                            "startRange": startRangeVal
+                            "endRange": endRangeVal
+                            "isInitSeg": (partEntry?.segmentIsInit = true)
+                            "chunks": []
+                        }
+                        segmentRecord["mediaHeader"] = mediaHeader
+                        segmentRecord["itag"] = sabr_ump_toInt(partEntry?.itag)
+                        segmentRecord["totalBytes"] = 0
+                    else
+                        if segmentRecord.startRange = invalid then segmentRecord.startRange = startRangeVal
+                        if segmentRecord.endRange = invalid then segmentRecord.endRange = endRangeVal
+                        if segmentRecord.mediaHeader = invalid and IsAssociativeArray(mediaHeader)
+                            segmentRecord.mediaHeader = mediaHeader
+                        end if
+                        if partEntry?.segmentIsInit = true then segmentRecord.isInitSeg = true
+                        if segmentRecord.DoesExist("itag") = false or segmentRecord.itag = invalid
+                            segmentRecord["itag"] = sabr_ump_toInt(partEntry?.itag)
+                        end if
+                    end if
+
+                    if segmentKey <> ""
+                        segmentIndex[segmentKey] = segmentRecord
+                        if headerKeyLabel <> ""
+                            headerToSegmentKey[headerKeyLabel] = segmentKey
+                        end if
+                        existingSegmentKey = segmentKey
+                    end if
+                end if
+
+                if partTypeVal = UMP_PART_ID_MEDIA and existingSegmentKey <> invalid and existingSegmentKey <> ""
+                    if segmentIndex.DoesExist(existingSegmentKey)
+                        segmentRecord = segmentIndex.Lookup(existingSegmentKey)
+                        chunks = segmentRecord?.chunks
+                        if not IsArray(chunks) then chunks = []
+
+                        payloadOffsetVal = sabr_ump_toInt(partEntry?.payloadOffset)
+                        payloadSizeVal = sabr_ump_toInt(partEntry?.payloadSize)
+                        if payloadOffsetVal <> invalid and payloadSizeVal <> invalid and payloadSizeVal > 1
+                            chunk = {
+                                "offset": payloadOffsetVal + 1
+                                "length": payloadSizeVal - 1
+                            }
+                            if chunk.length > 0
+                                chunks.push(chunk)
+                                segmentRecord["chunks"] = chunks
+                                totalBytesVal = sabr_ump_toInt(segmentRecord?.totalBytes)
+                                if totalBytesVal = invalid then totalBytesVal = 0
+                                segmentRecord["totalBytes"] = totalBytesVal + chunk.length
+                                segmentIndex[existingSegmentKey] = segmentRecord
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        end if
+
         nextOffset = offset + headerLength + partSize
         if nextOffset <= offset
             result["error"] = "non_progress"
@@ -3144,6 +3250,7 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
     end while
 
     result["parts"] = parts
+    result["segmentIndex"] = segmentIndex
     result["segmentMap"] = sabr_ump_buildSpoolSegmentMap(parts, keyParam, path)
     result["totalBytes"] = totalSize
     result["actualBytesRead"] = actualBytesRead
@@ -3176,9 +3283,10 @@ function sabr_ump_buildSpoolSegmentMap(partArray as object, keyParam as string, 
 
     for each part in partArray
         if not IsAssociativeArray(part) then continue for
+        ' if part.type = UMP_PART_ID_MEDIA_HEADER then headerOffsetBytes = sabr_ump_toInt(part?.headerBytes)
         if part?.type <> UMP_PART_ID_MEDIA then continue for
 
-        payloadOffset = sabr_ump_toInt(part?.payloadOffset)
+        payloadOffset = sabr_ump_toInt(part?.payloadOffset) + part.headerBytes - 1
         payloadSize = sabr_ump_toInt(part?.payloadSize)
         if payloadOffset = invalid or payloadSize = invalid or payloadSize <= 0 then continue for
 

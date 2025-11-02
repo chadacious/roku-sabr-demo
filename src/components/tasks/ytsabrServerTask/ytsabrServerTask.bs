@@ -132,8 +132,8 @@ sub YtsabrServer()
                             'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handle_tcp(connection, port)
                         end if
-                    ' else
-                    '     sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
+                        ' else
+                        '     sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
                         ' stop
                     end if
                 end if
@@ -144,6 +144,44 @@ sub YtsabrServer()
         end if
     end while
 end sub
+
+function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
+    path = sabrResponse.path
+    chunks = sabrResponse?.chunks
+    totalBytes = sabr_toInt(sabrResponse?.totalBytes)
+    payloadStart = sabrResponse.payloadStart
+    payloadSize = sabrResponse.payloadSize
+    streamStatus = 0
+    responseHeaders = sabrResponse.headers
+    if not isValid(responseHeaders)
+        responseHeaders = CreateObject("roAssociativeArray")
+    end if
+    statusCode = sabrResponse.status
+    if not isValid(statusCode)
+        statusCode = 206
+    end if
+    if IsArray(chunks) and chunks.count() > 0
+        if totalBytes = invalid
+            totalBytes = 0
+            for each chunk in chunks
+                chunkLen = sabr_toInt(chunk?.length)
+                if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
+            end for
+        end if
+        if totalBytes = invalid then totalBytes = 0
+        responseHeaders["Content-Length"] = totalBytes.toStr()
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP chunks count=${chunks.count()} totalBytes=${totalBytes}`)
+        streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
+    else
+        responseHeaders["Content-Length"] = payloadSize.toStr()
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP payload start=${payloadStart} length=${payloadSize}`)
+        streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, path, payloadStart, payloadSize)
+    end if
+    if streamStatus <= 0
+        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
+    end if
+    return streamStatus
+end function
 
 function sabr_sendResponseForConnection(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
     if not IsAssociativeArray(sabrResponse)
@@ -325,8 +363,8 @@ function process_request(request as object, connection as object, port as object
             sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
         else
             sabrPayload = m.sabrPayloads[mediaIdHash]
-        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
-    end if
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
+        end if
         rangeHeader = ""
         if IsAssociativeArray(request?.headers)
             rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
@@ -358,8 +396,10 @@ function process_request(request as object, connection as object, port as object
 
         if fatalReason <> ""
             status = send_http_reply(connection, "500", "text/plain", fatalReason)
+        else if sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart")
+            status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
         else
-            status = sabr_sendResponseForConnection(connection, sabrResponse, requestLogTag)
+             status = sabr_sendResponseForConnection(connection, sabrResponse, requestLogTag)
         end if
         m.sockets[Stri(connection.getID())] = invalid
         m.connections[Stri(connection.getID())] = invalid
