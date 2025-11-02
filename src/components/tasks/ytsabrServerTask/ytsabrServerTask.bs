@@ -160,23 +160,17 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     if not isValid(statusCode)
         statusCode = 206
     end if
-    if IsArray(chunks) and chunks.count() > 0
-        if totalBytes = invalid
-            totalBytes = 0
-            for each chunk in chunks
-                chunkLen = sabr_toInt(chunk?.length)
-                if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
-            end for
-        end if
-        if totalBytes = invalid then totalBytes = 0
-        responseHeaders["Content-Length"] = totalBytes.toStr()
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP chunks count=${chunks.count()} totalBytes=${totalBytes}`)
-        streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
-    else
-        responseHeaders["Content-Length"] = payloadSize.toStr()
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP payload start=${payloadStart} length=${payloadSize}`)
-        streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, path, payloadStart, payloadSize)
+    if totalBytes = invalid
+        totalBytes = 0
+        for each chunk in chunks
+            chunkLen = sabr_toInt(chunk?.length)
+            if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
+        end for
     end if
+    if totalBytes = invalid then totalBytes = 0
+    responseHeaders["Content-Length"] = totalBytes.toStr()
+    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP chunks count=${chunks.count()} totalBytes=${totalBytes}`)
+    streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
     if streamStatus <= 0
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
     end if
