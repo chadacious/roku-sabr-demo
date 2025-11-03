@@ -87,7 +87,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(m?.logs)
         requestTimer = m.logs.mark()
     end if
-    sessionKey = invalid
     requestStartMs = sabr_currentTimestampMs()
     timingInfo = CreateObject("roAssociativeArray")
     timingInfo["requestStartMs"] = requestStartMs
@@ -923,9 +922,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 metadataManager.store(metadataManager, `${nextRequestId}`, requestMetadataEntry)
                             end if
 
-                            prefetchInfo = sabr_buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
-                            sabr_maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
-
+                            
                             sabr_applyStreamInfoUpdates(playbackContext, requestMetadata.streamInfo, contentType, deliveredSegment, requestMetadataEntry)
                             if deliveredSegment = true
                                 sabr_storeStreamInfoForFormat(playbackContext, contentType, currentFormat, requestMetadata.streamInfo)
@@ -1007,10 +1004,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             "contentType": contentType
         }
         sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpBase}-meta.json`, FormatJson(responseInfo), m.logs)
-    end if
-
-    if isValid(sessionKey) and sessionKey <> ""
-        m.sabrActiveSessions.Delete(sessionKey)
     end if
 
     ' Cleanup temp files for proto/response
@@ -1700,23 +1693,6 @@ function sabr_buildPlayerTimeIndexKey(contentType as string, format as object) a
     return `${typeLabel}|${sabr_formatToKey(format)}`
 end function
 
-function sabr_parseFormatKey(formatKey as string) as object
-    sabr_traceCall("sabr_parseFormatKey")
-    info = {
-        "itag": invalid
-        "xtags": ""
-    }
-    if not isValid(formatKey) then return info
-    parts = formatKey.Split(":")
-    if parts.count() >= 1
-        info.itag = sabr_toInt(parts[0])
-    end if
-    if parts.count() >= 2
-        info.xtags = `${parts[1]}`
-    end if
-    return info
-end function
-
 ' Attempts to map the requested byte-range to a SIDX entry gathered from the
 ' init segment. Returns timing details when a match (or nearest predecessor) exists.
 function sabr_getSidxEntrySet(playbackContext as object, contentType as string, currentFormat as object) as dynamic
@@ -2183,58 +2159,8 @@ sub sabr_ensureInfrastructure()
     if not isValid(m.sabrRequestMetadataManager)
         m.sabrRequestMetadataManager = sabr_createRequestMetadataManager()
     end if
-    if not isValid(m.sabrActiveSessions)
-        m.sabrActiveSessions = CreateObject("roAssociativeArray")
-    end if
 end sub
 
-function sabr_buildPrefetchInfo(streamInfo as object, currentFormat as object, requestMetadataEntry as object) as object
-    sabr_traceCall("sabr_buildPrefetchInfo")
-    if not isValid(streamInfo) then return invalid
-    mediaHeader = streamInfo.mediaHeader
-    if not isValid(mediaHeader) then return invalid
-
-    startTimeMs = sabr_safeToInt(mediaHeader.startTimeMs)
-    durationMs = sabr_safeToInt(mediaHeader.durationMs)
-    endTimeMs = startTimeMs + durationMs
-    rangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry?.byteRange)
-
-    return {
-        "formatKey": sabr_formatToKey(currentFormat)
-        "endTimeMs": endTimeMs
-        "durationMs": durationMs
-        "byteRange": requestMetadataEntry?.byteRange
-        "rangeLabel": rangeLabel
-        "updatedAt": sabr_currentTimestampMs()
-        "requestNumber": requestMetadataEntry?.requestNumber
-    }
-end function
-
-sub sabr_maybeSchedulePrefetch(playbackContext as object, videoNode as object, prefetchInfo as object, contentType as string)
-    sabr_traceCall("sabr_maybeSchedulePrefetch")
-    if not isValid(playbackContext) then return
-    if not isValid(prefetchInfo) then return
-    if not isValid(videoNode) then return
-
-    currentPositionMs = int((videoNode.position ?? 0) * 1000)
-    remainingMs = prefetchInfo.endTimeMs - currentPositionMs
-
-    playbackContext["prefetchState"] = prefetchInfo
-
-    if remainingMs <= 5000 and remainingMs > -500
-        if prefetchInfo.prefetchLogged <> true
-            prefetchInfo.prefetchLogged = true
-            prefetchInfo.loggedAt = sabr_currentTimestampMs()
-            playbackContext["prefetchState"] = prefetchInfo
-            logTag = sabr_utilLogTag(contentType, prefetchInfo?.requestNumber)
-            rangeLabel = sabr_valueToLabel(prefetchInfo?.rangeLabel)
-            if rangeLabel = ""
-                rangeLabel = sabr_formatRequestedRangeForPath(prefetchInfo?.byteRange)
-            end if
-            sabr_log(m.logs, log_level_Type.INFO, `${logTag} Prefetch window reached for range ${rangeLabel}; remainingMs=${remainingMs}`)
-        end if
-    end if
-end sub
 
 function sabr_buildSegmentCacheKeyForRange(format as object, byteRange as object) as string
     sabr_traceCall("sabr_buildSegmentCacheKeyForRange")
@@ -2372,17 +2298,6 @@ sub sabr_logBufferedRanges(logTag as string, requestJson as object)
 
     sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} bufferedRanges=${summary.Join(" ")} selected=${selected.Join(",")}`)
 end sub
-
-function sabr_sessionKey(mediaIdHash as string, contentType as string, requestNumber as dynamic) as string
-    sabr_traceCall("sabr_sessionKey")
-    parts = []
-    mediaLabel = sabr_valueToLabel(mediaIdHash)
-    if mediaLabel <> "" then parts.push(mediaLabel)
-    typeLabel = sabr_valueToLabel(contentType)
-    if typeLabel <> "" then parts.push(typeLabel)
-    if requestNumber <> invalid then parts.push(`${requestNumber}`)
-    return sabr_joinWithPipe(parts)
-end function
 
 function sabr_storeStreamInfoForFormat(playbackContext as object, contentType as string, format as object, streamInfo as object) as void
     sabr_traceCall("sabr_storeStreamInfoForFormat")
@@ -2585,16 +2500,6 @@ function sabr_normalizeByteRange(rawRange as object, context = invalid as dynami
     end if
 
     return normalized
-end function
-
-function sabr_hasCompleteByteRange(byteRange as object) as boolean
-    sabr_traceCall("sabr_hasCompleteByteRange")
-    if not isValid(byteRange) then return false
-    startLabel = `${byteRange?.startRange ?? ""}`
-    if startLabel = "" then startLabel = `${byteRange?.start ?? ""}`
-    endLabel = `${byteRange?.endRange ?? ""}`
-    if endLabel = "" then endLabel = `${byteRange?.end ?? ""}`
-    return startLabel <> "" and endLabel <> ""
 end function
 
 function sabr_byteRangeToCoverage(byteRange as object) as dynamic
@@ -3105,20 +3010,6 @@ function sabr_isFileStreamingEnabled() as boolean
     return SABR_ENABLE_FILE_STREAMING = true
 end function
 
-function sabr_readSegmentRange(path as string, offset as integer, length as integer) as dynamic
-    sabr_traceCall("sabr_readSegmentRange")
-    if not IsString(path) or path = "" then return invalid
-    if length <= 0 then
-        empty = CreateObject("roByteArray")
-        return empty
-    end if
-    safeOffset = offset
-    if safeOffset = invalid or safeOffset < 0 then safeOffset = 0
-    bytes = CreateObject("roByteArray")
-    if bytes.ReadFile(path, safeOffset, length) <> true then return invalid
-    return bytes
-end function
-
 sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
     sabr_traceCall("sabr_applyStreamInfoUpdates")
     if not isValid(streamInfo) then return
@@ -3142,18 +3033,6 @@ sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object,
 
     if isValid(streamInfo.sabrContextSendingPolicy)
         playbackContext["sabrContextSendingPolicy"] = streamInfo.sabrContextSendingPolicy
-    end if
-
-    if isValid(streamInfo.sabrContextUpdate)
-        contexts = playbackContext["sabrContexts"]
-        if not isValid(contexts)
-            contexts = CreateObject("roAssociativeArray")
-        end if
-        contextType = streamInfo.sabrContextUpdate.type
-        if isValid(contextType)
-            contexts.AddReplace(contextType.toStr(), streamInfo.sabrContextUpdate)
-        end if
-        playbackContext["sabrContexts"] = contexts
     end if
 
     if isValid(streamInfo.formatInitMetadata)
@@ -3225,45 +3104,3 @@ sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
         sabr_log(logs, log_level_Type.DEBUG, `${logTag} UMP spool preview ${previewSummary}`)
     end if
 end sub
-
-function sabr_selectSpoolPart(spoolMap as object, requestedRange as object) as dynamic
-    sabr_traceCall("sabr_selectSpoolPart")
-    if not IsAssociativeArray(spoolMap) then return invalid
-    parts = spoolMap?.parts
-    if not IsArray(parts) or parts.count() = 0 then return invalid
-
-    normalizedRange = sabr_normalizeByteRange(requestedRange, invalid)
-    startVal = sabr_toInt(normalizedRange?.startRange)
-    if startVal = invalid then startVal = sabr_toInt(normalizedRange?.start)
-    endVal = sabr_toInt(normalizedRange?.endRange)
-    if endVal = invalid then endVal = sabr_toInt(normalizedRange?.end)
-
-    for each part in parts
-        header = part?.mediaHeader
-        if not IsAssociativeArray(header) then continue for
-
-        partStart = sabr_toInt(header?.startRange)
-        if partStart = invalid then partStart = sabr_toInt(header?.start)
-        contentLength = sabr_toInt(header?.contentLength)
-        if partStart = invalid or contentLength = invalid or contentLength <= 0 then continue for
-        partEnd = partStart + contentLength - 1
-
-        requestedEnd = endVal
-        if requestedEnd = invalid then requestedEnd = partEnd
-        if startVal <> invalid and startVal >= partStart and requestedEnd <= partEnd
-            payloadOffset = sabr_toInt(part?.payloadOffset)
-            if payloadOffset = invalid then payloadOffset = part?.payloadOffset
-            if payloadOffset = invalid then payloadOffset = 0
-            streamOffset = payloadOffset + (startVal - partStart)
-            return {
-                "streamOffset": streamOffset
-                "rangeStart": partStart
-                "rangeEnd": partEnd
-                "payloadSize": part?.payloadSize
-                "mediaHeader": header
-            }
-        end if
-    end for
-
-    return invalid
-end function
