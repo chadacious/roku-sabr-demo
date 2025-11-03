@@ -615,13 +615,43 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     end if
                                 end for
                             end if
+
+                            if IsAssociativeArray(segmentIndex)
+                                cacheKeyBase = `${contentType}|${sabr_toSafeString(keyParam)}`
+                                if not IsAssociativeArray(playbackContext?.initSegments)
+                                    playbackContext["initSegments"] = {}
+                                end if
+                                initCache = playbackContext.initSegments
+                                for each segKey in segmentIndex.Keys()
+                                    segEntry = segmentIndex.Lookup(segKey)
+                                    if IsAssociativeArray(segEntry) and segEntry?.isInitSeg = true
+                                        initPath = sabr_ump_materializeInitSegment(segEntry, responseFilePath, mediaIdHash, contentType, keyParam)
+                                        if IsString(initPath) and initPath <> ""
+                                            initCache[cacheKeyBase] = initPath
+                                        end if
+                                    end if
+                                end for
+                                playbackContext.initSegments = initCache
+                            end if
                         end if
 
                         spoolFetch = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
                         if IsAssociativeArray(spoolFetch)
+                            initPath = sabr_toSafeString(spoolFetch?.initPath)
                             spoolSegment = spoolFetch.spooledSegment
                             spoolChunks = spoolSegment?.chunks
-                            if IsArray(spoolChunks) and spoolChunks.count() > 0
+                            if initPath <> ""
+                                totalBytesForResponse = http_getFileSize(initPath)
+                                if totalBytesForResponse = invalid then totalBytesForResponse = 0
+                                coverageInfo = sabr_byteRangeToCoverage(requestByteRange)
+                                spoolResultForResponse = {
+                                    "path": initPath
+                                    "chunks": []
+                                    "totalBytes": totalBytesForResponse
+                                    "coverage": coverageInfo
+                                    "isInitSeg": true
+                                }
+                            else if IsArray(spoolChunks) and spoolChunks.count() > 0
                                 totalBytesForResponse = sabr_toInt(spoolSegment?.totalBytes)
                                 if spoolSegment?.isInitSeg = true
                                     trimmed = sabr_trimSegmentChunksForRange(spoolChunks, spoolSegment?.startRange, requestByteRange)

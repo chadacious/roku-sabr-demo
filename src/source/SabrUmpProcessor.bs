@@ -572,6 +572,42 @@ function sabr_ump_readSpoolPayload(path as string, offset as dynamic, length as 
     return bytes
 end function
 
+function sabr_ump_materializeInitSegment(entry as object, spoolPath as string, mediaIdHash as string, contentType as string, keyParam as string) as string
+    if not IsAssociativeArray(entry) then return ""
+    if entry?.isInitSeg <> true then return ""
+    if not IsString(spoolPath) or spoolPath = "" then return ""
+    if not IsString(mediaIdHash) or mediaIdHash = "" then return ""
+
+    payloadOffset = sabr_ump_toInt(entry?.payloadOffset)
+    payloadSize = sabr_ump_toInt(entry?.payloadSize)
+    if payloadOffset = invalid or payloadSize = invalid or payloadSize <= 0 then return ""
+
+    typeLabel = contentType
+    if not IsString(typeLabel) or typeLabel = "" then typeLabel = "unknown"
+
+    keyLabel = sabr_ump_toSafeString(keyParam)
+    if keyLabel = "" then keyLabel = "nokey"
+
+    itagLabel = sabr_ump_toSafeString(entry?.itag)
+    if itagLabel = "" then itagLabel = "noitag"
+
+    baseDir = `tmp:/${mediaIdHash}`
+    fs = CreateObject("roFileSystem")
+    fs.CreateDirectory(baseDir)
+    fileName = sabr_ump_sanitizeForFilename(`init-${typeLabel}-${keyLabel}-${itagLabel}.mp4`)
+    if fileName = "" then fileName = "init.mp4"
+    targetPath = `${baseDir}/${fileName}`
+
+    if fs.Exists(targetPath) then return targetPath
+
+    payloadBytes = sabr_ump_readSpoolPayload(spoolPath, payloadOffset, payloadSize)
+    if GetInterface(payloadBytes, "ifByteArray") = invalid or payloadBytes.count() = 0 then return ""
+
+    if payloadBytes.WriteFile(targetPath) <> true then return ""
+
+    return targetPath
+end function
+
 ' Pulls non-media UMP parts (policies, errors, redirects, etc.) out of the spool.
 '------------------------------------------------------------------------------
 ' Function : sabr_ump_extractControlParts
