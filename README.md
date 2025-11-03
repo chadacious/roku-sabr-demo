@@ -77,7 +77,7 @@ artifacts/                # Log and screenshot outputs from automation
 2. A SABR payload embedded in the manifest is decoded and cached under `tmp:/<mediaIdHash>/`.
 3. Manifest references to `sabr://` URLs are rewritten to local HTTP endpoints (`http://0.0.0.0:7011/` for video, `7012/` for audio).
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
-5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, stream media chunks directly to disk, store segment metadata via `SabrSimpleCache`, and feed playable data back to the Roku video stack without large in-memory buffers.
+5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, build in-memory spool maps (including SIDX data from init segments), and stream the requested byte ranges straight from the SABR spool file back to the Roku video stack without staging per-segment files.
 
 ## Player Time Strategies
 
@@ -116,15 +116,8 @@ For automated testing, the constant `DEFAULT_PLAYER_TIME_STRATEGY` (in `src/sour
 
 Both strategies ultimately write the resolved values back to `playbackContext` (`lastResolvedPlayerTimeMs` / `…Source`) for diagnostics and future fallbacks.
 
-## Cache Management & Culling
-Segment data is delivered into `tmp:/sabr-cache/<mediaIdHash>/…`. The cache is aggressively self-managed:
-
-- Every delivery marks the segment metadata (`delivered=true`, timestamps, seek guards). Once the guard window expires, a background maintenance pass removes the file.
-- Maintenance runs automatically at the start of each SABR request and after deliveries. It enforces a rolling **10 MB** quota (`SABR_CACHE_TOTAL_SIZE_LIMIT`) and evicts the oldest files when the total directory size exceeds the limit.
-- Delivered segments within the last ~1.5 s, or those that fall inside an active seek guard (e.g., after a rewind), are temporarily preserved to avoid thrash.
-- Metadata snapshots are logged (see `[SabrCache] state phase=… total=…`) so you can audit how many pending/delivered entries remain across maintenance runs.
-
-If playback stops and no further SABR requests arrive, the cached set remains untouched until the next request triggers maintenance. For automated cleanup you can issue a manual `sabr_cacheRunMaintenance("")` or rely on the next playback session to trim the directory.
+## Spool Streaming & Cleanup
+UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` scans that file to build an in-memory part map (payload offsets, byte ranges, SIDX data for init segments) and serves Roku requests by slicing the spool directly, skipping any non-MP4 bytes at part boundaries. Because segments are no longer materialized into `tmp:/sabr-cache`, the legacy cache maintenance routines are effectively no-ops. When a playback session finishes you can remove the entire `tmp:/<mediaIdHash>/` directory to reclaim space, or keep it around for debugging with the spool summary logs (`[YTSABR] UMP spool preview …`).
 
 ## Instrumentation & Debugging
 

@@ -25,7 +25,6 @@ import "pkg:/source/ytproto/generated/messages/VideoStreamingStreamerContextUnkn
 import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage1.brs"
 import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage2.brs"
 import "pkg:/source/SabrUmpProcessor.bs"
-import "pkg:/source/SabrSimpleCache.bs"
 import "pkg:/source/SabrRequestMetadataManager.bs"
 import "pkg:/source/isItem.bs"
 import "pkg:/source/httpRequest.bs"
@@ -37,10 +36,6 @@ import "pkg:/source/taskUtils.bs"
 const SABR_REPEAT_SEGMENT_THRESHOLD = 4
 ' Time window (ms) for repeat guard to track duplicate requests
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
-' Size of chunks when streaming UMP payloads from the Roku socket
-const SABR_UMP_STREAM_CHUNK_SIZE = 131072
-' Max number of ByteArray buffers kept in the chunk pool
-const SABR_CHUNK_BUFFER_POOL_LIMIT = 6
 ' Base limit for buffered ranges reported to SABR per content type
 const SABR_BASE_BUFFERED_RANGE_LIMIT = 1
 
@@ -260,36 +255,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Spool map miss key=${spoolKey} requestRange=${requestByteRange?.startRange}-${requestByteRange?.endRange}`)
         else
             ' immediately stream this identified spooled segment to the player through the socket
-            ' requestMetadataEntry = {
-            '     "requestNumber": nextRequestId
-            '     "isInit": spooledSegment.isInitSeg
-            '     "byteRange": {
-            '         "start": coverageStart
-            '         "end": coverageEnd
-            '         "startRange": coverageStart
-            '         "endRange": coverageEnd
-            '         "sequenceNumber": spooledSegment.mediaHeader.sequenceNumber
-            '         "segmentIndexInfo": invalid ' requestByteRange.DoesExist("segmentIndexInfo") ? requestByteRange.segmentIndexInfo : invalid
-            '     }
-            '     "format": currentFormat
-            '     "contentType": contentType
-            '     "mediaIdHash": mediaIdHash
-            '     "cacheKey": spoolKey
-            '     "streamInfo": streamInfoForFormat
-            '     "timestamp": sabr_currentTimestampMs()
-            '     "debugUploadUrl": debugUploadUrl
-            '     "sabrKey": keyParam
-            '     "requestPath": request.path
-            ' }
-            ' umpResult = {
-            '     "path": spooledSegment.path
-            '     "coverage": {
-            '         "rangeStart": coverageStart
-            '         "rangeEnd": coverageEnd
-            '     }
-            ' }
-            ' response = sabr_buildResponseForPlayer(requestMetadataEntry, umpResult, currentFormat, requestByteRange, contentType)
-            ' return response
             chunks = spooledSegment?.chunks
             totalBytes = sabr_toInt(spooledSegment?.totalBytes)
             if totalBytes = invalid
@@ -448,7 +413,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     if pruneCutoffMs <> invalid or targetSegmentIndex <> invalid
         sabr_pruneBufferedRangesForSeekBack(bufferState, contentType, targetSegmentIndex, pruneCutoffMs, requestLogTag)
-        sabr_cacheUpdateProgressForSeek(contentType, currentFormat, targetSegmentIndex, pruneRangeStart, pruneCutoffMs)
     else if seekBackDetected and isValid(m?.logs)
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Seek-back detected but no pruning constraints available`)
     end if
@@ -480,8 +444,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     sabr_logBufferedRanges(requestLogTag, sabrRequestJson)
 
-    cacheKey = sabr_buildCacheKey(mediaIdHash, contentType, currentFormat, requestByteRange, isInitSegmentRequest)
-
     requestMetadataEntry = {
         "requestNumber": nextRequestId
         "isInit": isInitSegmentRequest
@@ -496,7 +458,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         "format": currentFormat
         "contentType": contentType
         "mediaIdHash": mediaIdHash
-        "cacheKey": cacheKey
         "streamInfo": streamInfoForFormat
         "timestamp": sabr_currentTimestampMs()
         "debugUploadUrl": debugUploadUrl
@@ -524,109 +485,13 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         return repeatGuardResponse
     end if
 
-    cacheHit = false
-    cacheLookupRange = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
-    cacheLookupLabel = `${cacheKey ?? ""}`
-    if cacheLookupLabel = "" then cacheLookupLabel = "none"
-    sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cache lookup start sabr_isInit=${isInitSegmentRequest} key=${cacheLookupLabel} range=${cacheLookupRange}`)
-
-    cacheEntry = sabr_cacheLoadSegment({
-        "mediaIdHash": mediaIdHash
-        "contentType": contentType
-        "itag": currentFormat?.itag
-        "trackId": currentFormat?.audioTrackId
-        "requestedStart": requestMetadataEntry.byteRange?.startRange
-        "requestedEnd": requestMetadataEntry.byteRange?.endRange
-        "isInit": isInitSegmentRequest
-    })
-
-    cacheBody = invalid
-    cacheBodyCount = 0
-    cachePath = ""
-    if IsAssociativeArray(cacheEntry)
-        cacheBody = cacheEntry?.data
-        if GetInterface(cacheBody, "ifByteArray") = invalid
-            cacheBody = CreateObject("roByteArray")
-        end if
-        cacheBodyCount = cacheBody.count()
-        cachePath = sabr_toSafeString(cacheEntry?.path)
-        if cacheBodyCount <= 0 and cachePath <> ""
-            pathLength = sabr_toInt(cacheEntry?.dataLength)
-            if pathLength = invalid
-                pathLength = sabr_fsGetFileSize(cachePath)
-            end if
-            if pathLength <> invalid and pathLength > 0
-                cacheBodyCount = pathLength
-            end if
-        end if
-    end if
-
-    if IsAssociativeArray(cacheEntry) and (cacheBodyCount > 0 or cachePath <> "")
-        if not isValid(requestMetadataEntry.streamInfo)
-            storedInfo = sabr_fetchStreamInfoForFormat(playbackContext, contentType, currentFormat)
-            if isValid(storedInfo)
-                requestMetadataEntry["streamInfo"] = storedInfo
-            else if isValid(playbackContext.lastSabrStreamInfo)
-                requestMetadataEntry["streamInfo"] = playbackContext.lastSabrStreamInfo
-            end if
-        end if
-
-        cachedResult = {
-            "data": cacheBody
-            "done": true
-            "coverage": {
-                "rangeStart": cacheEntry.rangeStart
-                "rangeEnd": cacheEntry.rangeEnd
-            }
-        }
-        if IsAssociativeArray(cacheEntry?.coverage)
-            cachedResult["coverage"] = cacheEntry.coverage
-        end if
-        if cacheEntry.DoesExist("coverageStart") then cachedResult["coverageStart"] = cacheEntry.coverageStart
-        if cacheEntry.DoesExist("coverageEnd") then cachedResult["coverageEnd"] = cacheEntry.coverageEnd
-        if cachePath <> "" then cachedResult["path"] = cachePath
-        if cacheEntry.DoesExist("dataLength") then cachedResult["dataLength"] = cacheEntry.dataLength
-
-        if cacheEntry?.path <> ""
-            playerTimeForDelivery = sabr_toInt(requestMetadataEntry?.playerTimeMs)
-            if playerTimeForDelivery = invalid or playerTimeForDelivery < 0
-                playerTimeForDelivery = sabr_toInt(playbackContext?.lastResolvedPlayerTimeMs)
-            end if
-            if playerTimeForDelivery = invalid or playerTimeForDelivery < 0
-                playerTimeForDelivery = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
-            end if
-            sabr_cacheMarkDeliveredByPath(cacheEntry.path, "cache-hit-response", {
-                "contentType": contentType,
-                "itag": currentFormat?.itag,
-                "trackId": currentFormat?.audioTrackId,
-                "mediaIdHash": mediaIdHash,
-                "playerTimeMs": playerTimeForDelivery
-            })
-        end if
-
-        response = sabr_buildResponseForPlayer(requestMetadataEntry, cachedResult, currentFormat, requestByteRange, contentType)
-        prefetchInfo = sabr_buildPrefetchInfo(requestMetadataEntry.streamInfo, currentFormat, requestMetadataEntry)
-        sabr_maybeSchedulePrefetch(playbackContext, videoNode, prefetchInfo, contentType)
-        cacheHit = true
-        pathLabel = cacheEntry?.path ?? ""
-        if pathLabel <> "" and pathLabel.InStr("/") >= 0
-            parts = pathLabel.Split("/")
-            pathLabel = parts[parts.count() - 1]
-        end if
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Cache hit path=${pathLabel} range=${cacheLookupRange} bytes=${cacheBodyCount}`)
-    end if
-
-    ' Track cache misses for logging
-    if cacheHit = false
-        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cache miss key=${cacheLookupLabel} range=${cacheLookupRange}`)
-    end if
     batchCounter = m.top.utilsTask.callFunc("getNextId", "sabrBatchCounter")
     playbackContext["lastDumpIndex"] = batchCounter
     requestMetadataEntry["batchIndex"] = batchCounter
 
     ' Build and send SABR request when cache misses
     ' Build and send SABR request when cache misses
-    if ok and not cacheHit
+    if ok
         if not isInitSegmentRequest and isValid(currentFormat)
             sabrRequestJson.selectedFormatIds.push(currentFormat)
         end if
@@ -767,11 +632,22 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     segmentInfo = invalid
                     umpResult = invalid
                     segmentScanSummary = invalid
-                    totalBytesRead = 0
-                    chunkIndex = 0
-                    processTimer = invalid
-                    requestMetadata = invalid
                     spoolResultForResponse = invalid
+                    requestMetadata = {
+                        "isUMP": true
+                        "isSABR": true
+                        "isInit": isInitSegmentRequest
+                        "requestNumber": nextRequestId
+                        "format": currentFormat
+                        "streamInfo": {}
+                        "debugUploadUrl": debugUploadUrl
+                        "mediaIdHash": mediaIdHash
+                        "contentType": contentType
+                        "umpMode": "target"
+                    }
+                    if IsAssociativeArray(requestMetadataEntry.byteRange)
+                        requestMetadata["byteRange"] = requestMetadataEntry.byteRange
+                    end if
 
                     if isValid(responseFilePath) and responseFilePath <> ""
                         spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16, keyParam)
@@ -842,126 +718,36 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 end if
                             end if
                         end if
-                        requestMetadata = {
-                            "isUMP": true
-                            "isSABR": true
-                            "isInit": isInitSegmentRequest
-                            "requestNumber": nextRequestId
-                            "format": currentFormat
-                            "streamInfo": {}
-                            "cacheKey": cacheKey
-                            "debugUploadUrl": debugUploadUrl
-                            "mediaIdHash": mediaIdHash
-                            "contentType": contentType
-                            "umpMode": "target"
-                        }
-                        requestMetadata["chunkBufferPool"] = sabr_chunkBufferPool()
-                        requestMetadata["chunkBufferPoolLimit"] = SABR_CHUNK_BUFFER_POOL_LIMIT
 
-                        if IsAssociativeArray(requestMetadataEntry.byteRange)
-                            requestMetadata["byteRange"] = requestMetadataEntry.byteRange
-                        end if
-
-                        if isValid(m?.logs)
-                            processTimer = m.logs.mark()
-                        end if
-                        chunkSize = SABR_UMP_STREAM_CHUNK_SIZE
-                        if chunkSize <= 0 then chunkSize = 131072
-                        requestMetadata["umpChunkSize"] = chunkSize
-
-                        sessionKey = ""
-                        sessionRecord = invalid
-                        if IsAssociativeArray(m.sabrActiveSessions)
-                            sessionKey = sabr_sessionKey(mediaIdHash, contentType, nextRequestId)
-                            sessionRecord = {
-                                "mediaIdHash": mediaIdHash
-                                "contentType": contentType
-                                "requestNumber": nextRequestId
-                                "createdAt": sabr_currentTimestampMs()
-                                "targetRange": requestMetadataEntry.byteRange
-                                "active": true
-                            }
-                            m.sabrActiveSessions[sessionKey] = sessionRecord
-                        end if
-
-                        try
-                            sabrUmpProcessor = sabr_ump_createProcessor(requestMetadata, m.logs)
-                            fileOffset = 0
-                            targetSegmentReady = false
-                            while true
-                                chunkBytes = sabr_acquireChunkBuffer()
-                                readOk = chunkBytes.ReadFile(responseFilePath, fileOffset, chunkSize)
-                                if readOk <> true
-                                    sabr_releaseChunkBuffer(chunkBytes)
-                                    exit while
+                        controlEffects = sabr_ump_extractControlParts(spoolMap, responseFilePath)
+                        streamInfoSeed = {}
+                        if IsAssociativeArray(controlEffects)
+                            if isValid(controlEffects.nextRequestPolicy)
+                                streamInfoSeed["nextRequestPolicy"] = controlEffects.nextRequestPolicy
+                                cookieProto = controlEffects.nextRequestPolicy?.playbackCookie
+                                if isValid(cookieProto)
+                                    requestMetadata["playbackCookie"] = PlaybackCookieEncode(cookieProto)
                                 end if
-                                chunkLength = chunkBytes.Count()
-                                if chunkLength <= 0
-                                    sabr_releaseChunkBuffer(chunkBytes)
-                                    exit while
-                                end if
-
-                                totalBytesRead = totalBytesRead + chunkLength
-                                chunkIndex = chunkIndex + 1
-                                chunkResult = sabrUmpProcessor.processChunk(chunkBytes)
-                                if isValid(chunkResult) and chunkResult.done = true
-                                    if chunkResult?.error <> invalid and chunkResult.error <> ""
-                                        fatalReason = `SABR processing error: ${chunkResult.error}`
-                                        if not isValid(umpResult) then umpResult = chunkResult
-                                        sabr_releaseChunkBuffer(chunkBytes)
-                                        exit while
-                                    else if not isValid(umpResult)
-                                        umpResult = chunkResult
-                                        targetSegmentReady = true
-                                        readyMs = sabr_currentTimestampMs()
-                                        timingInfo["targetReadyMs"] = readyMs
-                                        timingInfo["targetReadyChunk"] = chunkIndex
-                                        if queuedAtValue <> invalid
-                                            readyDelay = readyMs - queuedAtValue
-                                            timingInfo["queuedToReadyMs"] = readyDelay
-                                            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Target segment ready after chunk ${chunkIndex}; exiting UMP stream early queueDelay=${readyDelay}ms`)
-                                        else
-                                            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Target segment ready after chunk ${chunkIndex}; exiting UMP stream early`)
-                                        end if
-                                        sabr_releaseChunkBuffer(chunkBytes)
-                                        exit while
-                                    end if
-                                end if
-
-                                fileOffset = fileOffset + chunkLength
-                                if chunkLength < chunkSize or fatalReason <> "" then exit while
-                            end while
-
-                            if fatalReason = "" and not targetSegmentReady
-                                segmentInfo = sabrUmpProcessor.getSegmentInfo()
                             end if
-                            if sabrUmpProcessor.DoesExist("getSegmentScanSummary") and not targetSegmentReady
-                                segmentScanSummary = sabrUmpProcessor.getSegmentScanSummary()
+                            if isValid(controlEffects.sabrContextUpdate)
+                                streamInfoSeed["sabrContextUpdate"] = controlEffects.sabrContextUpdate
                             end if
-                        catch e
-                            fatalReason = e?.message ?? ""
-                            if fatalReason = "" then fatalReason = `${e}`
-                            if fatalReason = "" then fatalReason = "SABR init processing failed"
-                        end try
-                        if sessionKey <> ""
-                            sessionRecord = m.sabrActiveSessions.Lookup(sessionKey)
-                            if IsAssociativeArray(sessionRecord)
-                                sessionRecord.active = false
-                                sessionRecord.completedAt = sabr_currentTimestampMs()
-                                m.sabrActiveSessions[sessionKey] = sessionRecord
-                            else
-                                m.sabrActiveSessions.Delete(sessionKey)
+                            if isValid(controlEffects.sabrContextSendingPolicy)
+                                streamInfoSeed["sabrContextSendingPolicy"] = controlEffects.sabrContextSendingPolicy
+                            end if
+                            if isValid(controlEffects.redirect)
+                                streamInfoSeed["redirect"] = controlEffects.redirect
+                            end if
+                            if isValid(controlEffects.reloadPlaybackContext)
+                                streamInfoSeed["reloadPlaybackContext"] = controlEffects.reloadPlaybackContext
+                            end if
+                            if isValid(controlEffects.sabrError)
+                                requestMetadata["error"] = { "sabrError": controlEffects.sabrError }
+                                fatalReason = "SABR error received"
+                                sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} SABR error received: ${FormatJson(controlEffects.sabrError)}`, false)
                             end if
                         end if
-
-                        if processTimer <> invalid
-                            m.logs.printTime(log_level_Type.INFO, `${requestLogTag} UMP processing duration`, processTimer, -1)
-                        end if
-                        if totalBytesRead > 0
-                            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} SABR UMP streamed response bytes=${totalBytesRead} chunks=${chunkIndex}`)
-                        else
-                            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} SABR UMP response file empty or unreadable: ${responseFilePath}`, false)
-                        end if
+                        requestMetadata["streamInfo"] = streamInfoSeed
                     else
                         fatalReason = "SABR UMP response path missing"
                         sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} ${fatalReason}`, false)
@@ -1040,15 +826,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                         if not isValid(umpResult)
                             pendingSummary = []
                             processedParts = []
-                            if IsAssociativeArray(sabrUmpProcessor)
-                                if sabrUmpProcessor.DoesExist("getPendingSegmentsSummary")
-                                    pendingSummary = sabrUmpProcessor.getPendingSegmentsSummary()
-                                end if
-                                if sabrUmpProcessor.DoesExist("getProcessedPartTypes")
-                                    processedParts = sabrUmpProcessor.getProcessedPartTypes()
-                                end if
-                            end if
-
                             streamInfoKeys = []
                             if IsAssociativeArray(requestMetadata?.streamInfo)
                                 for each infoKey in requestMetadata.streamInfo
@@ -1072,7 +849,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
                             coverageInfo = umpResult?.coverage
                             deliveredSegment = false
-                            storagePath = ""
                             if isValid(umpResult?.data) and GetInterface(umpResult.data, "ifByteArray") <> invalid
                                 segmentBytes = umpResult.data
                                 deliveredSegment = segmentBytes.count() > 0
@@ -1101,31 +877,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         requestMetadata.streamInfo["deliveredCoverage"] = coverageRange
                                     end if
                                     playerTimeForStore = sabr_toInt(playerTimeOverride)
-                                    coverageForStore = coverageRange
-                                    if not isValid(coverageForStore) and isValid(coverageInfo)
-                                        coverageForStore = coverageInfo
-                                    end if
-                                    storageInfo = sabr_cacheStoreSegment({
-                                        "mediaIdHash": mediaIdHash
-                                        "contentType": contentType
-                                        "itag": currentFormat?.itag
-                                        "bytes": segmentBytes
-                                        "coverage": coverageForStore
-                                        "playerTimeMs": playerTimeForStore
-                                        "streamInfo": requestMetadata.streamInfo
-                                        "cacheKey": cacheKey
-                                        "formatKey": sabr_formatToKey(currentFormat)
-                                    })
-                                    storagePath = storageInfo?.path ?? ""
-                                    if deliveredSegment = true and storagePath <> ""
-                                        sabr_cacheMarkDeliveredByPath(storagePath, "direct-response", {
-                                            "contentType": contentType,
-                                            "itag": currentFormat?.itag,
-                                            "trackId": currentFormat?.audioTrackId,
-                                            "mediaIdHash": mediaIdHash,
-                                            "playerTimeMs": playerTimeForStore
-                                        })
-                                        sabr_cacheUpdateProgressForSeek(contentType, currentFormat, requestMetadataEntry?.sequenceNumber, coverageRange?.rangeStart, playerTimeForStore)
+                                    if playerTimeForStore <> invalid and playerTimeForStore >= 0
+                                        requestMetadataEntry["playerTimeMs"] = playerTimeForStore
                                     end if
                                 end if
                             else if IsArray(umpResult?.chunks)
@@ -1171,7 +924,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     if playerTimeForStore = invalid or playerTimeForStore < 0
                                         playerTimeForStore = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
                                     end if
-                                    sabr_cacheUpdateProgressForSeek(contentType, currentFormat, requestMetadataEntry?.sequenceNumber, coverageRange?.rangeStart, playerTimeForStore)
+                                    if playerTimeForStore <> invalid and playerTimeForStore >= 0
+                                        requestMetadataEntry["playerTimeMs"] = playerTimeForStore
+                                    end if
                                 end if
                             end if
 
@@ -1258,7 +1013,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         responseInfo = {
             "status": response.status
             "headers": response.headers
-            "cacheKey": cacheKey
             "isInit": isInitSegmentRequest
             "requestNumber": nextRequestId
             "contentType": contentType
@@ -1340,84 +1094,7 @@ function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType a
             sabr_log(m.logs, log_level_Type.DEBUG, `[SabrBuffer] bufferedRange=${FormatJson(spoolRange)}`)
         end if
         ranges.push(spoolRange)
-        return ranges
     end if
-
-    entries = sabr_cacheListEntries(mediaIdHash, formatType, activeFormat?.itag, activeFormat?.audioTrackId ?? "")
-    if not IsArray(entries) or entries.count() = 0 then return ranges
-
-    segmentEntries = []
-    for each entry in entries
-        if entry?.isInit = true then continue for
-        segmentEntries.push(entry)
-    end for
-    if segmentEntries.count() = 0 then return ranges
-
-    sortedEntries = sabr_sortCacheEntriesBySegment(segmentEntries)
-    collected = []
-    seen = {}
-    rangeCap = sabr_bufferingRangeLimit()
-    targetStart = invalid
-    if IsAssociativeArray(targetByteRange)
-        targetStart = sabr_toInt(targetByteRange?.startRange)
-        if targetStart = invalid then targetStart = sabr_toInt(targetByteRange?.start)
-        if targetStart = invalid then targetStart = sabr_toInt(targetByteRange?.rangeStart)
-    end if
-
-    if targetStart = invalid
-        for idx = sortedEntries.count() - 1 to 0 step -1
-            if sabr_collectAddRangeEntry(sortedEntries[idx], activeFormat, formatType, seen, collected)
-                if rangeCap > 0 and collected.count() >= rangeCap
-                    exit for
-                end if
-            end if
-        end for
-    else
-        candidateIndex = -1
-        total = sortedEntries.count()
-        for idx = 0 to total - 1
-            entry = sortedEntries[idx]
-            entryStart = sabr_toInt(entry?.rangeStart)
-            if entryStart = invalid then entryStart = sabr_toInt(entry?.startRange)
-            if entryStart = invalid then entryStart = sabr_toInt(entry?.startSegmentIndex)
-            if entryStart = invalid then entryStart = sabr_toInt(entry?.sequenceNumber)
-            if entryStart = invalid then entryStart = sabr_toInt(entry?.segmentIndex)
-            if entryStart <> invalid
-                if entryStart <= targetStart
-                    candidateIndex = idx
-                else if entryStart > targetStart
-                    exit for
-                end if
-            end if
-        end for
-        if candidateIndex < 0 then candidateIndex = 0
-        if candidateIndex > total - 1 then candidateIndex = total - 1
-
-        for idx = candidateIndex to 0 step -1
-            if sabr_collectAddRangeEntry(sortedEntries[idx], activeFormat, formatType, seen, collected)
-                if rangeCap > 0 and collected.count() >= rangeCap
-                    exit for
-                end if
-            end if
-        end for
-
-        if rangeCap <= 0 or collected.count() < rangeCap
-            for idx = candidateIndex + 1 to total - 1
-                if sabr_collectAddRangeEntry(sortedEntries[idx], activeFormat, formatType, seen, collected)
-                    if rangeCap > 0 and collected.count() >= rangeCap
-                        exit for
-                    end if
-                end if
-            end for
-        end if
-    end if
-
-    if collected.count() > 0
-        for idx = collected.count() - 1 to 0 step -1
-            ranges.push(collected[idx])
-        end for
-    end if
-
     return ranges
 end function
 
@@ -1525,27 +1202,6 @@ function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType 
     end if
 
     return sabr_buildBufferedRangeFromMetadata(metadata)
-end function
-
-function sabr_collectAddRangeEntry(entry as object, activeFormat as object, formatType as string, seen as object, dest as object) as boolean
-    if not IsAssociativeArray(entry) then return false
-    if not IsArray(dest) then return false
-    metadata = sabr_buildMetadataFromCacheEntry(entry, activeFormat, formatType)
-    rangeEntry = sabr_buildBufferedRangeFromMetadata(metadata)
-    if not isValid(rangeEntry) then return false
-
-    startKey = rangeEntry?.startSegmentIndex
-    if startKey = invalid then startKey = rangeEntry?.rangeStart
-    label = `${startKey ?? ""}`
-    if label <> "" and IsAssociativeArray(seen)
-        if seen.DoesExist(label)
-            return false
-        end if
-        seen[label] = true
-    end if
-
-    dest.push(rangeEntry)
-    return true
 end function
 
 ' Applies the active buffering mode to the state passed to SABR, optionally
@@ -2961,209 +2617,6 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     end if
 end sub
 
-function sabr_sortCacheEntriesBySegment(entries as object) as object
-    if not IsArray(entries) then return entries
-    sorted = []
-    for each item in entries
-        sorted.push(item)
-    end for
-    total = sorted.count()
-    if total <= 1 then return sorted
-
-    for i = 0 to total - 2
-        for j = i + 1 to total - 1
-            left = sorted[i]
-            right = sorted[j]
-            leftIndex = sabr_toInt(left?.startSegmentIndex)
-            if leftIndex = invalid then leftIndex = sabr_toInt(left?.sequenceNumber)
-            if leftIndex = invalid then leftIndex = sabr_toInt(left?.rangeStart)
-            rightIndex = sabr_toInt(right?.startSegmentIndex)
-            if rightIndex = invalid then rightIndex = sabr_toInt(right?.sequenceNumber)
-            if rightIndex = invalid then rightIndex = sabr_toInt(right?.rangeStart)
-            if leftIndex = invalid then leftIndex = 2147483647
-            if rightIndex = invalid then rightIndex = 2147483647
-            if rightIndex < leftIndex
-                temp = sorted[i]
-                sorted[i] = sorted[j]
-                sorted[j] = temp
-            end if
-        end for
-    end for
-    return sorted
-end function
-
-function sabr_entryItagValue(entry as object) as dynamic
-    if not IsAssociativeArray(entry) then return invalid
-    raw = entry?.itag
-    if not isValid(raw) then return invalid
-    if IsInteger(raw) then return raw
-    if IsFloat(raw) or IsDouble(raw) then return int(raw)
-    if IsString(raw)
-        trimmed = raw.trim()
-        if trimmed = "" then return invalid
-        parsed = sabr_toInt(trimmed)
-        if parsed <> invalid then return parsed
-        return trimmed
-    end if
-    return raw
-end function
-
-function sabr_copyFormatId(source as object) as object
-    if not IsAssociativeArray(source) then return invalid
-    copy = {}
-    for each key in source
-        copy[key] = source[key]
-    end for
-    return copy
-end function
-
-function sabr_resolveFormatIdForCacheEntry(entry as object, fallback as dynamic, activeFormat as object) as object
-    formatId = invalid
-    if IsAssociativeArray(fallback)
-        fallbackId = fallback?.formatId
-        if IsAssociativeArray(fallbackId)
-            formatId = sabr_copyFormatId(fallbackId)
-        end if
-    end if
-
-    entryItag = sabr_entryItagValue(entry)
-    if entryItag <> invalid
-        if not IsAssociativeArray(formatId)
-            formatId = {}
-        end if
-        formatId["itag"] = entryItag
-    end if
-
-    if IsAssociativeArray(formatId)
-        existingXtags = invalid
-        if formatId.DoesExist("xtags")
-            existingXtags = formatId.Lookup("xtags")
-        end if
-        xtagsMissing = true
-        if isValid(existingXtags)
-            xtagsMissing = sabr_valueToLabel(existingXtags) = ""
-        end if
-        if xtagsMissing
-            candidate = invalid
-            if IsAssociativeArray(fallback?.formatId) and fallback.formatId.DoesExist("xtags")
-                candidate = fallback.formatId.Lookup("xtags")
-            else if isValid(activeFormat?.xtags)
-                candidate = activeFormat.xtags
-            end if
-            if isValid(candidate) then formatId["xtags"] = candidate
-        end if
-        existingLastModified = invalid
-        if formatId.DoesExist("lastModified")
-            existingLastModified = formatId.Lookup("lastModified")
-        end if
-        lastModifiedMissing = true
-        if isValid(existingLastModified)
-            lastModifiedMissing = sabr_valueToLabel(existingLastModified) = ""
-        end if
-        if lastModifiedMissing
-            candidate = invalid
-            if IsAssociativeArray(fallback?.formatId) and fallback.formatId.DoesExist("lastModified")
-                candidate = fallback.formatId.Lookup("lastModified")
-            else if isValid(activeFormat?.lastModified)
-                candidate = activeFormat.lastModified
-            end if
-            if isValid(candidate) then formatId["lastModified"] = candidate
-        end if
-    else
-        formatId = sabr_formatToFormatId(activeFormat)
-    end if
-
-    if not IsAssociativeArray(formatId)
-        formatId = sabr_formatToFormatId(activeFormat)
-    end if
-
-    return formatId
-end function
-
-' Convert a local cache entry + metadata blob into the shape expected by SABR
-' buffering logic (mirrors SegmentInitializationMetadata proto fields).
-function sabr_buildMetadataFromCacheEntry(entry as object, activeFormat as object, formatType as string) as dynamic
-    if not IsAssociativeArray(entry) then return invalid
-
-    metadata = {}
-    metadata["formatId"] = sabr_resolveFormatIdForCacheEntry(entry, entry, activeFormat)
-
-    rangeStartVal = sabr_toInt(entry?.rangeStart)
-    rangeEndVal = sabr_toInt(entry?.rangeEnd)
-
-    startIndex = sabr_toInt(entry?.startSegmentIndex)
-    if startIndex = invalid then startIndex = sabr_toInt(entry?.sequenceNumber)
-    if startIndex = invalid and rangeStartVal <> invalid then startIndex = rangeStartVal
-    if startIndex = invalid then return invalid
-
-    endIndex = sabr_toInt(entry?.endSegmentIndex)
-    if endIndex = invalid then endIndex = sabr_toInt(entry?.sequenceNumber)
-    if endIndex = invalid then endIndex = startIndex
-
-    startTimeVal = sabr_toInt(entry?.startTimeMs)
-    if startTimeVal = invalid then startTimeVal = sabr_toInt(entry?.startMs)
-    startTicksVal = sabr_toInt(entry?.startTicks)
-    durationMsVal = sabr_toInt(entry?.durationMs)
-    durationTicksVal = sabr_toInt(entry?.durationTicks)
-
-    timescaleVal = sabr_toInt(entry?.timescale)
-    if timescaleVal = invalid or timescaleVal <= 0
-        timescaleVal = sabr_toInt(entry?.timeRange?.timescale)
-    end if
-    if timescaleVal = invalid or timescaleVal <= 0
-        if formatType = "AUDIO"
-            timescaleVal = 48000
-        else
-            timescaleVal = 1000
-        end if
-    end if
-
-    if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal > 0
-        startTimeVal = int((startTicksVal * 1000) / timescaleVal)
-    end if
-    if startTicksVal = invalid and startTimeVal <> invalid and timescaleVal > 0
-        startTicksVal = int((startTimeVal * timescaleVal) / 1000)
-    end if
-
-    if durationMsVal = invalid and durationTicksVal <> invalid and timescaleVal > 0
-        durationMsVal = int((durationTicksVal * 1000) / timescaleVal)
-    end if
-    if durationTicksVal = invalid and durationMsVal <> invalid and timescaleVal > 0
-        durationTicksVal = int((durationMsVal * timescaleVal) / 1000)
-    end if
-
-    if startTimeVal = invalid then startTimeVal = 0
-    if startTimeVal < 0 then startTimeVal = 0
-    if durationMsVal = invalid then durationMsVal = 0
-    if durationMsVal < 0 then durationMsVal = 0
-    if startTicksVal = invalid then startTicksVal = int((startTimeVal * timescaleVal) / 1000)
-    if durationTicksVal = invalid then durationTicksVal = int((durationMsVal * timescaleVal) / 1000)
-    if startTicksVal = invalid then startTicksVal = 0
-    if startTicksVal < 0 then startTicksVal = 0
-    if durationTicksVal = invalid then durationTicksVal = 0
-    if durationTicksVal < 0 then durationTicksVal = 0
-
-    metadata["startSequenceNumber"] = startIndex
-    metadata["endSequenceNumber"] = endIndex
-    metadata["sequenceNumber"] = sabr_toInt(entry?.sequenceNumber)
-    if metadata["sequenceNumber"] = invalid then metadata["sequenceNumber"] = startIndex
-
-    metadata["startTimeMs"] = startTimeVal.toStr()
-    metadata["startMs"] = metadata["startTimeMs"]
-    metadata["durationMs"] = durationMsVal.toStr()
-    metadata["timescale"] = timescaleVal
-    metadata["timeRange"] = {
-        "timescale": timescaleVal
-        "startTicks": startTicksVal
-        "durationTicks": durationTicksVal
-    }
-
-    if rangeStartVal <> invalid then metadata["rangeStart"] = rangeStartVal
-    if rangeEndVal <> invalid then metadata["rangeEnd"] = rangeEndVal
-
-    return metadata
-end function
-
 function sabr_isInit(contentType as string, format as object, requestByteRange as object, requestRef = invalid as dynamic) as boolean
     logTag = sabr_utilLogTag(contentType, requestRef)
     if sabr_rangesMatch(format?.initRange, requestByteRange)
@@ -3188,9 +2641,6 @@ function sabr_extractMediaIdHash(url as string) as dynamic
 end function
 
 sub sabr_ensureInfrastructure()
-    sabr_cacheSetLogger(m.logs)
-    sabr_cacheEnsureBasePath()
-    sabr_cacheRunMaintenance("")
     if not isValid(m.sabrRequestMetadataManager)
         m.sabrRequestMetadataManager = sabr_createRequestMetadataManager()
     end if
@@ -3198,48 +2648,6 @@ sub sabr_ensureInfrastructure()
         m.sabrActiveSessions = CreateObject("roAssociativeArray")
     end if
 end sub
-
-function sabr_buildCacheKey(mediaIdHash as string, contentType as string, format as object, byteRange as object, isInitSegment as boolean) as string
-    keyParts = []
-
-    mediaIdLabel = sabr_valueToLabel(mediaIdHash)
-    if mediaIdLabel <> "" then keyParts.push(mediaIdLabel)
-
-    contentTypeLabel = sabr_valueToLabel(contentType)
-    if contentTypeLabel <> "" then keyParts.push(contentTypeLabel)
-
-    itagLabel = sabr_valueToLabel(format?.itag)
-    if itagLabel = "" then itagLabel = sabr_valueToLabel(format?.formatId?.itag)
-    if itagLabel <> "" then keyParts.push(itagLabel)
-
-    xtagsLabel = sabr_valueToLabel(format?.xtags)
-    if xtagsLabel = "" and isValid(format?.formatId)
-        xtagsLabel = sabr_valueToLabel(format.formatId?.xtags)
-    end if
-    if xtagsLabel <> "" then keyParts.push(xtagsLabel)
-
-    trackLabel = sabr_valueToLabel(format?.audioTrackId)
-    if trackLabel <> "" then keyParts.push(trackLabel)
-
-    if isInitSegment
-        keyParts.push("init")
-    else
-        startRange = sabr_valueToLabel(byteRange?.startRange)
-        if startRange = "" then startRange = sabr_valueToLabel(byteRange?.start)
-        if startRange = "" then startRange = "0"
-        endRange = sabr_valueToLabel(byteRange?.endRange)
-        if endRange = "" then endRange = sabr_valueToLabel(byteRange?.end)
-        if startRange <> "" and endRange <> ""
-            keyParts.push(`${startRange}-${endRange}`)
-        else if startRange <> ""
-            keyParts.push(`${startRange}`)
-        else
-            keyParts.push("segment")
-        end if
-    end if
-
-    return sabr_joinWithPipe(keyParts)
-end function
 
 function sabr_buildPrefetchInfo(streamInfo as object, currentFormat as object, requestMetadataEntry as object) as object
     if not isValid(streamInfo) then return invalid
@@ -3249,13 +2657,14 @@ function sabr_buildPrefetchInfo(streamInfo as object, currentFormat as object, r
     startTimeMs = sabr_safeToInt(mediaHeader.startTimeMs)
     durationMs = sabr_safeToInt(mediaHeader.durationMs)
     endTimeMs = startTimeMs + durationMs
+    rangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry?.byteRange)
 
     return {
         "formatKey": sabr_formatToKey(currentFormat)
         "endTimeMs": endTimeMs
         "durationMs": durationMs
-        "cacheKey": requestMetadataEntry?.cacheKey
         "byteRange": requestMetadataEntry?.byteRange
+        "rangeLabel": rangeLabel
         "updatedAt": sabr_currentTimestampMs()
         "requestNumber": requestMetadataEntry?.requestNumber
     }
@@ -3277,7 +2686,11 @@ sub sabr_maybeSchedulePrefetch(playbackContext as object, videoNode as object, p
             prefetchInfo.loggedAt = sabr_currentTimestampMs()
             playbackContext["prefetchState"] = prefetchInfo
             logTag = sabr_utilLogTag(contentType, prefetchInfo?.requestNumber)
-            sabr_log(m.logs, log_level_Type.INFO, `${logTag} Prefetch window reached for cache key ${prefetchInfo.cacheKey}; remainingMs=${remainingMs}`)
+            rangeLabel = sabr_valueToLabel(prefetchInfo?.rangeLabel)
+            if rangeLabel = ""
+                rangeLabel = sabr_formatRequestedRangeForPath(prefetchInfo?.byteRange)
+            end if
+            sabr_log(m.logs, log_level_Type.INFO, `${logTag} Prefetch window reached for range ${rangeLabel}; remainingMs=${remainingMs}`)
         end if
     end if
 end sub
@@ -3643,9 +3056,6 @@ function sabr_mediaHeaderToSegmentMetadata(mediaHeader as dynamic, coverage = in
         end if
         if isValid(coverage?.headerId)
             metadata["headerId"] = coverage.headerId
-        end if
-        if isValid(coverage?.cacheKey)
-            metadata["cacheKey"] = coverage.cacheKey
         end if
     end if
 
@@ -4906,34 +4316,6 @@ end sub
 
 '     return invalid
 ' end function
-function sabr_chunkBufferPool() as object
-    pool = m?.sabrChunkBufferPool
-    if not IsArray(pool)
-        pool = []
-        m.sabrChunkBufferPool = pool
-    end if
-    return pool
-end function
-
-function sabr_acquireChunkBuffer() as object
-    pool = sabr_chunkBufferPool()
-    if pool.count() > 0
-        buffer = pool[pool.count() - 1]
-        pool.Delete(pool.count() - 1)
-        return buffer
-    end if
-    return CreateObject("roByteArray")
-end function
-
-sub sabr_releaseChunkBuffer(buffer as dynamic)
-    if GetInterface(buffer, "ifByteArray") = invalid then return
-    pool = sabr_chunkBufferPool()
-    limit = SABR_CHUNK_BUFFER_POOL_LIMIT
-    if limit <= 0 then limit = 8
-    if pool.count() >= limit then return
-    pool.push(buffer)
-end sub
-
 sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
     if not IsAssociativeArray(spoolMap) then return
 
