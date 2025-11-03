@@ -658,6 +658,18 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 end if
                 dumpLabel = sabr_debugBuildDumpLabel(playbackContext, "sabr-request", `${nextRequestId}`, rangeLabel, contentType, currentFormat, dumpCounter)
                 debugFolder = LCase(contentType) = "audio" ? "audio" : "video"
+                spoolMaps = playbackContext?.umpSpoolMaps
+                if IsAssociativeArray(spoolMaps) and spoolMaps.Count() > 0
+                    spoolJson = ""
+                    try
+                        spoolJson = FormatJson(spoolMaps)
+                    catch err
+                        spoolJson = "<FormatJson error>"
+                    end try
+                    if spoolJson <> ""
+                        sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpLabel}-spool.json`, spoolJson, m.logs)
+                    end if
+                end if
                 sabr_debugUploadText(debugUploadUrl, `${debugFolder}/${dumpLabel}.json`, requestPayloadJson, m.logs)
             end if
         end if
@@ -759,6 +771,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     chunkIndex = 0
                     processTimer = invalid
                     requestMetadata = invalid
+                    spoolResultForResponse = invalid
 
                     if isValid(responseFilePath) and responseFilePath <> ""
                         spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16, keyParam)
@@ -768,30 +781,66 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             segmentIndex = spoolMap?.segmentIndex
                             if IsAssociativeArray(segmentIndex)
                                 for each segmentKey in segmentIndex.Keys()
-                                    playbackContext["umpSpoolMaps"][segmentKey] = segmentIndex.Lookup(segmentKey)
+                                    entry = segmentIndex.Lookup(segmentKey)
+                                    playbackContext["umpSpoolMaps"][segmentKey] = entry
+                                    sidxUpdate = entry?.sidxIndex
+                                    if IsAssociativeArray(sidxUpdate)
+                                        sabr_storeSidxIndexUpdate(playbackContext, contentType, sidxUpdate)
+                                    end if
                                 end for
                             end if
-                            ' sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cached spool map under key ${keyParam}`)
-                            ' spoolKeys = []
-                            ' formatKeyForSpool = sabr_formatToKey(currentFormat)
-                            ' if formatKeyForSpool <> "" then spoolKeys.push(formatKeyForSpool)
-                            ' itagLabel = sabr_valueToLabel(currentFormat?.itag)
-                            ' if itagLabel <> "" then spoolKeys.push(`itag:${itagLabel}`)
-                            ' requestKeyLabel = sabr_valueToLabel(keyParam)
-                            ' if requestKeyLabel <> "" then spoolKeys.push(`key:${requestKeyLabel}`)
-                            ' if spoolKeys.count() = 0 and itagLabel = ""
-                            '     spoolKeys.push("default")
-                            ' end if
-                            ' storedKeys = []
-                            ' for each spoolKey in spoolKeys
-                            '     if spoolKey = "" then continue for
-                            '     spoolStore[spoolKey] = spoolMap
-                            '     storedKeys.push(spoolKey)
-                            ' end for
-                            ' playbackContext["umpSpoolMaps"] = spoolStore
-                            ' if storedKeys.count() > 0
-                            '     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Cached spool map under keys ${storedKeys.Join(", ")}`)
-                            ' end if
+                        end if
+
+                        spoolFetch = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
+                        if IsAssociativeArray(spoolFetch)
+                            spoolSegment = spoolFetch.spooledSegment
+                            spoolChunks = spoolSegment?.chunks
+                            if IsArray(spoolChunks) and spoolChunks.count() > 0
+                                totalBytesForResponse = sabr_toInt(spoolSegment?.totalBytes)
+                                if spoolSegment?.isInitSeg = true
+                                    trimmed = sabr_trimSegmentChunksForRange(spoolChunks, spoolSegment?.startRange, requestByteRange)
+                                    if IsAssociativeArray(trimmed)
+                                        trimmedChunks = trimmed?.chunks
+                                        trimmedBytes = sabr_toInt(trimmed?.totalBytes)
+                                        if IsArray(trimmedChunks) and trimmedChunks.count() > 0
+                                            spoolChunks = trimmedChunks
+                                            if trimmedBytes <> invalid then totalBytesForResponse = trimmedBytes
+                                        end if
+                                    end if
+                                end if
+                                if totalBytesForResponse = invalid or totalBytesForResponse <= 0
+                                    totalBytesForResponse = 0
+                                    for each chunkEntry in spoolChunks
+                                        lenVal = sabr_toInt(chunkEntry?.length)
+                                        if lenVal <> invalid then totalBytesForResponse = totalBytesForResponse + lenVal
+                                    end for
+                                end if
+                                coverageStartVal = sabr_toInt(spoolSegment?.startRange)
+                                coverageEndVal = sabr_toInt(spoolSegment?.endRange)
+                                if spoolSegment?.isInitSeg = true
+                                    trimmedCoverage = sabr_byteRangeToCoverage(requestByteRange)
+                                    if IsAssociativeArray(trimmedCoverage)
+                                        covStartTrim = sabr_toInt(trimmedCoverage?.rangeStart)
+                                        covEndTrim = sabr_toInt(trimmedCoverage?.rangeEnd)
+                                        if covStartTrim <> invalid then coverageStartVal = covStartTrim
+                                        if covEndTrim <> invalid then coverageEndVal = covEndTrim
+                                    end if
+                                end if
+                                if totalBytesForResponse > 0 and sabr_toSafeString(spoolSegment?.path) <> ""
+                                    spoolResultForResponse = {
+                                        "path": spoolSegment.path
+                                        "chunks": spoolChunks
+                                        "totalBytes": totalBytesForResponse
+                                        "coverage": {
+                                            "rangeStart": coverageStartVal
+                                            "rangeEnd": coverageEndVal
+                                        }
+                                    }
+                                    if spoolSegment?.isInitSeg = true
+                                        spoolResultForResponse["isInitSeg"] = true
+                                    end if
+                                end if
+                            end if
                         end if
                         requestMetadata = {
                             "isUMP": true
@@ -918,6 +967,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                         sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} ${fatalReason}`, false)
                     end if
 
+                    if not isValid(umpResult) and IsAssociativeArray(spoolResultForResponse)
+                        umpResult = spoolResultForResponse
+                    end if
+
                     if fatalReason <> ""
                         playbackContext["sabrFatalError"] = {
                             "reason": fatalReason
@@ -1019,6 +1072,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
                             coverageInfo = umpResult?.coverage
                             deliveredSegment = false
+                            storagePath = ""
                             if isValid(umpResult?.data) and GetInterface(umpResult.data, "ifByteArray") <> invalid
                                 segmentBytes = umpResult.data
                                 deliveredSegment = segmentBytes.count() > 0
@@ -1043,6 +1097,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} SABR delivered segment ${FormatJson(deliveredInfo)}`)
                                     requestMetadataEntry["coverage"] = coverageRange
                                     requestMetadataEntry["segmentIndexKey"] = sabr_formatToKey(currentFormat)
+                                    if IsAssociativeArray(requestMetadata?.streamInfo) and isValid(coverageRange)
+                                        requestMetadata.streamInfo["deliveredCoverage"] = coverageRange
+                                    end if
                                     playerTimeForStore = sabr_toInt(playerTimeOverride)
                                     coverageForStore = coverageRange
                                     if not isValid(coverageForStore) and isValid(coverageInfo)
@@ -1070,6 +1127,51 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                         })
                                         sabr_cacheUpdateProgressForSeek(contentType, currentFormat, requestMetadataEntry?.sequenceNumber, coverageRange?.rangeStart, playerTimeForStore)
                                     end if
+                                end if
+                            else if IsArray(umpResult?.chunks)
+                                chunkList = umpResult.chunks
+                                chunkTotalBytes = sabr_toInt(umpResult?.totalBytes)
+                                if chunkTotalBytes = invalid or chunkTotalBytes <= 0
+                                    chunkTotalBytes = 0
+                                    for each chunkEntry in chunkList
+                                        chunkLenVal = sabr_toInt(chunkEntry?.length)
+                                        if chunkLenVal <> invalid then chunkTotalBytes = chunkTotalBytes + chunkLenVal
+                                    end for
+                                end if
+                                if chunkTotalBytes > 0
+                                    deliveredSegment = true
+                                    coverageRange = sabr_byteRangeToCoverage(requestMetadataEntry.byteRange)
+                                    if not isValid(coverageRange) and isValid(coverageInfo)
+                                        coverageRange = coverageInfo
+                                    end if
+                                    rangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+                                    deliveredLabel = coverageRange
+                                    if not isValid(deliveredLabel) and isValid(coverageInfo)
+                                        deliveredLabel = coverageInfo
+                                    end if
+                                    if IsAssociativeArray(deliveredLabel)
+                                        deliveredLabel = `${deliveredLabel?.rangeStart ?? ""}-${deliveredLabel?.rangeEnd ?? ""}`
+                                    end if
+                                    deliveredInfo = {
+                                        "coverageLabel": deliveredLabel
+                                        "rangeLabel": rangeLabel
+                                        "bytes": chunkTotalBytes
+                                        "chunks": chunkList.count()
+                                    }
+                                    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} SABR delivered segment (chunks) ${FormatJson(deliveredInfo)}`)
+                                    requestMetadataEntry["coverage"] = coverageRange
+                                    requestMetadataEntry["segmentIndexKey"] = sabr_formatToKey(currentFormat)
+                                    if IsAssociativeArray(requestMetadata?.streamInfo) and isValid(coverageRange)
+                                        requestMetadata.streamInfo["deliveredCoverage"] = coverageRange
+                                    end if
+                                    playerTimeForStore = sabr_toInt(requestMetadataEntry?.playerTimeMs)
+                                    if playerTimeForStore = invalid or playerTimeForStore < 0
+                                        playerTimeForStore = sabr_toInt(playbackContext?.lastResolvedPlayerTimeMs)
+                                    end if
+                                    if playerTimeForStore = invalid or playerTimeForStore < 0
+                                        playerTimeForStore = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
+                                    end if
+                                    sabr_cacheUpdateProgressForSeek(contentType, currentFormat, requestMetadataEntry?.sequenceNumber, coverageRange?.rangeStart, playerTimeForStore)
                                 end if
                             end if
 
@@ -1227,10 +1329,19 @@ end function
 
 ' Collects cached segment coverage for a given format so we can seed SABR
 ' buffering metadata. Returns an array of entries sorted newest-first.
-function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object, targetByteRange as object) as object
+function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object, targetByteRange as object, playbackContext = invalid as dynamic) as object
     ranges = []
     if not isValid(activeFormat) then return ranges
     if not isValid(mediaIdHash) or mediaIdHash = "" then return ranges
+
+    spoolRange = sabr_spoolBufferedRangeForFormat(playbackContext, formatType, activeFormat)
+    if isValid(spoolRange)
+        if isValid(m?.logs)
+            sabr_log(m.logs, log_level_Type.DEBUG, `[SabrBuffer] bufferedRange=${FormatJson(spoolRange)}`)
+        end if
+        ranges.push(spoolRange)
+        return ranges
+    end if
 
     entries = sabr_cacheListEntries(mediaIdHash, formatType, activeFormat?.itag, activeFormat?.audioTrackId ?? "")
     if not IsArray(entries) or entries.count() = 0 then return ranges
@@ -1308,6 +1419,112 @@ function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType a
     end if
 
     return ranges
+end function
+
+function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType as string, activeFormat as object) as dynamic
+    if not IsAssociativeArray(playbackContext) then return invalid
+    spoolMaps = playbackContext?.umpSpoolMaps
+    if not IsAssociativeArray(spoolMaps) then return invalid
+
+    targetItag = sabr_toInt(activeFormat?.itag)
+    trackIdLabel = sabr_toSafeString(activeFormat?.audioTrackId)
+    normalizedType = UCase(formatType)
+
+    bestEntry = invalid
+    bestSeq = invalid
+    bestStart = invalid
+
+    for each key in spoolMaps
+        entry = spoolMaps.Lookup(key)
+        if not IsAssociativeArray(entry) then continue for
+        if entry?.isInitSeg = true then continue for
+
+        entryItag = sabr_toInt(entry?.itag)
+        if entryItag = invalid and IsAssociativeArray(entry?.mediaHeader)
+            entryItag = sabr_toInt(entry.mediaHeader?.itag)
+            if entryItag = invalid and IsAssociativeArray(entry.mediaHeader?.formatId)
+                entryItag = sabr_toInt(entry.mediaHeader.formatId?.itag)
+            end if
+        end if
+        if targetItag <> invalid and entryItag <> targetItag then continue for
+
+        entryTrack = ""
+        if IsAssociativeArray(entry?.mediaHeader?.formatId)
+            entryTrack = sabr_toSafeString(entry.mediaHeader.formatId?.audioTrackId)
+        end if
+        if trackIdLabel <> "" and entryTrack <> "" and LCase(entryTrack) <> LCase(trackIdLabel)
+            continue for
+        end if
+
+        seqVal = sabr_toInt(entry?.mediaHeader?.sequenceNumber)
+        if seqVal = invalid then seqVal = sabr_toInt(entry?.mediaHeader?.startSequenceNumber)
+        if seqVal = invalid then seqVal = sabr_toInt(entry?.mediaHeader?.segmentIndex)
+        if seqVal = invalid then seqVal = sabr_toInt(entry?.mediaHeader?.startSegmentIndex)
+
+        startRangeVal = sabr_toInt(entry?.startRange)
+        if startRangeVal = invalid and IsAssociativeArray(entry?.mediaHeader)
+            startRangeVal = sabr_toInt(entry.mediaHeader?.startRange)
+            if startRangeVal = invalid then startRangeVal = sabr_toInt(entry.mediaHeader?.start)
+        end if
+
+        if bestEntry = invalid
+            bestEntry = entry
+            bestSeq = seqVal
+            bestStart = startRangeVal
+        else
+            shouldReplace = false
+            if seqVal <> invalid
+                if bestSeq = invalid or seqVal > bestSeq
+                    shouldReplace = true
+                else if seqVal = bestSeq and startRangeVal <> invalid and bestStart <> invalid and startRangeVal > bestStart
+                    shouldReplace = true
+                end if
+            else if startRangeVal <> invalid and bestStart <> invalid and startRangeVal > bestStart
+                shouldReplace = true
+            end if
+            if shouldReplace
+                bestEntry = entry
+                bestSeq = seqVal
+                bestStart = startRangeVal
+            end if
+        end if
+    end for
+
+    if bestEntry = invalid then return invalid
+
+    coverageStartVal = sabr_toInt(bestEntry?.startRange)
+    if coverageStartVal = invalid and IsAssociativeArray(bestEntry?.mediaHeader)
+        coverageStartVal = sabr_toInt(bestEntry.mediaHeader?.startRange)
+        if coverageStartVal = invalid then coverageStartVal = sabr_toInt(bestEntry.mediaHeader?.start)
+    end if
+    coverageEndVal = sabr_toInt(bestEntry?.endRange)
+    if coverageEndVal = invalid and IsAssociativeArray(bestEntry?.mediaHeader)
+        contentLengthVal = sabr_toInt(bestEntry.mediaHeader?.contentLength)
+        if coverageStartVal <> invalid and contentLengthVal <> invalid and contentLengthVal > 0
+            coverageEndVal = coverageStartVal + contentLengthVal - 1
+        end if
+    end if
+
+    coverage = {}
+    if coverageStartVal <> invalid then coverage["rangeStart"] = coverageStartVal
+    if coverageEndVal <> invalid then coverage["rangeEnd"] = coverageEndVal
+    seqForCoverage = sabr_toInt(bestEntry?.mediaHeader?.sequenceNumber)
+    if seqForCoverage = invalid then seqForCoverage = sabr_toInt(bestEntry?.mediaHeader?.startSequenceNumber)
+    if seqForCoverage <> invalid then coverage["sequenceNumber"] = seqForCoverage
+    if bestEntry?.headerId <> invalid then coverage["headerId"] = bestEntry.headerId
+
+    metadata = sabr_mediaHeaderToSegmentMetadata(bestEntry?.mediaHeader, coverage)
+    if not IsAssociativeArray(metadata) then return invalid
+
+    if isValid(m?.logs)
+        startLabel = sabr_valueToLabel(metadata?.rangeStart)
+        endLabel = sabr_valueToLabel(metadata?.rangeEnd)
+        seqLabel = sabr_valueToLabel(metadata?.sequenceNumber)
+        itagLabel = sabr_valueToLabel(activeFormat?.itag)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SabrBuffer] spoolRange itag=${itagLabel} start=${startLabel} end=${endLabel} seq=${seqLabel}`)
+    end if
+
+    return sabr_buildBufferedRangeFromMetadata(metadata)
 end function
 
 function sabr_collectAddRangeEntry(entry as object, activeFormat as object, formatType as string, seen as object, dest as object) as boolean
@@ -1796,7 +2013,7 @@ function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object,
                 state["formatToDiscard"] = format
             end if
         else
-            bufferedRanges = sabr_collectBufferedRangesForFormat(mediaIdHash, formatType, format, targetByteRange)
+            bufferedRanges = sabr_collectBufferedRangesForFormat(mediaIdHash, formatType, format, targetByteRange, playbackContext)
         end if
 
         if IsArray(bufferedRanges)
@@ -4026,6 +4243,104 @@ function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dyn
     fullBody = invalid
     fullPayloadLength = 0
     status = 204
+
+    chunkPlan = invalid
+    if IsAssociativeArray(umpResult)
+        chunkPlan = umpResult.Lookup("chunks")
+    end if
+    if IsArray(chunkPlan) and chunkPlan.count() > 0
+        chunkPath = sabr_toSafeString(umpResult?.path)
+        if chunkPath <> ""
+            totalChunkBytes = sabr_toInt(umpResult?.totalBytes)
+            if totalChunkBytes = invalid or totalChunkBytes <= 0
+                totalChunkBytes = 0
+                for each chunkEntry in chunkPlan
+                    lenVal = sabr_toInt(chunkEntry?.length)
+                    if lenVal <> invalid then totalChunkBytes = totalChunkBytes + lenVal
+                end for
+            end if
+            if totalChunkBytes > 0
+                mimeType = currentFormat?.mimeType
+                if not isValid(mimeType) or mimeType = ""
+                    mimeType = contentType = "VIDEO" ? "video/mp4" : "audio/mp4"
+                end if
+                headers["Content-Type"] = mimeType
+                headers["Accept-Ranges"] = "bytes"
+
+                requestCoverage = sabr_byteRangeToCoverage(requestByteRange)
+                requestedStart = sabr_toInt(requestCoverage?.rangeStart)
+                requestedEnd = sabr_toInt(requestCoverage?.rangeEnd)
+
+                coverageInfo = umpResult?.coverage
+                coverageStart = invalid
+                coverageEnd = invalid
+                if IsAssociativeArray(coverageInfo)
+                coverageStart = sabr_toInt(coverageInfo?.rangeStart)
+                if coverageStart = invalid then coverageStart = sabr_toInt(coverageInfo?.start)
+                coverageEnd = sabr_toInt(coverageInfo?.rangeEnd)
+                if coverageEnd = invalid then coverageEnd = sabr_toInt(coverageInfo?.end)
+                end if
+                metadataCoverage = sabr_byteRangeToCoverage(requestMetadata?.byteRange)
+                if coverageStart = invalid and IsAssociativeArray(metadataCoverage)
+                    coverageStart = sabr_toInt(metadataCoverage?.rangeStart)
+                end if
+                if coverageEnd = invalid and IsAssociativeArray(metadataCoverage)
+                    coverageEnd = sabr_toInt(metadataCoverage?.rangeEnd)
+                end if
+                if coverageStart = invalid then coverageStart = requestedStart
+                rangeStartForHeaders = coverageStart
+                if rangeStartForHeaders = invalid then rangeStartForHeaders = 0
+                finalLength = totalChunkBytes
+                actualEnd = rangeStartForHeaders + finalLength - 1
+                if isValid(requestedEnd) then actualEnd = requestedEnd
+
+                totalLengthVal = sabr_toInt(currentFormat?.contentLength)
+                if not isValid(totalLengthVal)
+                    totalLengthVal = sabr_toInt(requestMetadata?.format?.contentLength)
+                end if
+                if not isValid(totalLengthVal) and isValid(coverageEnd)
+                    totalLengthVal = coverageEnd + 1
+                end if
+                if not isValid(totalLengthVal)
+                    totalLengthVal = actualEnd + 1
+                end if
+                if isValid(totalLengthVal) and actualEnd >= totalLengthVal
+                    totalLengthVal = actualEnd + 1
+                end if
+                totalLengthStr = "*"
+                if isValid(totalLengthVal) then totalLengthStr = totalLengthVal.toStr()
+
+                if isValid(requestedStart)
+                    status = 206
+                    headers["Content-Range"] = `bytes ${rangeStartForHeaders}-${actualEnd}/${totalLengthStr}`
+                else
+                    status = 200
+                end if
+
+                headers["Content-Length"] = `${finalLength}`
+                if headers.DoesExist("Connection") = false
+                    headers["Connection"] = "close"
+                end if
+
+                coverageReturn = coverageInfo
+                if not IsAssociativeArray(coverageReturn)
+                    coverageReturn = {
+                        "rangeStart": rangeStartForHeaders
+                        "rangeEnd": actualEnd
+                    }
+                end if
+
+                return {
+                    "status": status
+                    "headers": headers
+                    "path": chunkPath
+                    "chunks": chunkPlan
+                    "totalBytes": finalLength
+                    "coverage": coverageReturn
+                }
+            end if
+        end if
+    end if
 
     if isValid(umpResult)
         potentialPath = sabr_toSafeString(umpResult?.path)

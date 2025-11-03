@@ -700,15 +700,14 @@ function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
         sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Preparing cache slot for header ${headerId}`)
 
         segmentKeyStr = str(headerId)
-        tempFiles = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
         segmentEntry = {
             "headerId": headerId
             "mediaHeader": mediaHeader
-            "chunkDir": tempFiles?.dir ?? ""
+            "chunkDir": ""
             "bytesWritten": 0
             "chunkCount": 0
             "lastChunkSize": 0
-            "tempBaseName": tempFiles?.base ?? ""
+            "tempBaseName": ""
             "tempFilePath": ""
             "skipWrite": false
             "isTarget": false
@@ -798,25 +797,9 @@ function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
     if ctx._partialSegments.doesExist(key)
         segment = ctx._partialSegments.Lookup(key)
         segment.lastChunkSize = chunkBytes
-        skipWrite = segment?.skipWrite = true
-        if skipWrite = true
-            segment.chunkCount = segment.chunkCount + 1
-            segment.bytesWritten = segment.bytesWritten + chunkBytes
-            appendOk = true
-        else if chunkBytes = 0 or sabr_ump_appendChunkToTemp(ctx, segment, headerId, sourceBuffer, payloadOffset, chunkBytes) = true
-            segment.chunkCount = segment.chunkCount + 1
-            segment.bytesWritten = segment.bytesWritten + chunkBytes
-            appendOk = true
-        else
-            sabr_ump_log(ctx, log_level_Type.FATAL, `[SabrUmpProcessor] Aborting segment ${headerId} due to write failure`)
-            sabr_ump_cleanupSegmentChunks(segment)
-            ctx._partialSegments[key] = segment
-            return {
-                "done": true
-                "error": "segment_write_failed"
-                "headerId": headerId
-            }
-        end if
+        segment.chunkCount = segment.chunkCount + 1
+        segment.bytesWritten = segment.bytesWritten + chunkBytes
+        appendOk = true
         ctx._partialSegments[key] = segment
         sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Buffered media chunk for header ${headerId}; chunkBytes=${chunkBytes} totalChunks=${segment.chunkCount} stored=${appendOk}`)
         sabr_ump_logPartDetails(ctx, `media_header${headerId}`, sabr_ump_partPreviewBytes(part, 32), invalid)
@@ -1675,38 +1658,17 @@ function sabr_ump_prepareSegmentAssembly(ctx as object, segment as object, needB
     totalBytes = sabr_ump_toInt(segment?.bytesWritten)
     if totalBytes = invalid then totalBytes = 0
     chunkCountVal = sabr_ump_toInt(segment?.chunkCount)
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
     info = {
         "bytes": invalid
         "chunkCount": chunkCountVal
         "totalBytes": totalBytes
-        "dataPath": tempPath
+        "dataPath": ""
     }
 
-    if needBytes = true
-        if tempPath <> ""
-            bytes = CreateObject("roByteArray")
-            if bytes.ReadFile(tempPath) = true
-                info.bytes = bytes
-                if info.totalBytes = 0 then info.totalBytes = bytes.count()
-            else
-                info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
-                info.totalBytes = sabr_ump_countBytes(info.bytes)
-            end if
-        else
-            info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
-            info.totalBytes = sabr_ump_countBytes(info.bytes)
-        end if
-    else if info.totalBytes = 0 and tempPath <> ""
-        fs = CreateObject("roFileSystem")
-        stat = fs.Stat(tempPath)
-        if IsAssociativeArray(stat)
-            sizeVal = stat.Lookup("size")
-            if sizeVal = invalid then sizeVal = stat.Lookup("length")
-            if IsInteger(sizeVal) or IsFloat(sizeVal) or IsDouble(sizeVal)
-                info.totalBytes = Int(sizeVal)
-            end if
-        end if
+    ' Without file-backed buffering we do not materialize bytes during assembly.
+    if needBytes = true and GetInterface(segment?.inlineBytes, "ifByteArray") <> invalid
+        info.bytes = segment.inlineBytes
+        if info.totalBytes = 0 then info.totalBytes = info.bytes.count()
     end if
 
     return info
@@ -2204,153 +2166,25 @@ end function
 
 ' Computes the directory and base filename used to stream a segment to disk.
 function sabr_ump_prepareSegmentTempInfo(ctx as object, headerId as dynamic) as object
-    root = sabr_ump_segmentTempRoot()
-    mediaId = sabr_ump_toSafeString(ctx?.requestMetadata?.mediaIdHash)
-    if mediaId = "" then mediaId = "unknown"
-    mediaDir = sabr_ump_joinPath(root, mediaId)
-    sabr_ump_ensureDirectory(mediaDir)
-
-    requestLabel = sabr_ump_toSafeString(ctx?.requestMetadata?.requestNumber)
-    if requestLabel = "" then requestLabel = "req"
-    reqDir = sabr_ump_joinPath(mediaDir, `rn${requestLabel}`)
-    sabr_ump_ensureDirectory(reqDir)
-
-    headerLabel = sabr_ump_toSafeString(headerId)
-    if headerLabel = "" then headerLabel = "header"
-
     return {
-        "dir": reqDir
-        "base": `header${headerLabel}`
+        "dir": ""
+        "base": ""
     }
 end function
 
 function sabr_ump_getSegmentTempPath(ctx as object, segment as object, headerId as dynamic) as string
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
-    if tempPath <> "" then return tempPath
-
-    info = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
-    dirPath = sabr_ump_toSafeString(info?.dir)
-    if dirPath = "" then return ""
-    sabr_ump_ensureDirectory(dirPath)
-
-    baseName = sabr_ump_toSafeString(segment?.tempBaseName)
-    if baseName = ""
-        baseName = sabr_ump_toSafeString(info?.base)
-        if baseName = "" then baseName = "segment"
-        segment.tempBaseName = baseName
-    end if
-    segment.chunkDir = dirPath
-
-    tempPath = sabr_ump_joinPath(dirPath, `${baseName}_stream.tmp`)
-    fs = CreateObject("roFileSystem")
-    if fs.Exists(tempPath)
-        try
-            fs.Delete(tempPath)
-        catch e
-        end try
-    end if
-    segment.tempFilePath = tempPath
-    return tempPath
+    return ""
 end function
 
-' Writes the provided payload chunk into the segment’s temp file, handling offsets
-' and tracking written byte counts for later assembly.
+' Legacy file-backed chunk handling disabled; always report success.
 function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object, payloadOffset = 0 as integer, payloadLength = invalid as dynamic) as boolean
-    if GetInterface(payload, "ifByteArray") = invalid then return false
-    tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
-    if tempPath = "" then return false
-
-    totalBytes = payload.count()
-    if payloadLength = invalid or payloadLength > totalBytes - payloadOffset then payloadLength = totalBytes - payloadOffset
-    if payloadLength <= 0 then return true
-    if payloadOffset < 0 then payloadOffset = 0
-
-    wrote = false
-    opLabel = "append"
-    if segment?.chunkCount = 0 and segment?.bytesWritten = 0
-        opLabel = "write"
-        if payloadOffset = 0 and payloadLength = totalBytes
-            wrote = payload.WriteFile(tempPath)
-        else
-            wrote = payload.WriteFile(tempPath, payloadOffset, payloadLength)
-        end if
-    else
-        if payloadOffset = 0 and payloadLength = totalBytes
-            wrote = payload.AppendFile(tempPath)
-        else
-            wrote = payload.AppendFile(tempPath, payloadOffset, payloadLength)
-        end if
-    end if
-
-    if wrote <> true
-        shouldRetry = segment?.chunkCount = 0 and segment?.bytesWritten = 0 and payloadOffset = 0
-        if shouldRetry
-            fsRetry = CreateObject("roFileSystem")
-            try
-                if fsRetry.Exists(tempPath)
-                    fsRetry.Delete(tempPath)
-                end if
-            catch e
-            end try
-            if segment?.chunkCount = 0 and segment?.bytesWritten = 0
-                ' Recreate the temp file path in case cleanup removed it
-                tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
-                if tempPath <> ""
-                    if payloadOffset = 0 and payloadLength = totalBytes
-                        wrote = payload.WriteFile(tempPath)
-                    else
-                        wrote = payload.WriteFile(tempPath, payloadOffset, payloadLength)
-                    end if
-                end if
-            end if
-        end if
-
-        if wrote <> true
-            chunkInfo = `header=${headerId} path=${tempPath} op=${opLabel} chunkOffset=${payloadOffset} chunkLength=${payloadLength} totalBuffer=${totalBytes} chunkCount=${segment?.chunkCount ?? -1} bytesWritten=${segment?.bytesWritten ?? -1}`
-            sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to append chunk (${chunkInfo})`)
-            return false
-        else if shouldRetry
-            sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Recovered chunk write for header ${headerId} at ${tempPath}`)
-        end if
-    end if
     return true
 end function
 
-
-
 sub sabr_ump_cleanupSegmentChunks(segment as object)
     if not isValid(segment) then return
-    fs = CreateObject("roFileSystem")
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
-    if tempPath <> ""
-        try
-            if fs.Exists(tempPath) then fs.Delete(tempPath)
-        catch e
-        end try
-        segment.tempFilePath = ""
-    end if
-    chunkFiles = segment?.chunkFiles
-    if IsArray(chunkFiles)
-        for each chunkPath in chunkFiles
-            if IsString(chunkPath) and chunkPath <> ""
-                try
-                    if fs.Exists(chunkPath) then fs.Delete(chunkPath)
-                catch e
-                end try
-            end if
-        end for
-        segment.chunkFiles = []
-    end if
-    dirPath = segment?.chunkDir
-    if IsString(dirPath) and dirPath <> ""
-        try
-            entries = fs.GetDirectoryListing(dirPath)
-            if IsArray(entries) and entries.count() = 0
-                fs.Delete(dirPath)
-            end if
-        catch e
-        end try
-    end if
+    segment.tempFilePath = ""
+    segment.chunkFiles = []
 end sub
 
 sub sabr_ump_ensureDirectory(path as string)
@@ -3249,6 +3083,19 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
         offset = nextOffset
     end while
 
+    if IsAssociativeArray(segmentIndex)
+        for each segmentKey in segmentIndex
+            entry = segmentIndex.Lookup(segmentKey)
+            if entry?.isInitSeg = true
+                sidxUpdate = sabr_ump_extractSidxFromSpool(path, entry)
+                if IsAssociativeArray(sidxUpdate)
+                    entry["sidxIndex"] = sidxUpdate
+                    segmentIndex[segmentKey] = entry
+                end if
+            end if
+        end for
+    end if
+
     result["parts"] = parts
     result["segmentIndex"] = segmentIndex
     result["segmentMap"] = sabr_ump_buildSpoolSegmentMap(parts, keyParam, path)
@@ -3343,4 +3190,91 @@ function sabr_ump_buildSpoolSegmentMap(partArray as object, keyParam as string, 
     end for
 
     return segmentMap
+end function
+
+function sabr_ump_extractSidxFromSpool(path as string, segmentEntry as object) as dynamic
+    if not IsAssociativeArray(segmentEntry) then return invalid
+    if segmentEntry?.isInitSeg <> true then return invalid
+    if not IsString(path) or path = "" then return invalid
+
+    mediaHeader = segmentEntry?.mediaHeader
+    if not IsAssociativeArray(mediaHeader) then return invalid
+
+    chunks = segmentEntry?.chunks
+    if not IsArray(chunks) or chunks.count() = 0 then return invalid
+
+    segmentBytes = sabr_ump_readChunksFromSpool(path, chunks, sabr_ump_toInt(segmentEntry?.totalBytes))
+    if GetInterface(segmentBytes, "ifByteArray") = invalid or segmentBytes.count() <= 0 then return invalid
+
+    return sabr_ump_buildSidxIndexUpdate(invalid, mediaHeader, segmentBytes)
+end function
+
+function sabr_ump_readChunksFromSpool(path as string, chunks as object, declaredTotal = invalid as dynamic) as object
+    if not IsArray(chunks) or chunks.count() = 0 then return invalid
+
+    sortedChunks = []
+    for each entry in chunks
+        if not IsAssociativeArray(entry) then continue for
+        offsetVal = sabr_ump_toInt(entry?.offset)
+        lengthVal = sabr_ump_toInt(entry?.length)
+        if offsetVal = invalid or lengthVal = invalid or lengthVal <= 0 then continue for
+        sortedChunks.push({
+            "offset": offsetVal
+            "length": lengthVal
+        })
+    end for
+
+    totalChunks = sortedChunks.count()
+    if totalChunks = 0 then return invalid
+
+    ' simple insertion sort by offset
+    for i = 0 to totalChunks - 2
+        minIndex = i
+        for j = i + 1 to totalChunks - 1
+            if sortedChunks[j].offset < sortedChunks[minIndex].offset then minIndex = j
+        end for
+        if minIndex <> i
+            temp = sortedChunks[i]
+            sortedChunks[i] = sortedChunks[minIndex]
+            sortedChunks[minIndex] = temp
+        end if
+    end for
+
+    totalBytes = sabr_ump_toInt(declaredTotal)
+    if totalBytes = invalid or totalBytes <= 0
+        totalBytes = 0
+        for each chunkInfo in sortedChunks
+            totalBytes = totalBytes + chunkInfo.length
+        end for
+    end if
+    if totalBytes <= 0 then return invalid
+
+    aggregate = CreateObject("roByteArray")
+    aggregate[totalBytes - 1] = 0
+    destIndex = 0
+
+    for each chunkInfo in sortedChunks
+        chunkBytes = CreateObject("roByteArray")
+        if chunkBytes.ReadFile(path, chunkInfo.offset, chunkInfo.length) <> true then return invalid
+        chunkLen = chunkBytes.count()
+        if chunkLen <= 0 then return invalid
+        for idx = 0 to chunkLen - 1
+            aggregate[destIndex] = chunkBytes[idx]
+            destIndex = destIndex + 1
+        end for
+    end for
+
+    if destIndex < totalBytes
+        ' trim unused tail
+        trimmed = CreateObject("roByteArray")
+        if destIndex > 0
+            trimmed[destIndex - 1] = 0
+            for k = 0 to destIndex - 1
+                trimmed[k] = aggregate[k]
+            end for
+        end if
+        return trimmed
+    end if
+
+    return aggregate
 end function
