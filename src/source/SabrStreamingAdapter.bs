@@ -62,10 +62,9 @@ const SABR_PENDING_SEGMENT_TIMEOUT_MS = 10000
 
 ' Player-time resolution strategies supported by the adapter
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
-const PLAYER_TIME_STRATEGY_METADATA = "metadata"
 const PLAYER_TIME_STRATEGY_HYBRID = "hybrid"
 ' Default player-time strategy used when no override is provided
-const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
+const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_SIDX
 
 
 ' Handles an intercepted SABR segment request from the Roku video stack.
@@ -1187,18 +1186,72 @@ function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType 
     if seqForCoverage <> invalid then coverage["sequenceNumber"] = seqForCoverage
     if bestEntry?.headerId <> invalid then coverage["headerId"] = bestEntry.headerId
 
-    metadata = sabr_mediaHeaderToSegmentMetadata(bestEntry?.mediaHeader, coverage)
-    if not IsAssociativeArray(metadata) then return invalid
+    bufferedRange = sabr_buildBufferedRangeFromSpoolEntry(bestEntry, coverage, activeFormat)
+    if not IsAssociativeArray(bufferedRange) then return invalid
 
     if isValid(m?.logs)
-        startLabel = sabr_valueToLabel(metadata?.rangeStart)
-        endLabel = sabr_valueToLabel(metadata?.rangeEnd)
-        seqLabel = sabr_valueToLabel(metadata?.sequenceNumber)
+        startLabel = sabr_valueToLabel(bufferedRange?.rangeStart)
+        endLabel = sabr_valueToLabel(bufferedRange?.rangeEnd)
+        seqLabel = sabr_valueToLabel(coverage?.sequenceNumber)
         itagLabel = sabr_valueToLabel(activeFormat?.itag)
         sabr_log(m.logs, log_level_Type.DEBUG, `[SabrBuffer] spoolRange itag=${itagLabel} start=${startLabel} end=${endLabel} seq=${seqLabel}`)
     end if
 
-    return sabr_buildBufferedRangeFromMetadata(metadata)
+    return bufferedRange
+end function
+
+function sabr_buildBufferedRangeFromSpoolEntry(entry as object, coverage as object, activeFormat as object) as dynamic
+    sabr_traceCall("sabr_buildBufferedRangeFromSpoolEntry")
+    if not IsAssociativeArray(entry) then return invalid
+
+    mediaHeader = entry?.mediaHeader
+    startRangeVal = sabr_toInt(coverage?.rangeStart)
+    endRangeVal = sabr_toInt(coverage?.rangeEnd)
+
+    startSeq = sabr_toInt(mediaHeader?.startSegmentIndex)
+    if startSeq = invalid then startSeq = sabr_toInt(mediaHeader?.sequenceNumber)
+    if startSeq = invalid then startSeq = sabr_toInt(entry?.sequenceNumber)
+    if startSeq = invalid then startSeq = 0
+
+    endSeq = sabr_toInt(mediaHeader?.endSegmentIndex)
+    if endSeq = invalid then endSeq = sabr_toInt(mediaHeader?.sequenceNumber)
+    if endSeq = invalid then endSeq = startSeq
+
+    timescale = sabr_toInt(mediaHeader?.timeRange?.timescale)
+    if timescale = invalid or timescale <= 0 then timescale = sabr_toInt(mediaHeader?.timescale)
+    if timescale = invalid or timescale <= 0 then timescale = 1000
+
+    durationMs = sabr_toInt(mediaHeader?.durationMs)
+    durationTicks = sabr_toInt(mediaHeader?.timeRange?.durationTicks)
+    if durationMs = invalid and durationTicks <> invalid
+        durationMs = int((durationTicks * 1000) / timescale)
+    end if
+    if durationMs = invalid then durationMs = 0
+    if durationTicks = invalid then durationTicks = durationMs
+
+    formatId = invalid
+    if IsAssociativeArray(mediaHeader?.formatId) then formatId = mediaHeader.formatId
+    if not IsAssociativeArray(formatId)
+        formatId = sabr_formatToFormatId(activeFormat)
+    end if
+
+    buffered = {
+        "formatId": formatId
+        "startSegmentIndex": startSeq
+        "endSegmentIndex": endSeq
+        "durationMs": `${durationMs}`
+        "startTimeMs": "0"
+        "timeRange": {
+            "timescale": timescale
+            "startTicks": "0"
+            "durationTicks": `${durationTicks}`
+        }
+    }
+
+    if startRangeVal <> invalid then buffered["rangeStart"] = `${startRangeVal}`
+    if endRangeVal <> invalid then buffered["rangeEnd"] = `${endRangeVal}`
+
+    return buffered
 end function
 
 ' Applies the active buffering mode to the state passed to SABR, optionally
@@ -1485,10 +1538,10 @@ function sabr_determinePlayerTimeStrategy(playbackContext as object) as string
     strategy = playbackContext?.playerTimeStrategy
     if not isValid(strategy) or strategy = "" then return DEFAULT_PLAYER_TIME_STRATEGY
     normalized = LCase(`${strategy}`)
-    if normalized = PLAYER_TIME_STRATEGY_SIDX or normalized = PLAYER_TIME_STRATEGY_METADATA or normalized = PLAYER_TIME_STRATEGY_HYBRID
+    if normalized = PLAYER_TIME_STRATEGY_SIDX or normalized = PLAYER_TIME_STRATEGY_HYBRID
         return normalized
     end if
-    return DEFAULT_PLAYER_TIME_STRATEGY
+    return PLAYER_TIME_STRATEGY_SIDX
 end function
 
 function sabr_globalSidxIndexMap() as object
@@ -1534,13 +1587,11 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
     sabr_ensurePlayerTimeStrategy(playbackContext)
 
     strategy = sabr_determinePlayerTimeStrategy(playbackContext)
-    attempts = []
-    if strategy = PLAYER_TIME_STRATEGY_SIDX
+    attempts = [PLAYER_TIME_STRATEGY_SIDX]
+    if strategy = PLAYER_TIME_STRATEGY_HYBRID
         attempts = [PLAYER_TIME_STRATEGY_SIDX]
-    else if strategy = PLAYER_TIME_STRATEGY_METADATA
-        attempts = [PLAYER_TIME_STRATEGY_METADATA]
-    else
-        attempts = [PLAYER_TIME_STRATEGY_SIDX, PLAYER_TIME_STRATEGY_METADATA]
+    else if strategy <> PLAYER_TIME_STRATEGY_SIDX
+        attempts = [PLAYER_TIME_STRATEGY_SIDX]
     end if
 
     if isValid(m?.logs)
@@ -1568,8 +1619,6 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
         result = invalid
         if attempt = PLAYER_TIME_STRATEGY_SIDX
             result = sabr_lookupPlayerTimeMsFromSidx(playbackContext, contentType, currentFormat, requestByteRange)
-        else if attempt = PLAYER_TIME_STRATEGY_METADATA
-            result = sabr_lookupPlayerTimeMsFromMetadata(playbackContext, contentType, currentFormat, requestByteRange)
         end if
 
         candidate = sabr_toInt(result?.value)
@@ -1667,54 +1716,6 @@ function sabr_parseFormatKey(formatKey as string) as object
     end if
     return info
 end function
-
-sub sabr_seedMetadataFromSidx(playbackContext as object, contentType as string, formatKey as string, sidxEntry as object)
-    sabr_traceCall("sabr_seedMetadataFromSidx")
-    if not IsAssociativeArray(playbackContext) then return
-    if not IsAssociativeArray(sidxEntry) then return
-
-    entries = sidxEntry?.entries
-    if not IsArray(entries) or entries.count() = 0 then return
-
-    byRange = sabr_getSegmentMetadataByRangeKey(playbackContext, contentType, formatKey, true)
-    if not IsAssociativeArray(byRange) then return
-
-    formatInfo = sabr_parseFormatKey(formatKey)
-
-    for each entry in entries
-        startVal = sabr_toInt(entry?.rangeStart)
-        if startVal = invalid then startVal = sabr_toInt(entry?.rangeStartLabel)
-        endVal = sabr_toInt(entry?.rangeEnd)
-        if endVal = invalid then endVal = sabr_toInt(entry?.rangeEndLabel)
-        if startVal = invalid or endVal = invalid then continue for
-
-        startTimeMs = sabr_toInt(entry?.startTimeMs)
-        durationMs = sabr_toInt(entry?.durationMs)
-
-        meta = {
-            "formatId": {}
-            "rangeStart": startVal
-            "rangeEnd": endVal
-            "startTimeMs": `${startTimeMs <> invalid ? startTimeMs : 0}`
-            "durationMs": `${durationMs <> invalid ? durationMs : 0}`
-            "timeRange": {
-                "timescale": 1000
-                "startTicks": startTimeMs <> invalid ? startTimeMs : 0
-                "durationTicks": durationMs <> invalid ? durationMs : 0
-            }
-        }
-
-        if isValid(formatInfo.itag)
-            meta.formatId["itag"] = formatInfo.itag
-        end if
-        if formatInfo.xtags <> ""
-            meta.formatId["xtags"] = formatInfo.xtags
-        end if
-
-        byRange[`${startVal}`] = meta
-    end for
-
-end sub
 
 ' Attempts to map the requested byte-range to a SIDX entry gathered from the
 ' init segment. Returns timing details when a match (or nearest predecessor) exists.
@@ -1998,168 +1999,6 @@ end function
 
 ' Uses previously delivered SABR metadata to estimate the requested segment’s
 ' start time and duration when no SIDX entry is available.
-function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
-    sabr_traceCall("sabr_lookupPlayerTimeMsFromMetadata")
-    result = {
-        "value": invalid
-        "source": "metadata"
-    }
-    if not IsAssociativeArray(playbackContext) then return result
-
-    targetStart = sabr_requestedByteStart(requestByteRange)
-    if targetStart = invalid then return result
-
-    metadataByRange = sabr_getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
-    if not IsAssociativeArray(metadataByRange) or metadataByRange.Count() = 0
-        key = sabr_buildPlayerTimeIndexKey(contentType, currentFormat)
-        indexMap = sabr_globalSidxIndexMap()
-        if key <> "" and IsAssociativeArray(indexMap) and indexMap.DoesExist(key)
-            sabr_seedMetadataFromSidx(playbackContext, contentType, sabr_formatToKey(currentFormat), indexMap.Lookup(key))
-            metadataByRange = sabr_getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
-        end if
-    end if
-    if not IsAssociativeArray(metadataByRange) or metadataByRange.Count() = 0 then return result
-
-    if isValid(m?.logs)
-        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata lookup ${sabr_buildPlayerTimeIndexKey(contentType, currentFormat)} entries=${metadataByRange.Count()}`)
-    end if
-
-    exactKey = `${targetStart}`
-    meta = invalid
-    if metadataByRange.DoesExist(exactKey)
-        meta = metadataByRange.Lookup(exactKey)
-    else
-        smallerKey = invalid
-        for each key in metadataByRange
-            startVal = sabr_toInt(key)
-            if startVal = invalid then startVal = sabr_toInt(metadataByRange.Lookup(key)?.rangeStart)
-            if startVal <> invalid and startVal <= targetStart
-                if smallerKey = invalid or startVal > sabr_toInt(smallerKey)
-                    smallerKey = key
-                end if
-            end if
-        end for
-        if isValid(smallerKey)
-            meta = metadataByRange.Lookup(smallerKey)
-        end if
-    end if
-
-    if IsAssociativeArray(meta)
-        predicted = sabr_predictPlayerTimeFromMetadata(meta, targetStart)
-        durationMs = sabr_segmentDurationMs(meta)
-        if predicted <> invalid
-            if isValid(m?.logs)
-                sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata exact start=${meta?.rangeStart ?? meta?.startRange} end=${meta?.rangeEnd ?? meta?.endRange} startMs=${meta?.startTimeMs ?? "?"} durationMs=${meta?.durationMs ?? "?"} predicted=${predicted}`)
-            end if
-            result["value"] = predicted
-            result["source"] = "metadata:exact"
-            if startMs <> invalid
-                result["segmentStartMs"] = startMs
-            end if
-            if durationMs <> invalid and durationMs > 0
-                result["durationMs"] = durationMs
-                result["segmentDurationMs"] = durationMs
-            end if
-            return result
-        end if
-    end if
-
-    bestCandidate = invalid
-    bestLabel = "metadata:nearest"
-    bestStart = -2147483647
-
-    for each key in metadataByRange
-        meta = metadataByRange.Lookup(key)
-        startVal = sabr_toInt(meta?.rangeStart)
-        if startVal = invalid then startVal = sabr_toInt(meta?.startRange)
-        endVal = sabr_toInt(meta?.rangeEnd)
-        if endVal = invalid then endVal = sabr_toInt(meta?.endRange)
-        if startVal = invalid then continue for
-
-        if endVal <> invalid and targetStart >= startVal and targetStart <= endVal
-            predicted = sabr_predictPlayerTimeFromMetadata(meta, targetStart)
-            durationMs = sabr_segmentDurationMs(meta)
-            if predicted <> invalid
-                if isValid(m?.logs)
-                    sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata within start=${startVal} end=${endVal} startMs=${meta?.startTimeMs ?? "?"} durationMs=${meta?.durationMs ?? "?"} predicted=${predicted}`)
-                end if
-        result["value"] = predicted
-        result["source"] = "metadata:within"
-        startMs = sabr_segmentStartMs(meta)
-        if startMs = invalid then startMs = sabr_toInt(meta?.startTimeMs)
-        if startMs <> invalid
-            result["segmentStartMs"] = startMs
-        end if
-        if durationMs <> invalid and durationMs > 0
-            result["durationMs"] = durationMs
-            result["segmentDurationMs"] = durationMs
-        end if
-        return result
-    end if
-        end if
-
-        if targetStart >= startVal and startVal > bestStart
-            bestStart = startVal
-            bestCandidate = meta
-        end if
-    end for
-
-    if not IsAssociativeArray(bestCandidate) then return result
-
-    predicted = sabr_predictPlayerTimeFromMetadata(bestCandidate, targetStart)
-    if predicted = invalid then return result
-    durationMs = sabr_segmentDurationMs(bestCandidate)
-
-    if isValid(m?.logs)
-        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-PlayerTime] Metadata nearest start=${bestCandidate?.rangeStart ?? bestCandidate?.startRange} end=${bestCandidate?.rangeEnd ?? bestCandidate?.endRange} startMs=${bestCandidate?.startTimeMs ?? "?"} durationMs=${bestCandidate?.durationMs ?? "?"} predicted=${predicted}`)
-    end if
-
-    result["value"] = predicted
-    result["source"] = bestLabel
-    startMs = sabr_segmentStartMs(bestCandidate)
-    if startMs = invalid then startMs = sabr_toInt(bestCandidate?.startTimeMs)
-    if startMs <> invalid
-        result["segmentStartMs"] = startMs
-    end if
-    if durationMs <> invalid and durationMs > 0
-        result["durationMs"] = durationMs
-        result["segmentDurationMs"] = durationMs
-    end if
-    return result
-end function
-
-function sabr_predictPlayerTimeFromMetadata(metadata as object, targetStart as integer) as dynamic
-    sabr_traceCall("sabr_predictPlayerTimeFromMetadata")
-    if not IsAssociativeArray(metadata) then return invalid
-
-    startMs = sabr_segmentStartMs(metadata)
-    if startMs = invalid then startMs = sabr_toInt(metadata?.startTimeMs)
-    if startMs = invalid then return invalid
-
-    durationMs = sabr_segmentDurationMs(metadata)
-    rangeStart = sabr_toInt(metadata?.rangeStart)
-    if rangeStart = invalid then rangeStart = sabr_toInt(metadata?.startRange)
-    rangeEnd = sabr_toInt(metadata?.rangeEnd)
-    if rangeEnd = invalid then rangeEnd = sabr_toInt(metadata?.endRange)
-
-    if durationMs = invalid or rangeStart = invalid or rangeEnd = invalid then return startMs
-
-    span = rangeEnd - rangeStart + 1
-    if span <= 0 then return startMs
-
-    offset = targetStart - rangeStart
-    if offset <= 0 then return startMs
-
-    predicted = startMs + int((offset * durationMs) / span)
-    if predicted < startMs then predicted = startMs
-    maxMs = startMs
-    if durationMs <> invalid and durationMs >= 0
-        maxMs = startMs + durationMs
-    end if
-    if predicted > maxMs then predicted = maxMs
-    return predicted
-end function
-
 function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, baseValue as integer, durationMs = invalid as dynamic, sourceLabel = "" as string) as object
     sabr_traceCall("sabr_applyRepeatPlayerTimeNudge")
     result = {
@@ -2298,8 +2137,6 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     globalMap = sabr_globalSidxIndexMap()
     globalMap[indexKey] = sanitized
     m.sidxIndexCache = globalMap
-
-    sabr_seedMetadataFromSidx(playbackContext, typeLabel, formatKey, sanitized)
 
     if isValid(m?.logs)
         entryCount = IsArray(sanitized.entries) ? sanitized.entries.count() : 0
@@ -2724,166 +2561,6 @@ function sabr_formatTypeFromFormat(format as dynamic) as string
     return "AUDIO"
 end function
 
-function sabr_mediaHeaderToSegmentMetadata(mediaHeader as dynamic, coverage = invalid as dynamic) as dynamic
-    sabr_traceCall("sabr_mediaHeaderToSegmentMetadata")
-    if not isValid(mediaHeader) then return invalid
-    formatId = mediaHeader?.formatId
-    if not isValid(formatId) then return invalid
-
-    startSequenceNumber = sabr_toInt(mediaHeader?.sequenceNumber)
-    endSequenceNumber = startSequenceNumber
-    sequenceNumber = startSequenceNumber
-    if sequenceNumber = invalid then sequenceNumber = sabr_toInt(coverage?.sequenceNumber)
-    if sequenceNumber = invalid or sequenceNumber <= 0 then sequenceNumber = 1
-    if startSequenceNumber = invalid or startSequenceNumber <= 0 then startSequenceNumber = sequenceNumber
-    if endSequenceNumber = invalid or endSequenceNumber <= 0 then endSequenceNumber = sequenceNumber
-
-    durationMs = mediaHeader?.durationMs ?? ""
-    if durationMs = "" then durationMs = mediaHeader?.timeRange?.durationTicks ?? ""
-    timescale = sabr_toInt(mediaHeader?.timeRange?.timescale)
-    if timescale = invalid then timescale = 1000
-
-    metadata = {
-        "formatId": mediaHeader.formatId
-        "startSequenceNumber": startSequenceNumber
-        "endSequenceNumber": endSequenceNumber
-        "sequenceNumber": sequenceNumber
-        "startTimeMs": mediaHeader.startMs ?? "0"
-        "durationMs": durationMs ?? "0"
-        "timescale": timescale
-        "timeRange": mediaHeader.timeRange
-    }
-    defaultStartRange = mediaHeader.startRange ?? mediaHeader.start ?? ""
-
-    if isValid(coverage)
-        if isValid(coverage?.rangeStart)
-            metadata["rangeStart"] = coverage.rangeStart
-        else if defaultStartRange <> ""
-            metadata["rangeStart"] = defaultStartRange
-        end if
-        if isValid(coverage?.rangeEnd)
-            metadata["rangeEnd"] = coverage.rangeEnd
-        end if
-        covSeq = sabr_toInt(coverage?.sequenceNumber)
-        if covSeq <> invalid and covSeq > 0
-            metadata["sequenceNumber"] = covSeq
-            metadata["startSequenceNumber"] = covSeq
-            metadata["endSequenceNumber"] = covSeq
-        end if
-        if isValid(coverage?.headerId)
-            metadata["headerId"] = coverage.headerId
-        end if
-    end if
-
-    startRangeVal = sabr_toInt(metadata?.rangeStart)
-    if startRangeVal = invalid
-        if defaultStartRange <> ""
-            metadata["rangeStart"] = defaultStartRange
-            startRangeVal = sabr_toInt(defaultStartRange)
-        end if
-    end if
-    if startRangeVal = invalid then startRangeVal = 0
-
-    if not metadata.DoesExist("rangeEnd")
-        contentLength = sabr_toInt(mediaHeader?.contentLength)
-        if contentLength <> invalid and contentLength > 0
-            metadata["rangeEnd"] = startRangeVal + contentLength - 1
-        end if
-    end if
-
-    if not metadata.DoesExist("rangeStart")
-        metadata["rangeStart"] = defaultStartRange
-    end if
-    if not metadata.DoesExist("rangeEnd")
-        metadata["rangeEnd"] = startRangeVal
-    end if
-
-    startIdxVal = sabr_toInt(metadata?.startSequenceNumber)
-    endIdxVal = sabr_toInt(metadata?.endSequenceNumber)
-    startSeqProblem = startIdxVal = invalid or startIdxVal <= 0
-    endSeqProblem = endIdxVal = invalid or endIdxVal <= 0
-    if not endSeqProblem and startIdxVal <> invalid
-        if endIdxVal < startIdxVal
-            endSeqProblem = true
-        end if
-    end if
-    if startSeqProblem or endSeqProblem
-        headerLabel = mediaHeader?.headerId ?? ""
-        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Meta] Missing segment sequence metadata; headerId=${headerLabel} headerSeq=${mediaHeader?.sequenceNumber} coverageSeq=${coverage?.sequenceNumber} startSeq=${metadata?.startSequenceNumber} endSeq=${metadata?.endSequenceNumber} startType=${Type(metadata?.startSequenceNumber)} endType=${Type(metadata?.endSequenceNumber)} computedStart=${startIdxVal} computedEnd=${endIdxVal} range=${metadata?.rangeStart}-${metadata?.rangeEnd}`)
-    end if
-
-    return metadata
-end function
-
-function sabr_segmentStartMs(metadata as dynamic) as dynamic
-    sabr_traceCall("sabr_segmentStartMs")
-    if not isValid(metadata) then return invalid
-    startMs = sabr_toInt(metadata?.startTimeMs)
-    if startMs = invalid then startMs = sabr_toInt(metadata?.startMs)
-    if startMs = invalid
-        startTicks = sabr_toInt(metadata?.timeRange?.startTicks)
-        timescale = sabr_toInt(metadata?.timeRange?.timescale)
-        if startTicks <> invalid and timescale <> invalid and timescale <> 0
-            startMs = int((startTicks * 1000) / timescale)
-        end if
-    end if
-    return startMs
-end function
-
-function sabr_segmentDurationMs(metadata as dynamic) as dynamic
-    sabr_traceCall("sabr_segmentDurationMs")
-    if not isValid(metadata) then return invalid
-    durationMs = sabr_toInt(metadata?.durationMs)
-    if durationMs = invalid or durationMs <= 0
-        durationTicks = sabr_toInt(metadata?.timeRange?.durationTicks)
-        timescale = sabr_toInt(metadata?.timeRange?.timescale)
-        if durationTicks <> invalid and timescale <> invalid and timescale <> 0
-            durationMs = int((durationTicks * 1000) / timescale)
-        end if
-    end if
-    return durationMs
-end function
-
-function sabr_lookupRecentMetadataBySequence(playbackContext as object, format as object, sequenceNumber as dynamic, contentType = "" as string) as dynamic
-    sabr_traceCall("sabr_lookupRecentMetadataBySequence")
-    seqVal = sabr_toInt(sequenceNumber)
-    if seqVal = invalid then return invalid
-
-    formatKey = sabr_formatToKey(format)
-    initializedFormats = playbackContext?.initializedFormats
-    if formatKey <> "" and IsAssociativeArray(initializedFormats) and initializedFormats.DoesExist(formatKey)
-        formatState = initializedFormats.Lookup(formatKey)
-        candidate = formatState?.lastSegmentMetadata
-        if isValid(candidate) and sabr_toInt(candidate?.sequenceNumber) = seqVal
-            return candidate
-        end if
-        recent = formatState?.recentSegmentMetadata
-        if IsArray(recent)
-            for i = recent.count() - 1 to 0
-                meta = recent[i]
-                if isValid(meta) and sabr_toInt(meta?.sequenceNumber) = seqVal
-                    return meta
-                end if
-            end for
-        end if
-    end if
-
-    if isValid(contentType)
-        if contentType = "VIDEO"
-            fallback = playbackContext?.lastVideoSegmentMetadata
-        else if contentType = "AUDIO"
-            fallback = playbackContext?.lastAudioSegmentMetadata
-        else
-            fallback = invalid
-        end if
-        if isValid(fallback) and sabr_toInt(fallback?.sequenceNumber) = seqVal
-            return fallback
-        end if
-    end if
-
-    return invalid
-end function
-
 function sabr_normalizeByteRange(rawRange as object, context = invalid as dynamic) as object
     sabr_traceCall("sabr_normalizeByteRange")
     normalized = {
@@ -3180,143 +2857,6 @@ function sabr_createFullBufferRange(format as object) as object
     }
 end function
 
-function sabr_buildBufferedRangeFromMetadata(originalMetadata as dynamic) as dynamic
-    sabr_traceCall("sabr_buildBufferedRangeFromMetadata")
-    if not isValid(originalMetadata) then return invalid
-    metadata = sabr_cloneObject(originalMetadata)
-    if not isValid(metadata) then metadata = originalMetadata
-    if not IsAssociativeArray(metadata) then return invalid
-
-    sabr_normalizeSegmentTiming(metadata)
-
-    durationMsStr = `${metadata?.durationMs ?? 0}`
-    if durationMsStr = "" then durationMsStr = "0"
-
-    startSequenceNumber = sabr_toInt(metadata?.startSequenceNumber)
-    if startSequenceNumber = invalid or startSequenceNumber < 0
-        startSequenceNumber = sabr_toInt(metadata?.sequenceNumber)
-    end if
-    if startSequenceNumber = invalid or startSequenceNumber < 0 then startSequenceNumber = 0
-
-    endSequenceNumber = sabr_toInt(metadata?.endSequenceNumber)
-    if endSequenceNumber = invalid or endSequenceNumber < startSequenceNumber
-        endSequenceNumber = startSequenceNumber
-    end if
-
-    startTimeMsStr = `${metadata?.startTimeMs ?? 0}`
-    if startTimeMsStr = "" then startTimeMsStr = `${metadata?.startMs ?? 0}`
-    if startTimeMsStr = "" then startTimeMsStr = "0"
-
-    timeRangeInfo = metadata?.timeRange
-    timeRangeScale = sabr_toInt(timeRangeInfo?.timescale)
-    if timeRangeScale = invalid or timeRangeScale <= 0 then timeRangeScale = metadata?.timescale ?? 1000
-    if timeRangeScale = invalid or timeRangeScale <= 0 then timeRangeScale = 1000
-
-    durationTicksVal = sabr_toInt(timeRangeInfo?.durationTicks)
-    if durationTicksVal = invalid
-        durationTicksVal = sabr_toInt(durationMsStr)
-        if durationTicksVal <> invalid and timeRangeScale <> 1000
-            durationTicksVal = int(durationTicksVal * timeRangeScale / 1000)
-        end if
-    end if
-    durationTicksStr = `${durationTicksVal ?? 0}`
-    if durationTicksStr = "" then durationTicksStr = durationMsStr
-
-    startTicksVal = sabr_toInt(timeRangeInfo?.startTicks)
-    if startTicksVal = invalid
-        startTimeVal = sabr_toInt(startTimeMsStr)
-        if startTimeVal <> invalid and timeRangeScale <> 1000
-            startTicksVal = int(startTimeVal * timeRangeScale / 1000)
-        else
-            startTicksVal = startTimeVal
-        end if
-    end if
-    startTicksStr = `${startTicksVal ?? 0}`
-    if startTicksStr = "" then startTicksStr = startTimeMsStr
-
-    formatted = {
-        "formatId": metadata.formatId,
-        "startSegmentIndex": startSequenceNumber,
-        "durationMs": durationMsStr,
-        "startTimeMs": startTimeMsStr,
-        "endSegmentIndex": endSequenceNumber,
-        "timeRange": {
-            "timescale": timeRangeScale,
-            "startTicks": startTicksStr,
-            "durationTicks": durationTicksStr
-        }
-    }
-
-    ' SABR expects buffered coverage to be normalized relative to zero so that
-    ' each entry simply advertises length. Matching the TS client keeps the
-    ' server from inferring gaps that precede the requested segment.
-    formatted["startTimeMs"] = "0"
-    formatted.timeRange["startTicks"] = "0"
-
-    rangeStartVal = sabr_toInt(metadata?.rangeStart)
-    if rangeStartVal = invalid
-        rangeStartVal = sabr_toInt(metadata?.startRange)
-    end if
-    if rangeStartVal <> invalid then formatted["rangeStart"] = `${rangeStartVal ?? ""}`
-    rangeEndVal = sabr_toInt(metadata?.rangeEnd)
-    if rangeEndVal = invalid
-        rangeEndVal = sabr_toInt(metadata?.endRange)
-    end if
-    if rangeEndVal <> invalid then formatted["rangeEnd"] = `${rangeEndVal ?? ""}`
-
-    return formatted
-end function
-
-sub sabr_normalizeSegmentTiming(metadata as object)
-    sabr_traceCall("sabr_normalizeSegmentTiming")
-    if not IsAssociativeArray(metadata) then return
-
-    timeRange = metadata?.timeRange
-    if not IsAssociativeArray(timeRange)
-        timeRange = {}
-    end if
-
-    timescale = sabr_toInt(timeRange?.timescale)
-    if timescale = invalid or timescale <= 0
-        timescale = sabr_toInt(metadata?.timescale)
-    end if
-    if timescale = invalid or timescale <= 0 then timescale = 1000
-
-    startMsVal = sabr_toInt(metadata?.startTimeMs)
-    if startMsVal = invalid then startMsVal = sabr_toInt(metadata?.startMs)
-    if startMsVal = invalid
-        startTicks = sabr_toInt(timeRange?.startTicks)
-        if startTicks <> invalid
-            startMsVal = int((startTicks * 1000) / timescale)
-        end if
-    end if
-    if startMsVal <> invalid
-        metadata["startTimeMs"] = startMsVal.toStr()
-        metadata["startMs"] = startMsVal.toStr()
-        timeRange["startTicks"] = int((startMsVal * timescale) / 1000)
-    end if
-
-    durationMsVal = sabr_toInt(metadata?.durationMs)
-    if durationMsVal = invalid or durationMsVal <= 0
-        durationTicks = sabr_toInt(timeRange?.durationTicks)
-        if durationTicks <> invalid and durationTicks > 0
-            durationMsVal = int((durationTicks * 1000) / timescale)
-        end if
-    end if
-    if durationMsVal = invalid or durationMsVal <= 0
-        durationMsVal = sabr_segmentDurationMs(metadata)
-    end if
-    if durationMsVal <> invalid and durationMsVal >= 0
-        metadata["durationMs"] = durationMsVal.toStr()
-        timeRange["durationTicks"] = int((durationMsVal * timescale) / 1000)
-    end if
-
-    metadata["timeRange"] = timeRange
-end sub
-
-
-' Converts SABR UMP results into an HTTP response suitable for the Roku player.
-' Streams from disk when possible to avoid large in-memory buffers.
 function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dynamic, currentFormat as object, requestByteRange as object, contentType as string) as object
     sabr_traceCall("sabr_buildResponseForPlayer")
 
@@ -3616,54 +3156,6 @@ sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object,
         playbackContext["sabrContexts"] = contexts
     end if
 
-    if isValid(streamInfo.mediaHeader)
-        initializedFormats = playbackContext.initializedFormats
-        formatId = streamInfo.mediaHeader.formatId
-        formatKey = sabr_formatToKey({ "itag": formatId?.itag, "xtags": formatId?.xtags })
-        initializedFormat = {}
-        if initializedFormats.DoesExist(formatKey)
-            initializedFormat = initializedFormats.Lookup(formatKey)
-        end if
-
-        coverageData = streamInfo?.deliveredCoverage
-        if isValid(coverageData)
-            streamInfo["segmentCoverage"] = coverageData
-        end if
-        metadataFromHeader = sabr_mediaHeaderToSegmentMetadata(streamInfo.mediaHeader, coverageData)
-        if isValid(metadataFromHeader)
-            if deliveredSegment = true
-                initializedFormat["lastSegmentMetadata"] = metadataFromHeader
-                recentSegments = initializedFormat?.recentSegmentMetadata
-                if not IsArray(recentSegments)
-                    recentSegments = []
-                end if
-                recentSegments.push(metadataFromHeader)
-                if recentSegments.count() > 6
-                    trimmed = []
-                    total = recentSegments.count()
-                    startIndex = total - 6
-                    for idx = startIndex to total - 1
-                        trimmed.push(recentSegments[idx])
-                    end for
-                    recentSegments = trimmed
-                end if
-                initializedFormat["recentSegmentMetadata"] = recentSegments
-                initializedFormats.AddReplace(formatKey, initializedFormat)
-                playbackContext["initializedFormats"] = initializedFormats
-
-                if streamInfo.mediaHeader.isInitSeg <> true
-                    if contentType = "VIDEO"
-                        playbackContext["lastVideoSegmentMetadata"] = metadataFromHeader
-                    else if contentType = "AUDIO"
-                        playbackContext["lastAudioSegmentMetadata"] = metadataFromHeader
-                    end if
-                end if
-
-            end if
-            sabr_recordSegmentMetadata(playbackContext, contentType, formatKey, metadataFromHeader)
-        end if
-    end if
-
     if isValid(streamInfo.formatInitMetadata)
         playbackContext["formatInitializationMetadata"] = streamInfo.formatInitMetadata
     end if
@@ -3677,67 +3169,6 @@ sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object,
     end if
 end sub
 
-function sabr_getSegmentMetadataByRange(playbackContext as object, contentType as string, format as object, createIfMissing = false as boolean) as dynamic
-    sabr_traceCall("sabr_getSegmentMetadataByRange")
-    formatKey = sabr_formatToKey(format)
-    return sabr_getSegmentMetadataByRangeKey(playbackContext, contentType, formatKey, createIfMissing)
-end function
-
-function sabr_getSegmentMetadataByRangeKey(playbackContext as object, contentType as string, formatKey as string, createIfMissing = false as boolean) as dynamic
-    sabr_traceCall("sabr_getSegmentMetadataByRangeKey")
-    if not isValid(playbackContext) then return invalid
-    if formatKey = "" then return invalid
-
-    catalog = playbackContext?.segmentMetadataByRange
-    if not IsAssociativeArray(catalog)
-        if not createIfMissing then return invalid
-        catalog = {}
-    end if
-
-    typeKey = contentType ?? ""
-    if typeKey = "" then typeKey = "UNKNOWN"
-    if not catalog.DoesExist(typeKey)
-        if not createIfMissing then return invalid
-        catalog[typeKey] = {}
-    end if
-
-    byFormat = catalog[typeKey]
-    if not IsAssociativeArray(byFormat)
-        if not createIfMissing then return invalid
-        byFormat = {}
-        catalog[typeKey] = byFormat
-    end if
-
-    if not byFormat.DoesExist(formatKey)
-        if not createIfMissing then return invalid
-        byFormat[formatKey] = {}
-    end if
-
-    playbackContext["segmentMetadataByRange"] = catalog
-    return byFormat[formatKey]
-end function
-
-sub sabr_recordSegmentMetadata(playbackContext as object, contentType as string, formatKey as string, metadata as dynamic)
-    sabr_traceCall("sabr_recordSegmentMetadata")
-    if not isValid(metadata) then return
-    startRangeVal = sabr_toInt(metadata?.startRange)
-    if startRangeVal = invalid then return
-
-    byRange = sabr_getSegmentMetadataByRangeKey(playbackContext, contentType, formatKey, true)
-    if not IsAssociativeArray(byRange) then return
-
-    byRange[startRangeVal.toStr()] = metadata
-end sub
-'         baseStart = sabr_segmentStartMs(nearestMetadata)
-'         duration = sabr_segmentDurationMs(nearestMetadata)
-'         if baseStart <> invalid and duration <> invalid
-'             prediction = baseStart + duration
-'             if prediction >= 0 then return prediction
-'         end if
-'     end if
-
-'     return invalid
-' end function
 sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
     sabr_traceCall("sabr_logSpoolSummary")
     if not IsAssociativeArray(spoolMap) then return
