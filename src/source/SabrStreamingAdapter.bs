@@ -31,6 +31,7 @@ import "pkg:/source/httpRequest.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
 import "pkg:/source/taskUtils.bs"
+import "pkg:/source/SabrInstrumentation.bs"
 
 ' Number of repeated requests before repeat guard fires
 const SABR_REPEAT_SEGMENT_THRESHOLD = 4
@@ -59,26 +60,6 @@ const SABR_BUFFER_MODE = SABR_BUFFER_MODE_BASELINE ' switch to bounded/seek mode
 const SABR_MAX_RESP_SECONDS = 110
 const SABR_PENDING_SEGMENT_TIMEOUT_MS = 10000
 
-' Returns the currently configured buffering mode.
-function sabr_bufferingMode() as string
-    return SABR_BUFFER_MODE
-end function
-
-' Determines how many buffered ranges we advertise per content type.
-function sabr_bufferingRangeLimit() as integer
-    mode = sabr_bufferingMode()
-    if mode = SABR_BUFFER_MODE_BOUNDED then return 3
-    if mode = SABR_BUFFER_MODE_SEEK_PREVIOUS then return 2
-    return SABR_BASE_BUFFERED_RANGE_LIMIT
-end function
-
-' Convenience helper to log which buffering mode is active.
-function sabr_bufferingModeLabel() as string
-    mode = sabr_bufferingMode()
-    if mode = "" then return SABR_BUFFER_MODE_BASELINE
-    return mode
-end function
-
 ' Player-time resolution strategies supported by the adapter
 const PLAYER_TIME_STRATEGY_SIDX = "sidx"
 const PLAYER_TIME_STRATEGY_METADATA = "metadata"
@@ -96,6 +77,7 @@ const DEFAULT_PLAYER_TIME_STRATEGY = PLAYER_TIME_STRATEGY_HYBRID
 ' - redirectDepth: recursion guard when SABR instructs us to retry/redirect.
 ' Returns a response object (status, headers, body or bodyPath) ready to send.
 function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer) as object
+    sabr_traceCall("sabr_handleRequest")
     ok = true
 
     sabrAbrUrl = ""
@@ -1060,12 +1042,17 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Total request duration`, requestTimer, -1)
     end if
 
+    if SABR_TRACE_ENABLED
+        sabr_traceLogSummary(`req=${nextRequestId}`)
+    end if
+
     return response
 
 end function
 
 
 function sabr_getHeaderByteRange(request as object) as object
+    sabr_traceCall("sabr_getHeaderByteRange")
     range = "bytes=0-"
     if isValid(request.headers.Range)
         range = request.headers.Range
@@ -1084,6 +1071,7 @@ end function
 ' Collects cached segment coverage for a given format so we can seed SABR
 ' buffering metadata. Returns an array of entries sorted newest-first.
 function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object, targetByteRange as object, playbackContext = invalid as dynamic) as object
+    sabr_traceCall("sabr_collectBufferedRangesForFormat")
     ranges = []
     if not isValid(activeFormat) then return ranges
     if not isValid(mediaIdHash) or mediaIdHash = "" then return ranges
@@ -1099,6 +1087,7 @@ function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType a
 end function
 
 function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType as string, activeFormat as object) as dynamic
+    sabr_traceCall("sabr_spoolBufferedRangeForFormat")
     if not IsAssociativeArray(playbackContext) then return invalid
     spoolMaps = playbackContext?.umpSpoolMaps
     if not IsAssociativeArray(spoolMaps) then return invalid
@@ -1207,61 +1196,13 @@ end function
 ' Applies the active buffering mode to the state passed to SABR, optionally
 ' synthesizing additional coverage entries to steer future responses.
 sub sabr_bufferingAugmentState(bufferState as object, params as object)
-    if not IsAssociativeArray(bufferState) then return
-    mode = sabr_bufferingMode()
-    if mode = SABR_BUFFER_MODE_BASELINE then return
-
-    contentType = `${params?.contentType ?? ""}`
-    currentFormat = params?.currentFormat
-    if not isValid(currentFormat) then return
-
-    formatType = sabr_formatTypeFromFormat(currentFormat)
-    if formatType = "" then formatType = contentType
-    if formatType = "" then formatType = "UNKNOWN"
-    formatType = UCase(formatType)
-
-    rangeMap = bufferState?.rangesByType
-    if not IsAssociativeArray(rangeMap)
-        rangeMap = {}
-        bufferState["rangesByType"] = rangeMap
-    end if
-    if not rangeMap.DoesExist(formatType)
-        rangeMap[formatType] = []
-    end if
-    ranges = rangeMap[formatType]
-    if not IsArray(ranges)
-        ranges = []
-    end if
-
-    requestByteRange = params?.requestByteRange
-    playbackContext = params?.playbackContext
-    requestStart = sabr_toInt(requestByteRange?.startRange)
-    if requestStart = invalid then requestStart = sabr_toInt(requestByteRange?.start)
-    seekBackDetected = params?.seekBackDetected = true
-    logTag = `${params?.requestLogTag ?? "[YTSABR]"}` + "-BUFFER"
-
-    if isValid(m?.logs)
-        existingCount = ranges.count()
-        sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} mode=${sabr_bufferingModeLabel()} existing=${existingCount}`)
-    end if
-
-    if mode = SABR_BUFFER_MODE_SEEK_PREVIOUS
-        if seekBackDetected
-            ranges = sabr_bufferingMaybeInjectPreviousRange(ranges, playbackContext, contentType, currentFormat, requestByteRange, logTag, "seek-guard")
-        end if
-    else if mode = SABR_BUFFER_MODE_BOUNDED
-        ranges = sabr_bufferingMaybeInjectPreviousRange(ranges, playbackContext, contentType, currentFormat, requestByteRange, logTag, "bounded-prev")
-        ranges = sabr_bufferingMaybeInjectNextRange(ranges, playbackContext, contentType, currentFormat, requestByteRange, logTag, "bounded-next")
-    end if
-
-    trimmed = sabr_bufferingTrimRanges(ranges)
-    bufferState.rangesByType[formatType] = trimmed
-    if isValid(m?.logs)
-        sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} finalRanges=${trimmed.count()}`)
-    end if
+    sabr_traceCall("sabr_bufferingAugmentState")
+    ' buffering augmentation disabled; baseline mode is a no-op
+    return
 end sub
 
 function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRange as object, keyParam as string) as dynamic
+    sabr_traceCall("sabr_findSpoolSegmentInCache")
     spoolMaps = playbackContext?.umpSpoolMaps
     if not IsAssociativeArray(spoolMaps) then return invalid
     startRange = sabr_toInt(requestByteRange?.startRange)
@@ -1286,6 +1227,7 @@ function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRang
 end function
 
 function sabr_trimSegmentChunksForRange(chunks as object, segmentStart as dynamic, requestRange as object) as dynamic
+    sabr_traceCall("sabr_trimSegmentChunksForRange")
     if not IsArray(chunks) then return invalid
     segmentStartVal = sabr_toInt(segmentStart)
     if segmentStartVal = invalid then return invalid
@@ -1339,279 +1281,8 @@ function sabr_trimSegmentChunksForRange(chunks as object, segmentStart as dynami
 end function
 
 ' Attempts to inject synthetic coverage for the segment prior to the request.
-function sabr_bufferingMaybeInjectPreviousRange(ranges as object, playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, logTag as string, reason as string) as object
-    return sabr_bufferingMaybeInjectAdjacentRange(ranges, playbackContext, contentType, currentFormat, requestByteRange, logTag, reason, -1)
-end function
-
-' Attempts to inject synthetic coverage for the segment after the request.
-function sabr_bufferingMaybeInjectNextRange(ranges as object, playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, logTag as string, reason as string) as object
-    return sabr_bufferingMaybeInjectAdjacentRange(ranges, playbackContext, contentType, currentFormat, requestByteRange, logTag, reason, 1)
-end function
-
-' Shared helper for injecting previous/next synthetic buffered ranges.
-function sabr_bufferingMaybeInjectAdjacentRange(ranges as object, playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, logTag as string, reason as string, direction as integer) as object
-    if not IsArray(ranges) then ranges = []
-    targetStart = sabr_toInt(requestByteRange?.startRange)
-    if targetStart = invalid then targetStart = sabr_toInt(requestByteRange?.start)
-    if targetStart = invalid then return ranges
-
-    metadata = sabr_bufferingFindMetadata(playbackContext, contentType, currentFormat, targetStart, direction)
-    if not IsAssociativeArray(metadata) then return ranges
-
-    metadata = sabr_bufferingEnsureSequence(metadata, requestByteRange, direction)
-    rangeEntry = sabr_buildBufferedRangeFromMetadata(metadata)
-    if not IsAssociativeArray(rangeEntry) then return ranges
-    if direction < 0
-        position = "front"
-    else
-        position = "back"
-    end if
-    syntheticReason = `${reason}`
-    if syntheticReason = "" then syntheticReason = direction < 0 ? "synthetic-prev" : "synthetic-next"
-    rangeEntry["syntheticReason"] = syntheticReason
-
-    updated = sabr_bufferingAddSyntheticRange(ranges, rangeEntry, position, logTag, syntheticReason)
-    return updated
-end function
-
-' Ensures synthetic metadata is assigned a plausible segment index.
-function sabr_bufferingEnsureSequence(metadata as object, requestByteRange as object, direction as integer) as object
-    if not IsAssociativeArray(metadata) then return metadata
-
-    seqVal = sabr_toInt(metadata?.sequenceNumber)
-    startSeqVal = sabr_toInt(metadata?.startSequenceNumber)
-    if seqVal <> invalid and seqVal > 0 and startSeqVal <> invalid and startSeqVal > 0
-        return metadata
-    end if
-
-    targetSeq = sabr_bufferingInferTargetSequence(requestByteRange)
-    if targetSeq = invalid then return metadata
-
-    inferred = targetSeq
-    if direction < 0
-        inferred = targetSeq - 1
-    else if direction > 0
-        inferred = targetSeq + 1
-    end if
-    if inferred <= 0 then inferred = targetSeq
-
-    metadata["sequenceNumber"] = inferred
-    metadata["startSequenceNumber"] = inferred
-    metadata["endSequenceNumber"] = inferred
-    metadata["startSegmentIndex"] = inferred
-    metadata["endSegmentIndex"] = inferred
-    return metadata
-end function
-
-' Derives the sequence index for the requested byte range.
-function sabr_bufferingInferTargetSequence(byteRange as object) as dynamic
-    if not IsAssociativeArray(byteRange) then return invalid
-    info = byteRange?.segmentIndexInfo
-    seq = invalid
-    if IsAssociativeArray(info)
-        seq = sabr_toInt(info?.sequenceNumber)
-        if seq = invalid then seq = sabr_toInt(info?.segmentIndex)
-        if seq = invalid then seq = sabr_toInt(info?.startSegmentIndex)
-    end if
-    if seq = invalid
-        seq = sabr_toInt(byteRange?.sequenceNumber)
-    end if
-    if seq = invalid
-        seq = sabr_toInt(byteRange?.startSegmentIndex)
-    end if
-    return seq
-end function
-
-' Searches cached metadata/SIDX entries for adjacent coverage.
-function sabr_bufferingFindMetadata(playbackContext as object, contentType as string, currentFormat as object, targetStart as integer, direction as integer) as dynamic
-    metadata = invalid
-    byRange = sabr_getSegmentMetadataByRange(playbackContext, contentType, currentFormat, false)
-    bestStart = invalid
-
-    if IsAssociativeArray(byRange)
-        for each key in byRange
-            entry = byRange.Lookup(key)
-            if not IsAssociativeArray(entry) then continue for
-            entryStart = sabr_toInt(entry?.rangeStart)
-            if entryStart = invalid then entryStart = sabr_toInt(entry?.startRange)
-            if entryStart = invalid then continue for
-            if direction < 0 and entryStart < targetStart
-                if bestStart = invalid or entryStart > bestStart
-                    bestStart = entryStart
-                    metadata = entry
-                end if
-            else if direction > 0 and entryStart > targetStart
-                if bestStart = invalid or entryStart < bestStart
-                    bestStart = entryStart
-                    metadata = entry
-                end if
-            else if direction = 0 and entryStart = targetStart
-                metadata = entry
-                exit for
-            end if
-        end for
-    end if
-
-    if IsAssociativeArray(metadata) then return metadata
-
-    neighbors = sabr_fetchSidxNeighbors(playbackContext, contentType, currentFormat, targetStart)
-    if direction < 0
-        metadata = sabr_bufferingMetadataFromSidxEntry(neighbors?.previous, currentFormat, contentType)
-    else if direction > 0
-        metadata = sabr_bufferingMetadataFromSidxEntry(neighbors?.next, currentFormat, contentType)
-    else
-        metadata = sabr_bufferingMetadataFromSidxEntry(neighbors?.exact, currentFormat, contentType)
-    end if
-
-    if IsAssociativeArray(metadata)
-        sabr_recordSegmentMetadata(playbackContext, contentType, sabr_formatToKey(currentFormat), metadata)
-    end if
-    return metadata
-end function
-
-' Converts an SIDX entry into cache metadata compatible with buffered range generation.
-function sabr_bufferingMetadataFromSidxEntry(entry as dynamic, currentFormat as object, contentType as string) as dynamic
-    if not IsAssociativeArray(entry) then return invalid
-
-    startVal = sabr_toInt(entry?.rangeStart)
-    if startVal = invalid and entry.DoesExist("rangeStartLabel")
-        startLabel = `${entry.rangeStartLabel ?? ""}`
-        if startLabel <> "" then startVal = Val(startLabel)
-    end if
-    endVal = sabr_toInt(entry?.rangeEnd)
-    if endVal = invalid and entry.DoesExist("rangeEndLabel")
-        endLabel = `${entry.rangeEndLabel ?? ""}`
-        if endLabel <> "" then endVal = Val(endLabel)
-    end if
-    if startVal = invalid or endVal = invalid then return invalid
-
-    sequenceVal = sabr_toInt(entry?.sequenceNumber)
-    durationVal = sabr_toInt(entry?.durationMs)
-    startMsVal = sabr_toInt(entry?.startMs)
-    if startMsVal = invalid then startMsVal = sabr_toInt(entry?.startTimeMs)
-    if startMsVal = invalid then startMsVal = 0
-    timeRange = entry?.timeRange
-    if not IsAssociativeArray(timeRange)
-        timeRange = {
-            "startTicks": 0
-            "durationTicks": 0
-            "timescale": 1000
-        }
-    end if
-    timescaleVal = sabr_toInt(timeRange?.timescale)
-    if timescaleVal = invalid or timescaleVal <= 0 then timescaleVal = 1000
-
-    metadata = {
-        "formatId": sabr_formatToFormatId(currentFormat)
-        "rangeStart": startVal
-        "rangeEnd": endVal
-        "startTimeMs": startMsVal.toStr()
-        "durationMs": durationVal <> invalid ? durationVal.toStr() : "0"
-        "timescale": timescaleVal
-        "timeRange": {
-            "timescale": timescaleVal
-            "startTicks": sabr_toInt(timeRange?.startTicks)
-            "durationTicks": sabr_toInt(timeRange?.durationTicks)
-        }
-    }
-
-    if metadata.timeRange.startTicks = invalid then metadata.timeRange.startTicks = 0
-    if metadata.timeRange.durationTicks = invalid and durationVal <> invalid
-        metadata.timeRange.durationTicks = int((durationVal * timescaleVal) / 1000)
-    else if metadata.timeRange.durationTicks = invalid
-        metadata.timeRange.durationTicks = 0
-    end if
-
-    seqVal = sequenceVal
-    if seqVal = invalid or seqVal <= 0
-        seqVal = sabr_toInt(metadata?.rangeStart)
-    end if
-    metadata["sequenceNumber"] = seqVal
-    metadata["startSegmentIndex"] = seqVal
-    metadata["endSegmentIndex"] = seqVal
-
-    metadata["syntheticSource"] = "sidx"
-    metadata["contentType"] = contentType
-    return metadata
-end function
-
-' Adds a synthetic buffered range to the list if it does not already exist.
-function sabr_bufferingAddSyntheticRange(ranges as object, rangeEntry as object, position as string, logTag as string, reason as string) as object
-    if not IsAssociativeArray(rangeEntry) then return ranges
-    startVal = sabr_toInt(rangeEntry?.rangeStart)
-    if startVal = invalid then startVal = sabr_toInt(rangeEntry?.startRange)
-    if startVal = invalid then return ranges
-
-    if not IsArray(ranges)
-        ranges = []
-    end if
-
-    for each existing in ranges
-        existingStart = sabr_toInt(existing?.rangeStart)
-        if existingStart = invalid then existingStart = sabr_toInt(existing?.startRange)
-        if existingStart = startVal
-            return ranges
-        end if
-    end for
-
-    newRanges = []
-    if LCase(position) = "back"
-        for each existing in ranges
-            newRanges.push(existing)
-        end for
-        newRanges.push(rangeEntry)
-    else
-        newRanges.push(rangeEntry)
-        for each existing in ranges
-            newRanges.push(existing)
-        end for
-    end if
-
-    sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} injected bufferedRange start=${startVal} reason=${reason}`)
-    return newRanges
-end function
-
-' Trims buffered ranges to the current mode's limit while preserving newest entries.
-function sabr_bufferingTrimRanges(ranges as object) as object
-    if not IsArray(ranges) then return []
-    limit = sabr_bufferingRangeLimit()
-    if limit <= 0 or ranges.count() <= limit then return ranges
-
-    sorted = []
-    for each entry in ranges
-        sorted.push(entry)
-    end for
-
-    total = sorted.count()
-    if total > 1
-        for i = 0 to total - 2
-            for j = i + 1 to total - 1
-                leftEntry = sorted[i]
-                rightEntry = sorted[j]
-                leftStart = sabr_toInt(leftEntry?.rangeStart)
-                if leftStart = invalid then leftStart = sabr_toInt(leftEntry?.startRange)
-                rightStart = sabr_toInt(rightEntry?.rangeStart)
-                if rightStart = invalid then rightStart = sabr_toInt(rightEntry?.startRange)
-                if leftStart = invalid then leftStart = -2147483647
-                if rightStart = invalid then rightStart = -2147483647
-                if rightStart > leftStart
-                    temp = sorted[i]
-                    sorted[i] = sorted[j]
-                    sorted[j] = temp
-                end if
-            end for
-        end for
-    end if
-
-    trimmed = []
-    maxIndex = limit - 1
-    if maxIndex > sorted.count() - 1 then maxIndex = sorted.count() - 1
-    for idx = 0 to maxIndex
-        trimmed.push(sorted[idx])
-    end for
-    return trimmed
-end function
 function sabr_currentPlayerPositionMs(videoNode as object, playbackContext as object) as dynamic
+    sabr_traceCall("sabr_currentPlayerPositionMs")
     positionSeconds = invalid
     if isValid(videoNode) and isValid(videoNode.position)
         positionSeconds = videoNode.position
@@ -1626,6 +1297,7 @@ end function
 ' Builds the buffered state payload that we attach to SABR requests so the
 ' server knows what segments already exist locally for video/audio tracks.
 function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object, activeFormats as object, playbackContext as object, requestedFormatType as string, requestByteRange as object) as object
+    sabr_traceCall("sabr_buildBufferedState")
     rangesByType = {}
     rangesByType["AUDIO"] = []
     rangesByType["VIDEO"] = []
@@ -1689,6 +1361,7 @@ end function
 ' Writes buffer state information onto the outgoing SABR protobuf request.
 ' Returns the modified request to support call chaining.
 function sabr_applyBufferedStateToRequest(videoPlaybackAbrRequest as object, bufferState as object) as dynamic
+    sabr_traceCall("sabr_applyBufferedStateToRequest")
     if not IsAssociativeArray(bufferState) then return invalid
 
     rangeMap = bufferState?.rangesByType
@@ -1710,6 +1383,7 @@ end function
 
 
 sub sabr_pruneBufferedRangesForSeekBack(bufferState as object, formatType as string, maxSegmentIndex as dynamic, maxStartTimeMs as dynamic, logTag as string)
+    sabr_traceCall("sabr_pruneBufferedRangesForSeekBack")
     if not IsAssociativeArray(bufferState) then return
     if formatType = "" then return
     rangesMap = bufferState?.rangesByType
@@ -1780,6 +1454,7 @@ end sub
 
 
 sub sabr_ensurePlayerTimeStrategy(playbackContext as object) as void
+    sabr_traceCall("sabr_ensurePlayerTimeStrategy")
     if not IsAssociativeArray(playbackContext) then return
     current = playbackContext?.playerTimeStrategy
     if isValid(current) and current <> "" then return
@@ -1796,6 +1471,7 @@ sub sabr_ensurePlayerTimeStrategy(playbackContext as object) as void
 end sub
 
 function sabr_determinePlayerTimeStrategy(playbackContext as object) as string
+    sabr_traceCall("sabr_determinePlayerTimeStrategy")
     if not IsAssociativeArray(playbackContext) then return DEFAULT_PLAYER_TIME_STRATEGY
     sabr_ensurePlayerTimeStrategy(playbackContext)
     strategy = playbackContext?.playerTimeStrategy
@@ -1808,6 +1484,7 @@ function sabr_determinePlayerTimeStrategy(playbackContext as object) as string
 end function
 
 function sabr_globalSidxIndexMap() as object
+    sabr_traceCall("sabr_globalSidxIndexMap")
     if not IsAssociativeArray(m?.sidxIndexCache)
         m.sidxIndexCache = {}
     end if
@@ -1815,6 +1492,7 @@ function sabr_globalSidxIndexMap() as object
 end function
 
 function sabr_requestedByteStart(byteRange as object) as dynamic
+    sabr_traceCall("sabr_requestedByteStart")
     if not IsAssociativeArray(byteRange) then return invalid
     startVal = sabr_toInt(byteRange?.startRange)
     if startVal = invalid then startVal = sabr_toInt(byteRange?.start)
@@ -1844,6 +1522,7 @@ end function
 ' Resolves the playerTimeMs and coverage metadata SABR requires for the current
 ' byte-range request. Returns a small object describing the result and source.
 function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
+    sabr_traceCall("sabr_resolvePlayerTimeMsForRequest")
     sabr_ensurePlayerTimeStrategy(playbackContext)
 
     strategy = sabr_determinePlayerTimeStrategy(playbackContext)
@@ -1931,12 +1610,13 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
         return output
     end if
 
-    fallbackInfo = sabr_resolveFallbackPlayerTimeMsInfo(playbackContext, currentFormat)
-    fallbackValue = sabr_toInt(fallbackInfo?.value)
-    if fallbackValue = invalid then fallbackValue = 0
-    fallbackSource = fallbackInfo?.source
-    if not isValid(fallbackSource) or fallbackSource = "" then fallbackSource = "default"
-    adjustedFallback = sabr_applyRepeatPlayerTimeNudge(playbackContext, contentType, currentFormat, requestByteRange, fallbackValue, sabr_toInt(fallbackInfo?.durationMs), fallbackSource)
+    fallbackValue = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
+    fallbackSource = "lastRequestedPlayerTimeMs"
+    if fallbackValue = invalid or fallbackValue < 0
+        fallbackValue = 0
+        fallbackSource = "default"
+    end if
+    adjustedFallback = sabr_applyRepeatPlayerTimeNudge(playbackContext, contentType, currentFormat, requestByteRange, fallbackValue, invalid, fallbackSource)
     finalValue = sabr_toInt(adjustedFallback?.value)
     if finalValue = invalid then finalValue = fallbackValue
     finalSource = `${adjustedFallback?.source ?? fallbackSource}`
@@ -1956,6 +1636,7 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
 end function
 
 function sabr_buildPlayerTimeIndexKey(contentType as string, format as object) as string
+    sabr_traceCall("sabr_buildPlayerTimeIndexKey")
     typeLabel = `${contentType ?? ""}`
     if typeLabel = "" then typeLabel = sabr_formatTypeFromFormat(format)
     if typeLabel = "" then typeLabel = "UNKNOWN"
@@ -1963,6 +1644,7 @@ function sabr_buildPlayerTimeIndexKey(contentType as string, format as object) a
 end function
 
 function sabr_parseFormatKey(formatKey as string) as object
+    sabr_traceCall("sabr_parseFormatKey")
     info = {
         "itag": invalid
         "xtags": ""
@@ -1979,6 +1661,7 @@ function sabr_parseFormatKey(formatKey as string) as object
 end function
 
 sub sabr_seedMetadataFromSidx(playbackContext as object, contentType as string, formatKey as string, sidxEntry as object)
+    sabr_traceCall("sabr_seedMetadataFromSidx")
     if not IsAssociativeArray(playbackContext) then return
     if not IsAssociativeArray(sidxEntry) then return
 
@@ -2028,6 +1711,7 @@ end sub
 ' Attempts to map the requested byte-range to a SIDX entry gathered from the
 ' init segment. Returns timing details when a match (or nearest predecessor) exists.
 function sabr_getSidxEntrySet(playbackContext as object, contentType as string, currentFormat as object) as dynamic
+    sabr_traceCall("sabr_getSidxEntrySet")
     result = {
         "entries": invalid
         "source": ""
@@ -2061,6 +1745,7 @@ function sabr_getSidxEntrySet(playbackContext as object, contentType as string, 
 end function
 
 function sabr_fetchSidxNeighbors(playbackContext as object, contentType as string, currentFormat as object, targetStart as integer) as object
+    sabr_traceCall("sabr_fetchSidxNeighbors")
     neighbors = {
         "exact": invalid
         "previous": invalid
@@ -2126,6 +1811,7 @@ function sabr_fetchSidxNeighbors(playbackContext as object, contentType as strin
 end function
 
 function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
+    sabr_traceCall("sabr_lookupPlayerTimeMsFromSidx")
     result = {
         "value": invalid
         "source": "sidx"
@@ -2257,6 +1943,7 @@ function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType 
 end function
 
 function sabr_predictPlayerTimeFromSidxEntry(entry as object, targetStart as dynamic) as dynamic
+    sabr_traceCall("sabr_predictPlayerTimeFromSidxEntry")
     if not IsAssociativeArray(entry) then return invalid
     startMs = sabr_toInt(entry?.startTimeMs)
     if startMs = invalid then return invalid
@@ -2304,6 +1991,7 @@ end function
 ' Uses previously delivered SABR metadata to estimate the requested segment’s
 ' start time and duration when no SIDX entry is available.
 function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
+    sabr_traceCall("sabr_lookupPlayerTimeMsFromMetadata")
     result = {
         "value": invalid
         "source": "metadata"
@@ -2433,6 +2121,7 @@ function sabr_lookupPlayerTimeMsFromMetadata(playbackContext as object, contentT
 end function
 
 function sabr_predictPlayerTimeFromMetadata(metadata as object, targetStart as integer) as dynamic
+    sabr_traceCall("sabr_predictPlayerTimeFromMetadata")
     if not IsAssociativeArray(metadata) then return invalid
 
     startMs = sabr_segmentStartMs(metadata)
@@ -2464,6 +2153,7 @@ function sabr_predictPlayerTimeFromMetadata(metadata as object, targetStart as i
 end function
 
 function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, baseValue as integer, durationMs = invalid as dynamic, sourceLabel = "" as string) as object
+    sabr_traceCall("sabr_applyRepeatPlayerTimeNudge")
     result = {
         "value": baseValue
         "source": sourceLabel
@@ -2520,6 +2210,7 @@ function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType 
 end function
 
 sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)
+    sabr_traceCall("sabr_storeSidxIndexUpdate")
     if not IsAssociativeArray(playbackContext) then return
     if not IsAssociativeArray(update) then return
 
@@ -2618,6 +2309,7 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
 end sub
 
 function sabr_isInit(contentType as string, format as object, requestByteRange as object, requestRef = invalid as dynamic) as boolean
+    sabr_traceCall("sabr_isInit")
     logTag = sabr_utilLogTag(contentType, requestRef)
     if sabr_rangesMatch(format?.initRange, requestByteRange)
         sabr_log(m.logs, log_level_Type.INFO, `${logTag} SABR format itag ${format.itag} init range requested: ${FormatJson(requestByteRange)}`)
@@ -2633,6 +2325,7 @@ end function
 
 ' Returns mediaIdHash (string) or invalid if not found
 function sabr_extractMediaIdHash(url as string) as dynamic
+    sabr_traceCall("sabr_extractMediaIdHash")
     ' /sabr/<anything-not-a-slash>(optional slash)
     re = CreateObject("roRegex", "/sabr/([^/]+)/?", "i")
     m = re.Match(url)
@@ -2641,6 +2334,7 @@ function sabr_extractMediaIdHash(url as string) as dynamic
 end function
 
 sub sabr_ensureInfrastructure()
+    sabr_traceCall("sabr_ensureInfrastructure")
     if not isValid(m.sabrRequestMetadataManager)
         m.sabrRequestMetadataManager = sabr_createRequestMetadataManager()
     end if
@@ -2650,6 +2344,7 @@ sub sabr_ensureInfrastructure()
 end sub
 
 function sabr_buildPrefetchInfo(streamInfo as object, currentFormat as object, requestMetadataEntry as object) as object
+    sabr_traceCall("sabr_buildPrefetchInfo")
     if not isValid(streamInfo) then return invalid
     mediaHeader = streamInfo.mediaHeader
     if not isValid(mediaHeader) then return invalid
@@ -2671,6 +2366,7 @@ function sabr_buildPrefetchInfo(streamInfo as object, currentFormat as object, r
 end function
 
 sub sabr_maybeSchedulePrefetch(playbackContext as object, videoNode as object, prefetchInfo as object, contentType as string)
+    sabr_traceCall("sabr_maybeSchedulePrefetch")
     if not isValid(playbackContext) then return
     if not isValid(prefetchInfo) then return
     if not isValid(videoNode) then return
@@ -2696,6 +2392,7 @@ sub sabr_maybeSchedulePrefetch(playbackContext as object, videoNode as object, p
 end sub
 
 function sabr_buildSegmentCacheKeyForRange(format as object, byteRange as object) as string
+    sabr_traceCall("sabr_buildSegmentCacheKeyForRange")
     if not isValid(format) then return ""
     startLabel = sabr_valueToLabel(byteRange?.startRange)
     if startLabel = "" then startLabel = sabr_valueToLabel(byteRange?.start)
@@ -2716,6 +2413,7 @@ function sabr_buildSegmentCacheKeyForRange(format as object, byteRange as object
 end function
 
 function sabr_buildRepeatRequestKey(contentType as string, format as object, byteRange as object) as string
+    sabr_traceCall("sabr_buildRepeatRequestKey")
     if not isValid(byteRange) then return ""
     segmentKey = sabr_buildSegmentCacheKeyForRange(format, byteRange)
     if segmentKey = "" then return ""
@@ -2725,6 +2423,7 @@ function sabr_buildRepeatRequestKey(contentType as string, format as object, byt
 end function
 
 sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, playbackContext as object, label as string, extra = invalid as dynamic)
+    sabr_traceCall("sabr_debugLogRepeatState")
     if not isValid(m?.logs) then return
     logTag = sabr_utilLogTag(contentType, `${requestNumber}`)
     state = playbackContext?.repeatRequestState
@@ -2767,6 +2466,7 @@ sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, pl
 end sub
 
 function sabr_streamInfoKey(contentType as string, format as object) as string
+    sabr_traceCall("sabr_streamInfoKey")
     keyPart = sabr_formatToKey(format)
     if keyPart = ""
         keyPart = "unknown"
@@ -2777,6 +2477,7 @@ function sabr_streamInfoKey(contentType as string, format as object) as string
 end function
 
 sub sabr_logBufferedRanges(logTag as string, requestJson as object)
+    sabr_traceCall("sabr_logBufferedRanges")
     if not isValid(m?.logs) then return
     if not IsAssociativeArray(requestJson) then return
     ranges = invalid
@@ -2828,6 +2529,7 @@ sub sabr_logBufferedRanges(logTag as string, requestJson as object)
 end sub
 
 function sabr_sessionKey(mediaIdHash as string, contentType as string, requestNumber as dynamic) as string
+    sabr_traceCall("sabr_sessionKey")
     parts = []
     mediaLabel = sabr_valueToLabel(mediaIdHash)
     if mediaLabel <> "" then parts.push(mediaLabel)
@@ -2838,6 +2540,7 @@ function sabr_sessionKey(mediaIdHash as string, contentType as string, requestNu
 end function
 
 function sabr_storeStreamInfoForFormat(playbackContext as object, contentType as string, format as object, streamInfo as object) as void
+    sabr_traceCall("sabr_storeStreamInfoForFormat")
     if not isValid(playbackContext) then return
     if not isValid(streamInfo) then return
     key = sabr_streamInfoKey(contentType, format)
@@ -2852,6 +2555,7 @@ function sabr_storeStreamInfoForFormat(playbackContext as object, contentType as
 end function
 
 function sabr_fetchStreamInfoForFormat(playbackContext as object, contentType as string, format as object) as dynamic
+    sabr_traceCall("sabr_fetchStreamInfoForFormat")
     if not isValid(playbackContext) then return invalid
     key = sabr_streamInfoKey(contentType, format)
     if key = "" then return invalid
@@ -2865,6 +2569,7 @@ end function
 ' Tracks repeated byte-range requests that may indicate playback stalls.
 ' Returns an error response when the repeat guard trips, otherwise invalid.
 function sabr_guardRepeatedRequests(playbackContext as object, contentType as string, currentFormat as object, requestMetadataEntry as object, requestNumber as string, videoNode as object, mediaIdHash as string) as dynamic
+    sabr_traceCall("sabr_guardRepeatedRequests")
     if not isValid(playbackContext) then return invalid
     if requestMetadataEntry?.isInit = true then return invalid
 
@@ -2951,6 +2656,7 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
 end function
 
 sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as object, response as object, contentType = "" as string, requestNumber = invalid as dynamic)
+    sabr_traceCall("sabr_recordRepeatResult")
     if not isValid(playbackContext) then return
     repeatKey = `${requestMetadataEntry?.repeatKey ?? ""}`
     if repeatKey = "" then return
@@ -3002,6 +2708,7 @@ sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as o
 end sub
 
 function sabr_formatTypeFromFormat(format as dynamic) as string
+    sabr_traceCall("sabr_formatTypeFromFormat")
     mimeType = format?.mimeType ?? ""
     if mimeType.inStr("audio") > -1 then return "AUDIO"
     if mimeType.inStr("video") > -1 then return "VIDEO"
@@ -3010,6 +2717,7 @@ function sabr_formatTypeFromFormat(format as dynamic) as string
 end function
 
 function sabr_mediaHeaderToSegmentMetadata(mediaHeader as dynamic, coverage = invalid as dynamic) as dynamic
+    sabr_traceCall("sabr_mediaHeaderToSegmentMetadata")
     if not isValid(mediaHeader) then return invalid
     formatId = mediaHeader?.formatId
     if not isValid(formatId) then return invalid
@@ -3100,6 +2808,7 @@ function sabr_mediaHeaderToSegmentMetadata(mediaHeader as dynamic, coverage = in
 end function
 
 function sabr_segmentStartMs(metadata as dynamic) as dynamic
+    sabr_traceCall("sabr_segmentStartMs")
     if not isValid(metadata) then return invalid
     startMs = sabr_toInt(metadata?.startTimeMs)
     if startMs = invalid then startMs = sabr_toInt(metadata?.startMs)
@@ -3114,6 +2823,7 @@ function sabr_segmentStartMs(metadata as dynamic) as dynamic
 end function
 
 function sabr_segmentDurationMs(metadata as dynamic) as dynamic
+    sabr_traceCall("sabr_segmentDurationMs")
     if not isValid(metadata) then return invalid
     durationMs = sabr_toInt(metadata?.durationMs)
     if durationMs = invalid or durationMs <= 0
@@ -3127,6 +2837,7 @@ function sabr_segmentDurationMs(metadata as dynamic) as dynamic
 end function
 
 function sabr_lookupRecentMetadataBySequence(playbackContext as object, format as object, sequenceNumber as dynamic, contentType = "" as string) as dynamic
+    sabr_traceCall("sabr_lookupRecentMetadataBySequence")
     seqVal = sabr_toInt(sequenceNumber)
     if seqVal = invalid then return invalid
 
@@ -3166,6 +2877,7 @@ function sabr_lookupRecentMetadataBySequence(playbackContext as object, format a
 end function
 
 function sabr_normalizeByteRange(rawRange as object, context = invalid as dynamic) as object
+    sabr_traceCall("sabr_normalizeByteRange")
     normalized = {
         "startRange": ""
         "endRange": ""
@@ -3191,6 +2903,7 @@ function sabr_normalizeByteRange(rawRange as object, context = invalid as dynami
 end function
 
 function sabr_hasCompleteByteRange(byteRange as object) as boolean
+    sabr_traceCall("sabr_hasCompleteByteRange")
     if not isValid(byteRange) then return false
     startLabel = `${byteRange?.startRange ?? ""}`
     if startLabel = "" then startLabel = `${byteRange?.start ?? ""}`
@@ -3200,6 +2913,7 @@ function sabr_hasCompleteByteRange(byteRange as object) as boolean
 end function
 
 function sabr_byteRangeToCoverage(byteRange as object) as dynamic
+    sabr_traceCall("sabr_byteRangeToCoverage")
     startVal = invalid
     endVal = invalid
 
@@ -3226,6 +2940,7 @@ function sabr_byteRangeToCoverage(byteRange as object) as dynamic
 end function
 
 function sabr_rangesMatch(rangeObj as dynamic, requestRange as object) as boolean
+    sabr_traceCall("sabr_rangesMatch")
     if not isValid(rangeObj) then return false
 
     expectedStart = `${rangeObj?.start ?? "0"}`
@@ -3245,6 +2960,7 @@ end function
 
 
 sub sabr_deleteFileIfExists(path as dynamic)
+    sabr_traceCall("sabr_deleteFileIfExists")
     if not isValid(path) then return
     if not IsString(path) then return
     if path = "" then return
@@ -3256,6 +2972,7 @@ sub sabr_deleteFileIfExists(path as dynamic)
 end sub
 
 function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic) as string
+    sabr_traceCall("sabr_utilLogTag")
     rn = sabr_extractRequestNumber(requestRef)
     if rn = ""
         return `[YTSABR-Util-${contentType}]`
@@ -3266,6 +2983,7 @@ end function
 ' Determines the currently active video/audio formats to use for buffering and
 ' SABR requests, falling back to recently used formats in playbackContext.
 function sabr_getActiveFormats(currentFormat as object, sabr as object, playbackContext as object) as object
+    sabr_traceCall("sabr_getActiveFormats")
     formats = sabr.adaptiveFormats
     videoFormat = invalid
     audioFormat = invalid
@@ -3305,6 +3023,7 @@ function sabr_getActiveFormats(currentFormat as object, sabr as object, playback
 end function
 
 function sabr_pickBestFormat(formats as dynamic, mediaType as string) as dynamic
+    sabr_traceCall("sabr_pickBestFormat")
     if not isValid(formats) then return invalid
     bestFormat = invalid
     bestBitrate = 0
@@ -3326,6 +3045,7 @@ function sabr_pickBestFormat(formats as dynamic, mediaType as string) as dynamic
 end function
 
 function sabr_pickMeasuredBitrate(info as dynamic) as dynamic
+    sabr_traceCall("sabr_pickMeasuredBitrate")
     if not isValid(info) then return invalid
     if isValid(info.measuredBitrate) and info.measuredBitrate > 0 then return info.measuredBitrate
     if isValid(info.streamBitrate) and info.streamBitrate > 0 then return info.streamBitrate
@@ -3335,6 +3055,7 @@ end function
 ' Builds the VideoPlaybackAbrRequest protobuf payload for the current segment.
 ' Handles buffered ranges, player-time resolution, and metadata annotations.
 function sabr_createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic) as object
+    sabr_traceCall("sabr_createVideoPlaybackAbrRequest")
     ' Create the ABR request object
     logTag = sabr_utilLogTag(contentType, requestRef)
     if not isValid(sabr.ustreamerConfig)
@@ -3392,10 +3113,10 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
     overrideUsed = overrideMs <> invalid
     desiredPlayerTimeMs = overrideMs
     if desiredPlayerTimeMs = invalid or desiredPlayerTimeMs < 0
-        desiredPlayerTimeMs = sabr_resolveFallbackPlayerTimeMs(playbackContext, currentFormat)
+        desiredPlayerTimeMs = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
+        if desiredPlayerTimeMs = invalid or desiredPlayerTimeMs < 0 then desiredPlayerTimeMs = 0
         overrideUsed = false
     end if
-    if desiredPlayerTimeMs = invalid or desiredPlayerTimeMs < 0 then desiredPlayerTimeMs = 0
 
     playbackContext["lastRequestedPlayerTimeMs"] = desiredPlayerTimeMs
     playbackContext["lastPlayerTimeSecs"] = videoNode.position
@@ -3428,60 +3149,6 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
 
 end function
 
-' Generates a best-effort estimate of player time when both SIDX and metadata
-' lookups fail, using historical counters tracked in playbackContext.
-function sabr_resolveFallbackPlayerTimeMsInfo(playbackContext as object, format as object) as object
-    info = {
-        "value": 0
-        "source": "default:0"
-    }
-
-    if not isValid(playbackContext) then return info
-
-    formatKey = sabr_formatToKey(format)
-    totals = playbackContext?.deliveredDurationTotals
-    if IsAssociativeArray(totals) and formatKey <> "" and totals.DoesExist(formatKey)
-        candidate = sabr_toInt(totals.Lookup(formatKey))
-        if candidate <> invalid and candidate >= 0
-            info["value"] = candidate
-            info["source"] = "deliveredDurationTotals"
-            return info
-        end if
-    end if
-
-    previous = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
-    if previous <> invalid and previous >= 0
-        info["value"] = previous
-        info["source"] = "lastRequestedPlayerTimeMs"
-        return info
-    end if
-
-    estimate = sabr_toInt(playbackContext?.estimatedPlayerTimeMs)
-    if estimate <> invalid and estimate >= 0
-        info["value"] = estimate
-        info["source"] = "estimatedPlayerTimeMs"
-        return info
-    end if
-
-    lastPositionSeconds = playbackContext?.lastPlayerTimeSecs
-    if isValid(lastPositionSeconds)
-        positionMs = int((lastPositionSeconds ?? 0) * 1000)
-        if positionMs >= 0
-            info["value"] = positionMs
-            info["source"] = "lastPlayerTimeSecs"
-            return info
-        end if
-    end if
-
-    return info
-end function
-
-function sabr_resolveFallbackPlayerTimeMs(playbackContext as object, format as object) as dynamic
-    info = sabr_resolveFallbackPlayerTimeMsInfo(playbackContext, format)
-    return info["value"]
-end function
-
-
 '     playbackContext["initializedFormats"] = initializedFormats
 '     return initializedFormats
 ' end function
@@ -3489,6 +3156,7 @@ end function
 ' create a bogus full buffer range with max int32 values so we fake out the youtube server to think we already have all this data in the buffer
 ' as we don't want it (this is how we can still get either "just" video or "just" audio segments based on the player's dash requests)
 function sabr_createFullBufferRange(format as object) as object
+    sabr_traceCall("sabr_createFullBufferRange")
     MAX_INT32_VALUE = 2147483647
     return {
         "formatId": sabr_formatToFormatId(format),
@@ -3505,6 +3173,7 @@ function sabr_createFullBufferRange(format as object) as object
 end function
 
 function sabr_buildBufferedRangeFromMetadata(originalMetadata as dynamic) as dynamic
+    sabr_traceCall("sabr_buildBufferedRangeFromMetadata")
     if not isValid(originalMetadata) then return invalid
     metadata = sabr_cloneObject(originalMetadata)
     if not isValid(metadata) then metadata = originalMetadata
@@ -3591,6 +3260,7 @@ function sabr_buildBufferedRangeFromMetadata(originalMetadata as dynamic) as dyn
 end function
 
 sub sabr_normalizeSegmentTiming(metadata as object)
+    sabr_traceCall("sabr_normalizeSegmentTiming")
     if not IsAssociativeArray(metadata) then return
 
     timeRange = metadata?.timeRange
@@ -3639,6 +3309,7 @@ end sub
 ' Converts SABR UMP results into an HTTP response suitable for the Roku player.
 ' Streams from disk when possible to avoid large in-memory buffers.
 function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dynamic, currentFormat as object, requestByteRange as object, contentType as string) as object
+    sabr_traceCall("sabr_buildResponseForPlayer")
     headers = CreateObject("roAssociativeArray")
     itagLabelForHeader = sabr_valueToLabel(currentFormat?.itag)
     if itagLabelForHeader = "" then itagLabelForHeader = `${requestMetadata?.format?.itag ?? ""}`
@@ -4023,6 +3694,7 @@ end function
 ' Builds a bare 204 response when no body is available but the request should
 ' still be considered handled by the local server.
 function sabr_buildEmptyResponseForPlayer(contentType as string, currentFormat as object) as object
+    sabr_traceCall("sabr_buildEmptyResponseForPlayer")
     body = CreateObject("roByteArray")
 
     mimeType = currentFormat?.mimeType ?? ""
@@ -4051,6 +3723,7 @@ function sabr_buildEmptyResponseForPlayer(contentType as string, currentFormat a
 end function
 
 function sabr_fsGetFileSize(path as string) as dynamic
+    sabr_traceCall("sabr_fsGetFileSize")
     if not IsString(path) or path = "" then return invalid
     fs = CreateObject("roFileSystem")
     stat = invalid
@@ -4069,6 +3742,7 @@ end function
 
 ' Utility for generating an HTTP error response to propagate back to the player.
 function sabr_buildErrorResponseForPlayer(status as integer, message as string) as object
+    sabr_traceCall("sabr_buildErrorResponseForPlayer")
     body = CreateObject("roByteArray")
     if isValid(message) and message <> ""
         body.FromAsciiString(message)
@@ -4088,10 +3762,12 @@ function sabr_buildErrorResponseForPlayer(status as integer, message as string) 
 end function
 
 function sabr_isFileStreamingEnabled() as boolean
+    sabr_traceCall("sabr_isFileStreamingEnabled")
     return SABR_ENABLE_FILE_STREAMING = true
 end function
 
 function sabr_readSegmentRange(path as string, offset as integer, length as integer) as dynamic
+    sabr_traceCall("sabr_readSegmentRange")
     if not IsString(path) or path = "" then return invalid
     if length <= 0 then
         empty = CreateObject("roByteArray")
@@ -4105,6 +3781,7 @@ function sabr_readSegmentRange(path as string, offset as integer, length as inte
 end function
 
 sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
+    sabr_traceCall("sabr_applyStreamInfoUpdates")
     if not isValid(streamInfo) then return
 
     sidxUpdates = streamInfo?.sidxIndexUpdates
@@ -4205,11 +3882,13 @@ sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object,
 end sub
 
 function sabr_getSegmentMetadataByRange(playbackContext as object, contentType as string, format as object, createIfMissing = false as boolean) as dynamic
+    sabr_traceCall("sabr_getSegmentMetadataByRange")
     formatKey = sabr_formatToKey(format)
     return sabr_getSegmentMetadataByRangeKey(playbackContext, contentType, formatKey, createIfMissing)
 end function
 
 function sabr_getSegmentMetadataByRangeKey(playbackContext as object, contentType as string, formatKey as string, createIfMissing = false as boolean) as dynamic
+    sabr_traceCall("sabr_getSegmentMetadataByRangeKey")
     if not isValid(playbackContext) then return invalid
     if formatKey = "" then return invalid
 
@@ -4243,6 +3922,7 @@ function sabr_getSegmentMetadataByRangeKey(playbackContext as object, contentTyp
 end function
 
 sub sabr_recordSegmentMetadata(playbackContext as object, contentType as string, formatKey as string, metadata as dynamic)
+    sabr_traceCall("sabr_recordSegmentMetadata")
     if not isValid(metadata) then return
     startRangeVal = sabr_toInt(metadata?.startRange)
     if startRangeVal = invalid then return
@@ -4254,6 +3934,7 @@ sub sabr_recordSegmentMetadata(playbackContext as object, contentType as string,
 end sub
 
 sub sabr_updateDeliveredDurationTotals(playbackContext as object, contentType as string, format as object, metadata as dynamic)
+    sabr_traceCall("sabr_updateDeliveredDurationTotals")
     if not isValid(playbackContext) then return
     if not isValid(format) then return
     if not isValid(metadata) then return
@@ -4317,6 +3998,7 @@ end sub
 '     return invalid
 ' end function
 sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
+    sabr_traceCall("sabr_logSpoolSummary")
     if not IsAssociativeArray(spoolMap) then return
 
     parts = spoolMap?.parts
@@ -4373,6 +4055,7 @@ sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
 end sub
 
 function sabr_selectSpoolPart(spoolMap as object, requestedRange as object) as dynamic
+    sabr_traceCall("sabr_selectSpoolPart")
     if not IsAssociativeArray(spoolMap) then return invalid
     parts = spoolMap?.parts
     if not IsArray(parts) or parts.count() = 0 then return invalid

@@ -1,6 +1,8 @@
+import "pkg:/source/SabrInstrumentation.bs"
 ' Utility helpers for parsing MP4 box structures used by SABR diagnostics
 
 function sabr_mp4_parseBoxes(bytes as object, maxBoxes as integer) as object
+    sabr_traceCall("sabr_mp4_parseBoxes")
     results = []
     if not isValid(bytes) then return results
     total = bytes.count()
@@ -37,6 +39,7 @@ function sabr_mp4_parseBoxes(bytes as object, maxBoxes as integer) as object
 end function
 
 function sabr_mp4_extractSidxIndex(bytes as object) as dynamic
+    sabr_traceCall("sabr_mp4_extractSidxIndex")
     ' base64 log of bytes can be passed in to extract SIDX box info
     sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-MP4] Extracting SIDX index from bytes: ${bytes.ToHexString()}`)
     if not isValid(bytes) then return invalid
@@ -50,6 +53,7 @@ function sabr_mp4_extractSidxIndex(bytes as object) as dynamic
 end function
 
 function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
+    sabr_traceCall("sabr_mp4_parseSidxBox")
     if not isValid(bytes) or not IsAssociativeArray(boxInfo) then return invalid
 
     offset = sabr_mp4_toInt(boxInfo?.offset)
@@ -161,6 +165,7 @@ function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
 end function
 
 function sabr_mp4_readUint32(bytes as object, offset as integer) as integer
+    sabr_traceCall("sabr_mp4_readUint32")
     if not isValid(bytes) then return 0
     if offset + 3 >= bytes.count() then return 0
     b0 = bytes[offset]
@@ -171,6 +176,7 @@ function sabr_mp4_readUint32(bytes as object, offset as integer) as integer
 end function
 
 function sabr_mp4_readUint16(bytes as object, offset as integer) as integer
+    sabr_traceCall("sabr_mp4_readUint16")
     if not isValid(bytes) then return 0
     if offset + 1 >= bytes.count() then return 0
     b0 = bytes[offset]
@@ -179,12 +185,14 @@ function sabr_mp4_readUint16(bytes as object, offset as integer) as integer
 end function
 
 function sabr_mp4_readUint64(bytes as object, offset as integer) as double
+    sabr_traceCall("sabr_mp4_readUint64")
     hi = sabr_mp4_readUint32(bytes, offset) * 1.0
     lo = sabr_mp4_readUint32(bytes, offset + 4) * 1.0
     return (hi * 4294967296.0) + lo
 end function
 
 function sabr_mp4_readFourCC(bytes as object, offset as integer) as string
+    sabr_traceCall("sabr_mp4_readFourCC")
     if not isValid(bytes) then return ""
     result = ""
     for i = 0 to 3
@@ -195,6 +203,7 @@ function sabr_mp4_readFourCC(bytes as object, offset as integer) as string
 end function
 
 function sabr_mp4_toInt(value as dynamic) as dynamic
+    sabr_traceCall("sabr_mp4_toInt")
     if not isValid(value) then return invalid
 
     if IsInteger(value)

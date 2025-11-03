@@ -10,7 +10,6 @@ const DEST_SRC_DIR = path.join(DEST_ROOT, 'source');
 const FILES = [
   'SabrStreamingAdapter.bs',
   'SabrUmpProcessor.bs',
-  'SabrSimpleCache.bs',
   'SabrMp4Parser.bs',
   'SabrRequestMetadataManager.bs',
   'SabrUtils.bs',
@@ -64,10 +63,6 @@ function writeNoopSabrDebug() {
   ensureDir(path.dirname(destPath));
   const stub = `const SABR_DEBUG_ENABLED = false
 
-function sabr_debugEnabled() as boolean
-    return false
-end function
-
 sub sabr_log(logs as dynamic, level as integer, message as string, debugOnly = true as boolean)
     if debugOnly = false and IsAssociativeArray(logs) and logs.DoesExist("printl")
         logs.printl(level, message)
@@ -108,7 +103,7 @@ end function
 
 function writeReadme() {
   const readmePath = path.join(DEST_ROOT, 'README.md');
-  const content = `# Roku SABR Core\n\nThis folder contains a trimmed copy of the SABR processing pipeline that omits diagnostics and test harness code.\n\n## Contents\n- source/SabrStreamingAdapter.bs\n- source/SabrUmpProcessor.bs\n- source/SabrSimpleCache.bs\n- source/SabrRequestMetadataManager.bs\n- source/SabrMp4Parser.bs\n- source/SabrUtils.bs\n- source/httpRequest.bs (minimal HTTP helper)\n- source/utils.bs, source/taskUtils.bs, source/logger.bs (support shims)\n- source/SabrDebug.bs (no-op debug implementation)\n- source/ytproto/... protobuf message bindings\n\n## Usage\nCopy the \`source\` directory into your BrightScript project and include the files in \`bsconfig.json\`.\n\n## Notes\n- All logging and debug upload helpers are no-ops in this bundle.\n- You are expected to provide your own HTTP server/task integration around \`SabrStreamingAdapter\`.\n`;
+  const content = `# Roku SABR Core\n\nThis folder contains a trimmed copy of the SABR processing pipeline that omits diagnostics and test harness code.\n\n## Contents\n- source/SabrStreamingAdapter.bs\n- source/SabrUmpProcessor.bs\n- source/SabrRequestMetadataManager.bs\n- source/SabrMp4Parser.bs\n- source/SabrUtils.bs\n- source/httpRequest.bs (minimal HTTP helper)\n- source/utils.bs, source/taskUtils.bs, source/logger.bs (support shims)\n- source/SabrDebug.bs (no-op debug implementation)\n- source/ytproto/... protobuf message bindings\n\n## Usage\nCopy the \`source\` directory into your BrightScript project and include the files in \`bsconfig.json\`.\n\n## Notes\n- All logging and debug upload helpers are no-ops in this bundle.\n- You are expected to provide your own HTTP server/task integration around \`SabrStreamingAdapter\`.\n`;
   fs.writeFileSync(readmePath, content, 'utf8');
 }
 

@@ -1,0 +1,63 @@
+const SABR_TRACE_ENABLED = true
+
+function sabr_traceState() as object
+    globalAA = GetGlobalAA()
+    state = globalAA.Lookup("_sabrTraceState")
+    if not IsAssociativeArray(state)
+        state = {}
+        globalAA["_sabrTraceState"] = state
+    end if
+    counts = state.Lookup("counts")
+    if not IsAssociativeArray(counts)
+        counts = {}
+        state["counts"] = counts
+    end if
+    return state
+end function
+
+function sabr_traceGetCounts() as object
+    state = sabr_traceState()
+    counts = state.Lookup("counts")
+    if IsAssociativeArray(counts) then return counts
+    return {}
+end function
+
+sub sabr_traceCall(name as string)
+    if not SABR_TRACE_ENABLED then return
+    counts = sabr_traceGetCounts()
+    if not IsAssociativeArray(counts)
+        counts = {}
+        sabr_traceState()["counts"] = counts
+    end if
+    count = counts.Lookup(name)
+    if count = invalid then count = 0
+    counts[name] = count + 1
+end sub
+
+sub sabr_traceLogSummary(label = "" as string)
+    if not SABR_TRACE_ENABLED then return
+    counts = sabr_traceGetCounts()
+    entries = []
+    for each key in counts
+        entries.push({ "name": key, "count": counts[key] })
+    end for
+    total = entries.count()
+    if total > 1
+        for i = 0 to total - 2
+            for j = i + 1 to total - 1
+                if entries[j].count > entries[i].count
+                    temp = entries[i]
+                    entries[i] = entries[j]
+                    entries[j] = temp
+                end if
+            end for
+        end for
+    end if
+    summary = []
+    for each entry in entries
+        summary.push(`${entry.name}:${entry.count}`)
+    end for
+    prefix = "[SABR-Trace]"
+    if label <> "" then prefix = `${prefix} ${label}`
+    print `${prefix} ${summary.Join(" ")}`
+end sub

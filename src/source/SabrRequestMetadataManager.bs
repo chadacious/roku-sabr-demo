@@ -1,8 +1,10 @@
 ' Tracks SABR request metadata keyed by request number (rn).
 
 import "pkg:/source/isItem.bs"
+import "pkg:/source/SabrInstrumentation.bs"
 
 function sabr_createRequestMetadataManager() as object
+    sabr_traceCall("sabr_createRequestMetadataManager")
     manager = {
         "entries": createObject("roAssociativeArray")
         "lastCleanup": sabr_metadata_timestamp()
@@ -24,6 +26,7 @@ function sabr_createRequestMetadataManager() as object
 end function
 
 sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as object)
+    sabr_traceCall("sabr_metadata_store")
     if not isValid(requestNumber) or requestNumber = "" then return
     if not isValid(metadata) then return
 
@@ -40,6 +43,7 @@ sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as obje
 end sub
 
 function sabr_metadata_fetch(ctx as object, requestNumber as string, remove as boolean) as dynamic
+    sabr_traceCall("sabr_metadata_fetch")
     if not isValid(requestNumber) or requestNumber = "" then return invalid
 
     entry = ctx.entries.Lookup(requestNumber)
@@ -55,6 +59,7 @@ function sabr_metadata_fetch(ctx as object, requestNumber as string, remove as b
 end function
 
 sub sabr_metadata_cleanup(ctx as object)
+    sabr_traceCall("sabr_metadata_cleanup")
     now = sabr_metadata_timestamp()
     for each key in ctx.entries.keys()
         entry = ctx.entries.Lookup(key)
@@ -65,6 +70,7 @@ sub sabr_metadata_cleanup(ctx as object)
 end sub
 
 function sabr_metadata_timestamp() as integer
+    sabr_traceCall("sabr_metadata_timestamp")
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()

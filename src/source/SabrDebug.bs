@@ -1,11 +1,9 @@
+import "pkg:/source/SabrInstrumentation.bs"
 ' Master switch for runtime debug logging and uploads
 const SABR_DEBUG_ENABLED = true
 
-function sabr_debugEnabled() as boolean
-    return SABR_DEBUG_ENABLED
-end function
-
 sub sabr_log(logs as dynamic, level as integer, message as string, debugOnly = true as boolean)
+    sabr_traceCall("sabr_log")
     if debugOnly = false or SABR_DEBUG_ENABLED
         if IsAssociativeArray(logs) and logs.DoesExist("printl")
             logs.printl(level, message)
@@ -14,6 +12,7 @@ sub sabr_log(logs as dynamic, level as integer, message as string, debugOnly = t
 end sub
 
 sub sabr_debugUploadText(debugUploadUrl as string, relativePath as string, text as string, logs = invalid as dynamic)
+    sabr_traceCall("sabr_debugUploadText")
     if not SABR_DEBUG_ENABLED then return
     if not isValid(text) then return
     payload = text
@@ -25,6 +24,7 @@ sub sabr_debugUploadText(debugUploadUrl as string, relativePath as string, text 
 end sub
 
 sub sabr_debugUploadBytes(debugUploadUrl as string, relativePath as string, bytes as dynamic, logs = invalid as dynamic)
+    sabr_traceCall("sabr_debugUploadBytes")
     if not SABR_DEBUG_ENABLED then return
     if not isValid(bytes) then return
 
@@ -43,6 +43,7 @@ sub sabr_debugUploadBytes(debugUploadUrl as string, relativePath as string, byte
 end sub
 
 sub sabr_debugUploadContent(debugUploadUrl as string, relativePath as string, content as dynamic, isText as boolean, logs = invalid as dynamic)
+    sabr_traceCall("sabr_debugUploadContent")
     if not SABR_DEBUG_ENABLED then return
     baseUrl = `${debugUploadUrl ?? ""}`
     if baseUrl = "" then return
@@ -127,6 +128,7 @@ sub sabr_debugUploadContent(debugUploadUrl as string, relativePath as string, co
 end sub
 
 function sabr_debugSanitizeFilename(value as string) as string
+    sabr_traceCall("sabr_debugSanitizeFilename")
     if not isValid(value) then return ""
     sanitized = ""
     for i = 1 to Len(value)
@@ -148,12 +150,14 @@ function sabr_debugSanitizeFilename(value as string) as string
 end function
 
 function sabr_debugUrlEncode(value as string) as string
+    sabr_traceCall("sabr_debugUrlEncode")
     if not isValid(value) then return ""
     encoder = CreateObject("roUrlTransfer")
     return encoder.Escape(value)
 end function
 
 function sabr_debugNextDumpSequence() as integer
+    sabr_traceCall("sabr_debugNextDumpSequence")
     globals = GetGlobalAA()
     if not globals.DoesExist("sabrDebugDumpSeq")
         globals.sabrDebugDumpSeq = 0
@@ -163,6 +167,7 @@ function sabr_debugNextDumpSequence() as integer
 end function
 
 function sabr_debugZeroPadDigits(value as dynamic, width as integer) as string
+    sabr_traceCall("sabr_debugZeroPadDigits")
     if IsString(value)
         strValue = value
     else if IsInteger(value)
@@ -181,6 +186,7 @@ function sabr_debugZeroPadDigits(value as dynamic, width as integer) as string
 end function
 
 function sabr_debugBuildDumpLabel(playbackContext as object, prefix as string, requestNumber as string, rangeLabel as string, contentType = "" as string, format = invalid as dynamic, dumpCounter = invalid as dynamic) as string
+    sabr_traceCall("sabr_debugBuildDumpLabel")
     if prefix = invalid or prefix = "" then prefix = "dump"
 
     rn = requestNumber
