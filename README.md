@@ -7,7 +7,7 @@ BrighterScript Roku SceneGraph application that demonstrates how to adapt YouTub
 - Builds with the BrighterScript CLI (`bsc`) using the configuration in `bsconfig.json`.
 - Main scene bootstraps a branded splash screen and loads a DASH manifest stored under `src/assets/mpds/`.
 - A local manifest proxy (`httpServerTask`) rehosts the manifest at `http://0.0.0.0:7010/manifest/<id>` for the player.
-- Dedicated SABR servers (`ytsabrServerTask`) run on ports 7011 (video) and 7012 (audio) to process adaptive segment requests, decode SABR/UMP payloads, and cache data under the Roku `tmp:/` filesystem.
+- Dedicated SABR servers (`ytsabrServerTask`) run on ports 7011 (video) and 7012 (audio) to process adaptive segment requests, decode SABR/UMP payloads, and stream the requested ranges directly from the SABR spool files in `tmp:/`.
 - End-to-end smoke test (`scripts/e2e-smoke.js`) can deploy to a developer-enabled Roku, follow the logs, and capture screenshots.
 
 ## Prerequisites
@@ -79,42 +79,11 @@ artifacts/                # Log and screenshot outputs from automation
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
 5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, build in-memory spool maps (including SIDX data from init segments), and stream the requested byte ranges straight from the SABR spool file back to the Roku video stack without staging per-segment files.
 
-## Player Time Strategies
+## Player Time Strategy
 
-`SabrStreamingAdapter` supports multiple ways to translate a Roku byte-range request into the `playerTimeMs` value SABR expects. The active strategy is controlled by `playbackContext.playerTimeStrategy` (or the `m.top.playerTimeStrategy` override) and can be one of the following:
+`SabrStreamingAdapter` now relies exclusively on the SIDX metadata embedded in SABR init segments to resolve `playerTimeMs`. Each init response is parsed (`SabrUmpProcessor`) and the resulting entries are cached per format. When the Roku player requests a byte range, the adapter locates the SIDX entry that contains (or most closely precedes) the start byte and maps it to a playback timestamp.
 
-| Strategy | Description |
-| --- | --- |
-| `sidx` | Parse the MP4 SIDX index (captured from SABR init segments) and translate the requested byte range to its start time/duration. Uses the raw SABR index; falls back to lower entry if the exact start isn’t found. |
-| `metadata` | Predict from segment metadata accumulated as SABR responses arrive (coverage start/end, start time, duration). Also seeds the metadata map from SIDX entries when no coverage exists yet. |
-| `hybrid` *(default)* | Try the SIDX path first; if unavailable, fall back to metadata; finally use historical counters (delivered duration, last requested time, etc.) as a safety net. |
-
-The strategy engine logs each decision in the telnet console (e.g., `Strategy hybrid sidxIndex=...`, `Resolved playerTimeMs=... source=...`) which makes it easier to audit how requests were computed.
-
-### Switching Strategies
-
-At runtime you can inject the desired mode before issuing segment requests:
-
-```brightscript
-' inside SabrStreamingAdapter or a setup routine
-m.top.playerTimeStrategy = "metadata" ' or "sidx", "hybrid"
-```
-
-For automated testing, the constant `DEFAULT_PLAYER_TIME_STRATEGY` (in `src/source/SabrStreamingAdapter.bs`) initializes the strategy when nothing else is specified.
-
-### Prediction Paths
-
-#### SIDX Lookups
-1. UMP init segments are parsed (`SabrUmpProcessor`) and SIDX entries stored per format.
-2. Each entry captures byte start/end, segment duration, and timeline timing in milliseconds.
-3. When a request arrives, the adapter finds the SIDX entry whose range matches (or precedes) the requested start and returns `startMs + offset`.
-
-#### Metadata Predictions
-1. Every successful SABR response carries coverage/start-time metadata which is cached per format/range.
-2. Future requests use the exact range when available, or interpolate from the closest prior segment.
-3. If no coverage exists yet, the SIDX entries are used to seed the metadata map so the prediction can still succeed.
-
-Both strategies ultimately write the resolved values back to `playbackContext` (`lastResolvedPlayerTimeMs` / `…Source`) for diagnostics and future fallbacks.
+If the same byte range keeps arriving, the repeat guard nudges the computed value forward by a small, duration-aware bump so SABR can advance to the next segment. The resolved time, source label, and any nudge amount are persisted to `playbackContext` (`lastResolvedPlayerTimeMs`, `lastResolvedPlayerTimeSource`) for diagnostics.
 
 ## Spool Streaming & Cleanup
 UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` scans that file to build an in-memory part map (payload offsets, byte ranges, SIDX data for init segments) and serves Roku requests by slicing the spool directly, skipping any non-MP4 bytes at part boundaries. Because segments are no longer materialized into `tmp:/sabr-cache`, the legacy cache maintenance routines are effectively no-ops. When a playback session finishes you can remove the entire `tmp:/<mediaIdHash>/` directory to reclaim space, or keep it around for debugging with the spool summary logs (`[YTSABR] UMP spool preview …`).
@@ -130,7 +99,7 @@ UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`.
 - `SabrDebug.bs` provides `sabr_log` helpers that honor the global debug flag. Toggle `SABR_DEBUG_ENABLED` when preparing production builds.
 - HTTP dumps (request/response bodies, metadata) are uploaded through the debug upload URL when configured; file-backed responses stream via `bodyPath` to keep memory usage low.
 - The repeat-guard instrumentation logs state transitions (`RepeatState …`) so you can see when the player is requesting the same range repeatedly.
-- Performance timers in `SabrUmpProcessor` (`SABR_PERF_LOGGING_ENABLED`) emit duration/memory snapshots for each major step of UMP processing.
+- Spool summaries emitted by `SabrUmpProcessor` log part counts, durations, and byte totals for each decoded UMP response.
 
 ## Customizing the Demo
 - Swap in your own manifests under `src/assets/mpds/` and adjust `MainScene.bs` to load the file you want.

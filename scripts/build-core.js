@@ -86,10 +86,6 @@ function sabr_debugUrlEncode(value as string) as string
     return value
 end function
 
-function sabr_debugNextDumpSequence() as integer
-    return 0
-end function
-
 function sabr_debugZeroPadDigits(value as dynamic, width as integer) as string
     return Str(value)
 end function

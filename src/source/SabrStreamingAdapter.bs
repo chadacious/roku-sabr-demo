@@ -31,27 +31,26 @@ import "pkg:/source/httpRequest.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
 import "pkg:/source/taskUtils.bs"
-import "pkg:/source/SabrInstrumentation.bs"
 
-' Time window (ms) for repeat guard to track duplicate requests
+' Time window (ms) for repeat guard to track duplicate requests.
 const SABR_REPEAT_SEGMENT_WINDOW_MS = 5000
 
-const SABR_BANDWIDTH_OVERRIDE_BPS = 0 ' i.e. 25000000
-' Scale measured bandwidth by this factor when override is zero
+' Fixed bandwidth (bps) to report to SABR when non-zero; otherwise we rely on measurements.
+const SABR_BANDWIDTH_OVERRIDE_BPS = 0
+
+' Scale measured bandwidth by this factor when no override is provided.
 const SABR_BANDWIDTH_MULTIPLIER = 1.0 ' i.e. 1.5
+
 ' Default fallback amount (ms) to bump playerTimeMs beyond the segment start to avoid repeat coverage.
 const SABR_PLAYER_TIME_DEFAULT_BUMP_MS = 2000
 
-' Handles an intercepted SABR segment request from the Roku video stack.
-' - request: parsed HTTP request from the local SABR server.
-' - contentType: "VIDEO" or "AUDIO" to drive format selection.
-' - mediaIdHash: unique directory key where SABR payloads live under tmp:/.
-' - sabr: decoded SABR payload metadata (formats, context, etc).
-' - videoNode: player node for querying seek position and playback hints.
-' - redirectDepth: recursion guard when SABR instructs us to retry/redirect.
-' Returns a response object (status, headers, body or bodyPath) ready to send.
+'------------------------------------------------------------------------------
+' Function : sabr_handleRequest
+' Purpose  : Coordinates lookup, SABR request generation, UMP decoding, and
+'            response assembly for a player segment request, including repeat
+'            detection, buffered-state updates, and spool streaming.
+'------------------------------------------------------------------------------
 function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer) as object
-    sabr_traceCall("sabr_handleRequest")
     ok = true
 
     sabrAbrUrl = ""
@@ -379,15 +378,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Seek-back detected but no pruning constraints available`)
     end if
 
-    sabr_bufferingAugmentState(bufferState, {
-        "contentType": contentType
-        "currentFormat": currentFormat
-        "playbackContext": playbackContext
-        "requestByteRange": requestByteRange
-        "seekBackDetected": seekBackDetected
-        "requestLogTag": requestLogTag
-    })
-
     sabrRequestJson = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, playbackContext, playerTimeOverride, videoNode, nextRequestId)
 
     if isValid(currentFormat.height)
@@ -559,7 +549,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             if shouldSendSabr
                 sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Sending SABR request to URL: ${sabrAbrUrl}`)
                 ' write the protoBytes to a file and send that file to the SABR URL
-                protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${nextRequestId}.bin`
+                keyLabelForDump = sabr_sanitizeForFilename(sabr_toSafeString(keyParam))
+                if keyLabelForDump = "" then keyLabelForDump = "nokey"
+                protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${keyLabelForDump}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
                 sabrRequest = {
                     "url": sabrAbrUrl,
@@ -1008,17 +1000,16 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Total request duration`, requestTimer, -1)
     end if
 
-    if SABR_TRACE_ENABLED
-        sabr_traceLogSummary(`req=${nextRequestId}`)
-    end if
-
     return response
 
 end function
 
-
+'------------------------------------------------------------------------------
+' Function : sabr_getHeaderByteRange
+' Purpose  : Parses the HTTP Range header (case insensitive) into a simple
+'            associative array describing the requested byte start/end values.
+'------------------------------------------------------------------------------
 function sabr_getHeaderByteRange(request as object) as object
-    sabr_traceCall("sabr_getHeaderByteRange")
     range = "bytes=0-"
     if isValid(request.headers.Range)
         range = request.headers.Range
@@ -1034,10 +1025,12 @@ function sabr_getHeaderByteRange(request as object) as object
     return { "startRange": startRange, "endRange": endRange }
 end function
 
-' Collects cached segment coverage for a given format so we can seed SABR
-' buffering metadata. Returns an array of entries sorted newest-first.
+'------------------------------------------------------------------------------
+' Function : sabr_collectBufferedRangesForFormat
+' Purpose  : Reads prior SABR spool data for a format so the next request can
+'            advertise buffered coverage to the server when building JSON.
+'------------------------------------------------------------------------------
 function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType as string, activeFormat as object, targetByteRange as object, playbackContext = invalid as dynamic) as object
-    sabr_traceCall("sabr_collectBufferedRangesForFormat")
     ranges = []
     if not isValid(activeFormat) then return ranges
     if not isValid(mediaIdHash) or mediaIdHash = "" then return ranges
@@ -1052,8 +1045,12 @@ function sabr_collectBufferedRangesForFormat(mediaIdHash as string, formatType a
     return ranges
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_spoolBufferedRangeForFormat
+' Purpose  : Scans in-memory UMP spool metadata to find the latest completed
+'            segment for the active format and returns its byte coverage info.
+'------------------------------------------------------------------------------
 function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType as string, activeFormat as object) as dynamic
-    sabr_traceCall("sabr_spoolBufferedRangeForFormat")
     if not IsAssociativeArray(playbackContext) then return invalid
     spoolMaps = playbackContext?.umpSpoolMaps
     if not IsAssociativeArray(spoolMaps) then return invalid
@@ -1159,8 +1156,12 @@ function sabr_spoolBufferedRangeForFormat(playbackContext as object, formatType 
     return bufferedRange
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_buildBufferedRangeFromSpoolEntry
+' Purpose  : Converts an ump spool part entry into a buffered range descriptor
+'            that matches the SABR request schema (ranges, timing, format id).
+'------------------------------------------------------------------------------
 function sabr_buildBufferedRangeFromSpoolEntry(entry as object, coverage as object, activeFormat as object) as dynamic
-    sabr_traceCall("sabr_buildBufferedRangeFromSpoolEntry")
     if not IsAssociativeArray(entry) then return invalid
 
     mediaHeader = entry?.mediaHeader
@@ -1213,16 +1214,12 @@ function sabr_buildBufferedRangeFromSpoolEntry(entry as object, coverage as obje
     return buffered
 end function
 
-' Applies the active buffering mode to the state passed to SABR, optionally
-' synthesizing additional coverage entries to steer future responses.
-sub sabr_bufferingAugmentState(bufferState as object, params as object)
-    sabr_traceCall("sabr_bufferingAugmentState")
-    ' buffering augmentation disabled; baseline mode is a no-op
-    return
-end sub
-
+'------------------------------------------------------------------------------
+' Function : sabr_findSpoolSegmentInCache
+' Purpose  : Looks up cached spool metadata for a requested byte range/itag
+'            and returns the matching chunk list (with init segment fallback).
+'------------------------------------------------------------------------------
 function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRange as object, keyParam as string) as dynamic
-    sabr_traceCall("sabr_findSpoolSegmentInCache")
     spoolMaps = playbackContext?.umpSpoolMaps
     if not IsAssociativeArray(spoolMaps) then return invalid
     startRange = sabr_toInt(requestByteRange?.startRange)
@@ -1246,8 +1243,12 @@ function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRang
     return invalid
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_trimSegmentChunksForRange
+' Purpose  : Copies only the requested portion of a spool chunk list so init
+'            segment responses can honor byte ranges without extra allocation.
+'------------------------------------------------------------------------------
 function sabr_trimSegmentChunksForRange(chunks as object, segmentStart as dynamic, requestRange as object) as dynamic
-    sabr_traceCall("sabr_trimSegmentChunksForRange")
     if not IsArray(chunks) then return invalid
     segmentStartVal = sabr_toInt(segmentStart)
     if segmentStartVal = invalid then return invalid
@@ -1300,9 +1301,12 @@ function sabr_trimSegmentChunksForRange(chunks as object, segmentStart as dynami
     }
 end function
 
-' Attempts to inject synthetic coverage for the segment prior to the request.
+'------------------------------------------------------------------------------
+' Function : sabr_currentPlayerPositionMs
+' Purpose  : Derives the player's current playback timestamp from the video
+'            node or stored context so SABR requests can reference seek intent.
+'------------------------------------------------------------------------------
 function sabr_currentPlayerPositionMs(videoNode as object, playbackContext as object) as dynamic
-    sabr_traceCall("sabr_currentPlayerPositionMs")
     positionSeconds = invalid
     if isValid(videoNode) and isValid(videoNode.position)
         positionSeconds = videoNode.position
@@ -1314,10 +1318,12 @@ function sabr_currentPlayerPositionMs(videoNode as object, playbackContext as ob
     return int((positionSeconds ?? 0) * 1000)
 end function
 
-' Builds the buffered state payload that we attach to SABR requests so the
-' server knows what segments already exist locally for video/audio tracks.
+'------------------------------------------------------------------------------
+' Function : sabr_buildBufferedState
+' Purpose  : Aggregates buffered coverage across audio/video formats to inform
+'            the next SABR request about which segments are already available.
+'------------------------------------------------------------------------------
 function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object, activeFormats as object, playbackContext as object, requestedFormatType as string, requestByteRange as object) as object
-    sabr_traceCall("sabr_buildBufferedState")
     rangesByType = {}
     rangesByType["AUDIO"] = []
     rangesByType["VIDEO"] = []
@@ -1378,10 +1384,12 @@ function sabr_buildBufferedState(mediaIdHash as string, currentFormat as object,
     return state
 end function
 
-' Writes buffer state information onto the outgoing SABR protobuf request.
-' Returns the modified request to support call chaining.
+'------------------------------------------------------------------------------
+' Function : sabr_applyBufferedStateToRequest
+' Purpose  : Copies buffered range metadata onto the outgoing SABR protobuf
+'            so the server can skip formats we already possess locally.
+'------------------------------------------------------------------------------
 function sabr_applyBufferedStateToRequest(videoPlaybackAbrRequest as object, bufferState as object) as dynamic
-    sabr_traceCall("sabr_applyBufferedStateToRequest")
     if not IsAssociativeArray(bufferState) then return invalid
 
     rangeMap = bufferState?.rangesByType
@@ -1401,10 +1409,12 @@ function sabr_applyBufferedStateToRequest(videoPlaybackAbrRequest as object, buf
     return bufferState?.formatToDiscard
 end function
 
-
-sub sabr_pruneBufferedRangesForSeekBack(bufferState as object, formatType as string, maxSegmentIndex as dynamic, maxStartTimeMs as dynamic, logTag as string)
-    sabr_traceCall("sabr_pruneBufferedRangesForSeekBack")
-    if not IsAssociativeArray(bufferState) then return
+'------------------------------------------------------------------------------
+' Function : sabr_pruneBufferedRangesForSeekBack
+' Purpose  : Removes buffered ranges that extend beyond the current seek-back
+'            targets to avoid advertising coverage the player no longer needs.
+'------------------------------------------------------------------------------
+sub sabr_pruneBufferedRangesForSeekBack(bufferState as object, formatType as string, maxSegmentIndex as dynamic, maxStartTimeMs as dynamic, logTag as string)    if not IsAssociativeArray(bufferState) then return
     if formatType = "" then return
     rangesMap = bufferState?.rangesByType
     if not IsAssociativeArray(rangesMap) then return
@@ -1474,15 +1484,18 @@ end sub
 
 
 function sabr_globalSidxIndexMap() as object
-    sabr_traceCall("sabr_globalSidxIndexMap")
     if not IsAssociativeArray(m?.sidxIndexCache)
         m.sidxIndexCache = {}
     end if
     return m.sidxIndexCache
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_requestedByteStart
+' Purpose  : Extracts a numeric start byte from a SABR byte range structure,
+'            accommodating string labels and legacy segment index fields.
+'------------------------------------------------------------------------------
 function sabr_requestedByteStart(byteRange as object) as dynamic
-    sabr_traceCall("sabr_requestedByteStart")
     if not IsAssociativeArray(byteRange) then return invalid
     startVal = sabr_toInt(byteRange?.startRange)
     if startVal = invalid then startVal = sabr_toInt(byteRange?.start)
@@ -1509,12 +1522,13 @@ function sabr_requestedByteStart(byteRange as object) as dynamic
     return startVal
 end function
 
-' Resolves the playerTimeMs and coverage metadata SABR requires for the current
-' byte-range request. Returns a small object describing the result and source.
+'------------------------------------------------------------------------------
+' Function : sabr_resolvePlayerTimeMsForRequest
+' Purpose  : Determines the playerTimeMs for the outgoing SABR request using
+'            SIDX predictions and repeat-guard heuristics, including nudging.
+'------------------------------------------------------------------------------
 function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, videoNode as object) as object
-    sabr_traceCall("sabr_resolvePlayerTimeMsForRequest")
-
-    result = sabr_lookupPlayerTimeMsFromSidx(playbackContext, contentType, currentFormat, requestByteRange)
+     result = sabr_lookupPlayerTimeMsFromSidx(playbackContext, contentType, currentFormat, requestByteRange)
     candidate = sabr_toInt(result?.value)
 
     if candidate <> invalid and candidate >= 0
@@ -1550,17 +1564,18 @@ function sabr_resolvePlayerTimeMsForRequest(playbackContext as object, contentTy
 end function
 
 function sabr_buildPlayerTimeIndexKey(contentType as string, format as object) as string
-    sabr_traceCall("sabr_buildPlayerTimeIndexKey")
     typeLabel = `${contentType ?? ""}`
     if typeLabel = "" then typeLabel = sabr_formatTypeFromFormat(format)
     if typeLabel = "" then typeLabel = "UNKNOWN"
     return `${typeLabel}|${sabr_formatToKey(format)}`
 end function
 
-' Attempts to map the requested byte-range to a SIDX entry gathered from the
-' init segment. Returns timing details when a match (or nearest predecessor) exists.
+'------------------------------------------------------------------------------
+' Function : sabr_getSidxEntrySet
+' Purpose  : Retrieves the SIDX entry list and metadata previously extracted
+'            from init segments for the active format, tracking the data source.
+'------------------------------------------------------------------------------
 function sabr_getSidxEntrySet(playbackContext as object, contentType as string, currentFormat as object) as dynamic
-    sabr_traceCall("sabr_getSidxEntrySet")
     result = {
         "entries": invalid
         "source": ""
@@ -1593,8 +1608,12 @@ function sabr_getSidxEntrySet(playbackContext as object, contentType as string, 
     return result
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_fetchSidxNeighbors
+' Purpose  : Finds the SIDX entry that matches the requested byte start along
+'            with the nearest predecessor/successor to aid time predictions.
+'------------------------------------------------------------------------------
 function sabr_fetchSidxNeighbors(playbackContext as object, contentType as string, currentFormat as object, targetStart as integer) as object
-    sabr_traceCall("sabr_fetchSidxNeighbors")
     neighbors = {
         "exact": invalid
         "previous": invalid
@@ -1659,8 +1678,12 @@ function sabr_fetchSidxNeighbors(playbackContext as object, contentType as strin
     return neighbors
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_lookupPlayerTimeMsFromSidx
+' Purpose  : Matches a requested byte range against cached SIDX metadata to
+'            estimate playerTimeMs and duration information for SABR requests.
+'------------------------------------------------------------------------------
 function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as object
-    sabr_traceCall("sabr_lookupPlayerTimeMsFromSidx")
     result = {
         "value": invalid
         "source": "sidx"
@@ -1791,8 +1814,12 @@ function sabr_lookupPlayerTimeMsFromSidx(playbackContext as object, contentType 
     return result
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_predictPlayerTimeFromSidxEntry
+' Purpose  : Converts a SIDX entry and requested byte start into a playback
+'            timestamp by interpolating within the entry's byte/time coverage.
+'------------------------------------------------------------------------------
 function sabr_predictPlayerTimeFromSidxEntry(entry as object, targetStart as dynamic) as dynamic
-    sabr_traceCall("sabr_predictPlayerTimeFromSidxEntry")
     if not IsAssociativeArray(entry) then return invalid
     startMs = sabr_toInt(entry?.startTimeMs)
     if startMs = invalid then return invalid
@@ -1837,10 +1864,12 @@ function sabr_predictPlayerTimeFromSidxEntry(entry as object, targetStart as dyn
     return predicted
 end function
 
-' Uses previously delivered SABR metadata to estimate the requested segment’s
-' start time and duration when no SIDX entry is available.
+'------------------------------------------------------------------------------
+' Function : sabr_applyRepeatPlayerTimeNudge
+' Purpose  : Applies a defensive time bump when repeat-guard detects the same
+'            request arriving multiple times, nudging SABR toward future data.
+'------------------------------------------------------------------------------
 function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object, baseValue as integer, durationMs = invalid as dynamic, sourceLabel = "" as string) as object
-    sabr_traceCall("sabr_applyRepeatPlayerTimeNudge")
     result = {
         "value": baseValue
         "source": sourceLabel
@@ -1896,9 +1925,12 @@ function sabr_applyRepeatPlayerTimeNudge(playbackContext as object, contentType 
     return result
 end function
 
-sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)
-    sabr_traceCall("sabr_storeSidxIndexUpdate")
-    if not IsAssociativeArray(playbackContext) then return
+'------------------------------------------------------------------------------
+' Function : sabr_storeSidxIndexUpdate
+' Purpose  : Normalizes SIDX updates extracted from spool metadata and merges
+'            them into the playback context/global caches for future lookups.
+'------------------------------------------------------------------------------
+sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)    if not IsAssociativeArray(playbackContext) then return
     if not IsAssociativeArray(update) then return
 
     formatKey = `${update?.formatKey ?? ""}`
@@ -1993,8 +2025,12 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     end if
 end sub
 
+'------------------------------------------------------------------------------
+' Function : sabr_isInit
+' Purpose  : Checks whether the requested byte range targets an init or index
+'            segment for the active format and logs the detection for tracing.
+'------------------------------------------------------------------------------
 function sabr_isInit(contentType as string, format as object, requestByteRange as object, requestRef = invalid as dynamic) as boolean
-    sabr_traceCall("sabr_isInit")
     logTag = sabr_utilLogTag(contentType, requestRef)
     if sabr_rangesMatch(format?.initRange, requestByteRange)
         sabr_log(m.logs, log_level_Type.INFO, `${logTag} SABR format itag ${format.itag} init range requested: ${FormatJson(requestByteRange)}`)
@@ -2008,26 +2044,18 @@ function sabr_isInit(contentType as string, format as object, requestByteRange a
     return false
 end function
 
-' Returns mediaIdHash (string) or invalid if not found
-function sabr_extractMediaIdHash(url as string) as dynamic
-    sabr_traceCall("sabr_extractMediaIdHash")
-    ' /sabr/<anything-not-a-slash>(optional slash)
-    re = CreateObject("roRegex", "/sabr/([^/]+)/?", "i")
-    m = re.Match(url)
-    if m.Count() >= 2 then return m[1]
-    return invalid
-end function
-
 sub sabr_ensureInfrastructure()
-    sabr_traceCall("sabr_ensureInfrastructure")
     if not isValid(m.sabrRequestMetadataManager)
         m.sabrRequestMetadataManager = sabr_createRequestMetadataManager()
     end if
 end sub
 
-
+'------------------------------------------------------------------------------
+' Function : sabr_buildSegmentCacheKeyForRange
+' Purpose  : Builds a stable identifier for a segment based on byte coverage
+'            and format fields so cached spool data can be retrieved quickly.
+'------------------------------------------------------------------------------
 function sabr_buildSegmentCacheKeyForRange(format as object, byteRange as object) as string
-    sabr_traceCall("sabr_buildSegmentCacheKeyForRange")
     if not isValid(format) then return ""
     startLabel = sabr_valueToLabel(byteRange?.startRange)
     if startLabel = "" then startLabel = sabr_valueToLabel(byteRange?.start)
@@ -2048,7 +2076,6 @@ function sabr_buildSegmentCacheKeyForRange(format as object, byteRange as object
 end function
 
 function sabr_buildRepeatRequestKey(contentType as string, format as object, byteRange as object) as string
-    sabr_traceCall("sabr_buildRepeatRequestKey")
     if not isValid(byteRange) then return ""
     segmentKey = sabr_buildSegmentCacheKeyForRange(format, byteRange)
     if segmentKey = "" then return ""
@@ -2057,9 +2084,12 @@ function sabr_buildRepeatRequestKey(contentType as string, format as object, byt
     return `${typeLabel}|${segmentKey}`
 end function
 
-sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, playbackContext as object, label as string, extra = invalid as dynamic)
-    sabr_traceCall("sabr_debugLogRepeatState")
-    if not isValid(m?.logs) then return
+'------------------------------------------------------------------------------
+' Function : sabr_debugLogRepeatState
+' Purpose  : Emits structured logs describing the repeat-guard state machine
+'            whenever we transition or inspect repeat detection metadata.
+'------------------------------------------------------------------------------
+sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, playbackContext as object, label as string, extra = invalid as dynamic)    if not isValid(m?.logs) then return
     logTag = sabr_utilLogTag(contentType, `${requestNumber}`)
     state = playbackContext?.repeatRequestState
 
@@ -2100,9 +2130,12 @@ sub sabr_debugLogRepeatState(contentType as string, requestNumber as dynamic, pl
     sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} RepeatState ${label}: ${pieces.Join(" ")}`)
 end sub
 
-sub sabr_logBufferedRanges(logTag as string, requestJson as object)
-    sabr_traceCall("sabr_logBufferedRanges")
-    if not isValid(m?.logs) then return
+'------------------------------------------------------------------------------
+' Function : sabr_logBufferedRanges
+' Purpose  : Logs a concise summary of bufferedRanges attached to a SABR
+'            request for debugging decisions made by the ABR controller.
+'------------------------------------------------------------------------------
+sub sabr_logBufferedRanges(logTag as string, requestJson as object)    if not isValid(m?.logs) then return
     if not IsAssociativeArray(requestJson) then return
     ranges = invalid
     if requestJson.DoesExist("clientAbrState") and IsAssociativeArray(requestJson.clientAbrState)
@@ -2152,10 +2185,12 @@ sub sabr_logBufferedRanges(logTag as string, requestJson as object)
     sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} bufferedRanges=${summary.Join(" ")} selected=${selected.Join(",")}`)
 end sub
 
-' Tracks repeated byte-range requests that may indicate playback stalls.
-' Returns an error response when the repeat guard trips, otherwise invalid.
+'------------------------------------------------------------------------------
+' Function : sabr_guardRepeatedRequests
+' Purpose  : Maintains per-segment repeat counters and optionally blocks the
+'            response when the player keeps requesting the same byte range.
+'------------------------------------------------------------------------------
 function sabr_guardRepeatedRequests(playbackContext as object, contentType as string, currentFormat as object, requestMetadataEntry as object, requestNumber as string, videoNode as object, mediaIdHash as string) as dynamic
-    sabr_traceCall("sabr_guardRepeatedRequests")
     if not isValid(playbackContext) then return invalid
     if requestMetadataEntry?.isInit = true then return invalid
 
@@ -2241,9 +2276,12 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
     return sabr_buildErrorResponseForPlayer(502, fatalMessage)
 end function
 
-sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as object, response as object, contentType = "" as string, requestNumber = invalid as dynamic)
-    sabr_traceCall("sabr_recordRepeatResult")
-    if not isValid(playbackContext) then return
+'------------------------------------------------------------------------------
+' Function : sabr_recordRepeatResult
+' Purpose  : Updates repeat-guard success/failure counters based on the latest
+'            response so future requests can be nudged or aborted if needed.
+'------------------------------------------------------------------------------
+sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as object, response as object, contentType = "" as string, requestNumber = invalid as dynamic)    if not isValid(playbackContext) then return
     repeatKey = `${requestMetadataEntry?.repeatKey ?? ""}`
     if repeatKey = "" then return
 
@@ -2294,7 +2332,6 @@ sub sabr_recordRepeatResult(playbackContext as object, requestMetadataEntry as o
 end sub
 
 function sabr_formatTypeFromFormat(format as dynamic) as string
-    sabr_traceCall("sabr_formatTypeFromFormat")
     mimeType = format?.mimeType ?? ""
     if mimeType.inStr("audio") > -1 then return "AUDIO"
     if mimeType.inStr("video") > -1 then return "VIDEO"
@@ -2302,8 +2339,12 @@ function sabr_formatTypeFromFormat(format as dynamic) as string
     return "AUDIO"
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_normalizeByteRange
+' Purpose  : Produces a canonical byte range map with string fields so cache
+'            keys and SABR payloads avoid inconsistencies in field naming.
+'------------------------------------------------------------------------------
 function sabr_normalizeByteRange(rawRange as object, context = invalid as dynamic) as object
-    sabr_traceCall("sabr_normalizeByteRange")
     normalized = {
         "startRange": ""
         "endRange": ""
@@ -2328,8 +2369,12 @@ function sabr_normalizeByteRange(rawRange as object, context = invalid as dynami
     return normalized
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_byteRangeToCoverage
+' Purpose  : Converts SABR byte-range structures into numeric start/end pairs
+'            suitable for logging, caching, and Content-Range calculations.
+'------------------------------------------------------------------------------
 function sabr_byteRangeToCoverage(byteRange as object) as dynamic
-    sabr_traceCall("sabr_byteRangeToCoverage")
     startVal = invalid
     endVal = invalid
 
@@ -2355,8 +2400,12 @@ function sabr_byteRangeToCoverage(byteRange as object) as dynamic
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_rangesMatch
+' Purpose  : Compares two byte-range objects regardless of field naming so we
+'            can identify init/index requests reliably.
+'------------------------------------------------------------------------------
 function sabr_rangesMatch(rangeObj as dynamic, requestRange as object) as boolean
-    sabr_traceCall("sabr_rangesMatch")
     if not isValid(rangeObj) then return false
 
     expectedStart = `${rangeObj?.start ?? "0"}`
@@ -2375,9 +2424,11 @@ function sabr_rangesMatch(rangeObj as dynamic, requestRange as object) as boolea
 end function
 
 
-sub sabr_deleteFileIfExists(path as dynamic)
-    sabr_traceCall("sabr_deleteFileIfExists")
-    if not isValid(path) then return
+'------------------------------------------------------------------------------
+' Function : sabr_deleteFileIfExists
+' Purpose  : Deletes a file path defensively when cleaning up tmp artifacts.
+'------------------------------------------------------------------------------
+sub sabr_deleteFileIfExists(path as dynamic)    if not isValid(path) then return
     if not IsString(path) then return
     if path = "" then return
 
@@ -2388,7 +2439,6 @@ sub sabr_deleteFileIfExists(path as dynamic)
 end sub
 
 function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic) as string
-    sabr_traceCall("sabr_utilLogTag")
     rn = sabr_extractRequestNumber(requestRef)
     if rn = ""
         return `[YTSABR-Util-${contentType}]`
@@ -2396,10 +2446,12 @@ function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic)
     return `[YTSABR-Util-${contentType}-${rn}]`
 end function
 
-' Determines the currently active video/audio formats to use for buffering and
-' SABR requests, falling back to recently used formats in playbackContext.
+'------------------------------------------------------------------------------
+' Function : sabr_getActiveFormats
+' Purpose  : Chooses the best guess for active audio/video formats by checking
+'            the current selection, playback context history, and fallback picks.
+'------------------------------------------------------------------------------
 function sabr_getActiveFormats(currentFormat as object, sabr as object, playbackContext as object) as object
-    sabr_traceCall("sabr_getActiveFormats")
     formats = sabr.adaptiveFormats
     videoFormat = invalid
     audioFormat = invalid
@@ -2438,8 +2490,12 @@ function sabr_getActiveFormats(currentFormat as object, sabr as object, playback
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_pickBestFormat
+' Purpose  : Selects the highest bitrate format matching the requested media
+'            type from YouTube SABR adaptive format listings.
+'------------------------------------------------------------------------------
 function sabr_pickBestFormat(formats as dynamic, mediaType as string) as dynamic
-    sabr_traceCall("sabr_pickBestFormat")
     if not isValid(formats) then return invalid
     bestFormat = invalid
     bestBitrate = 0
@@ -2461,17 +2517,18 @@ function sabr_pickBestFormat(formats as dynamic, mediaType as string) as dynamic
 end function
 
 function sabr_pickMeasuredBitrate(info as dynamic) as dynamic
-    sabr_traceCall("sabr_pickMeasuredBitrate")
     if not isValid(info) then return invalid
     if isValid(info.measuredBitrate) and info.measuredBitrate > 0 then return info.measuredBitrate
     if isValid(info.streamBitrate) and info.streamBitrate > 0 then return info.streamBitrate
     return invalid
 end function
 
-' Builds the VideoPlaybackAbrRequest protobuf payload for the current segment.
-' Handles buffered ranges, player-time resolution, and metadata annotations.
+'------------------------------------------------------------------------------
+' Function : sabr_createVideoPlaybackAbrRequest
+' Purpose  : Builds the VideoPlaybackAbrRequest protobuf for the current
+'            segment, wiring in buffered ranges, playerTime, and metadata hints.
+'------------------------------------------------------------------------------
 function sabr_createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, playbackContext as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic) as object
-    sabr_traceCall("sabr_createVideoPlaybackAbrRequest")
     ' Create the ABR request object
     logTag = sabr_utilLogTag(contentType, requestRef)
     if not isValid(sabr.ustreamerConfig)
@@ -2569,10 +2626,12 @@ end function
 '     return initializedFormats
 ' end function
 
-' create a bogus full buffer range with max int32 values so we fake out the youtube server to think we already have all this data in the buffer
-' as we don't want it (this is how we can still get either "just" video or "just" audio segments based on the player's dash requests)
+'------------------------------------------------------------------------------
+' Function : sabr_createFullBufferRange
+' Purpose  : Creates a sentinel buffered range that convinces SABR the player
+'            already owns an entire format, forcing it to skip delivery.
+'------------------------------------------------------------------------------
 function sabr_createFullBufferRange(format as object) as object
-    sabr_traceCall("sabr_createFullBufferRange")
     MAX_INT32_VALUE = 2147483647
     return {
         "formatId": sabr_formatToFormatId(format),
@@ -2588,10 +2647,13 @@ function sabr_createFullBufferRange(format as object) as object
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_buildResponseForPlayer
+' Purpose  : Converts UMP spool results into an HTTP response tailored for the
+'            Roku video player, including headers, coverage, and chunk plan.
+'------------------------------------------------------------------------------
 function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dynamic, currentFormat as object, requestByteRange as object, contentType as string) as object
-    sabr_traceCall("sabr_buildResponseForPlayer")
-
-    headers = CreateObject("roAssociativeArray")
+     headers = CreateObject("roAssociativeArray")
     itagLabelForHeader = sabr_valueToLabel(currentFormat?.itag)
     if itagLabelForHeader = "" then itagLabelForHeader = `${requestMetadata?.format?.itag ?? ""}`
     if itagLabelForHeader <> ""
@@ -2763,8 +2825,12 @@ function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dyn
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_buildEmptyResponseForPlayer
+' Purpose  : Produces a 204 response with appropriate headers when SABR has no
+'            payload to send but the player still expects a valid reply.
+'------------------------------------------------------------------------------
 function sabr_buildEmptyResponseForPlayer(contentType as string, currentFormat as object) as object
-    sabr_traceCall("sabr_buildEmptyResponseForPlayer")
     body = CreateObject("roByteArray")
 
     mimeType = currentFormat?.mimeType ?? ""
@@ -2792,8 +2858,12 @@ function sabr_buildEmptyResponseForPlayer(contentType as string, currentFormat a
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_fsGetFileSize
+' Purpose  : Wraps roFileSystem.Stat so we can safely query file sizes without
+'            duplicating error handling at every call site.
+'------------------------------------------------------------------------------
 function sabr_fsGetFileSize(path as string) as dynamic
-    sabr_traceCall("sabr_fsGetFileSize")
     if not IsString(path) or path = "" then return invalid
     fs = CreateObject("roFileSystem")
     stat = invalid
@@ -2810,9 +2880,12 @@ function sabr_fsGetFileSize(path as string) as dynamic
     return invalid
 end function
 
-' Utility for generating an HTTP error response to propagate back to the player.
+'------------------------------------------------------------------------------
+' Function : sabr_buildErrorResponseForPlayer
+' Purpose  : Returns a simple text/plain HTTP response for SABR failures so the
+'            Roku player sees a concrete status and diagnostic message.
+'------------------------------------------------------------------------------
 function sabr_buildErrorResponseForPlayer(status as integer, message as string) as object
-    sabr_traceCall("sabr_buildErrorResponseForPlayer")
     body = CreateObject("roByteArray")
     if isValid(message) and message <> ""
         body.FromAsciiString(message)
@@ -2832,13 +2905,15 @@ function sabr_buildErrorResponseForPlayer(status as integer, message as string) 
 end function
 
 function sabr_isFileStreamingEnabled() as boolean
-    sabr_traceCall("sabr_isFileStreamingEnabled")
     return true
 end function
 
-sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)
-    sabr_traceCall("sabr_applyStreamInfoUpdates")
-    if not isValid(streamInfo) then return
+'------------------------------------------------------------------------------
+' Function : sabr_applyStreamInfoUpdates
+' Purpose  : Merges stream-level metadata from a SABR response (next request
+'            policy, context updates, playback cookies) into local state.
+'------------------------------------------------------------------------------
+sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object, contentType as string, deliveredSegment = true as boolean, requestMetadataEntry = invalid as dynamic)    if not isValid(streamInfo) then return
 
     sidxUpdates = streamInfo?.sidxIndexUpdates
     if IsArray(sidxUpdates)
@@ -2874,9 +2949,12 @@ sub sabr_applyStreamInfoUpdates(playbackContext as object, streamInfo as object,
     end if
 end sub
 
-sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)
-    sabr_traceCall("sabr_logSpoolSummary")
-    if not IsAssociativeArray(spoolMap) then return
+'------------------------------------------------------------------------------
+' Function : sabr_logSpoolSummary
+' Purpose  : Emits a concise overview of a decoded UMP spool map including
+'            size, duration, and diagnostic counters for troubleshooting.
+'------------------------------------------------------------------------------
+sub sabr_logSpoolSummary(logs as object, logTag as string, spoolMap as dynamic)    if not IsAssociativeArray(spoolMap) then return
 
     parts = spoolMap?.parts
     partCount = 0

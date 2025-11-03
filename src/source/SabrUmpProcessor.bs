@@ -20,9 +20,6 @@ import "pkg:/source/ytproto/generated/messages/ReloadPlaybackContext.brs"
 import "pkg:/source/ytproto/generated/messages/ReloadPlaybackParams.brs"
 import "pkg:/source/ytproto/generated/messages/MediaHeader.brs"
 import "pkg:/source/isItem.bs"
-import "pkg:/source/SabrInstrumentation.bs"
-' Toggle extra validation of init segments when true
-const SABR_INIT_DIAGNOSTICS_ENABLED = false
 
 ' UMP part identifiers used by YouTube SABR responses
 const UMP_PART_ID_MEDIA_HEADER = 20
@@ -38,17 +35,9 @@ const UMP_PART_ID_STREAM_PROTECTION_STATUS = 58
 const UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY = 59
 const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
-' Controls performance instrumentation emitted by the processor
-const SABR_PERF_LOGGING_ENABLED = true
-const SABR_PERF_CAPTURE_MEMORY = false
-const SABR_PERF_THRESHOLD_MS = 0
-' Threshold (ms) for flagging slow varint reads when perf logging is enabled
-const SABR_VARINT_SLOW_THRESHOLD_MS = 1
-
 ' Usage: the remaining helpers focus on scanning the SABR spool file directly.
 
 function sabr_ump_inferVarintLength(firstByte as integer) as integer
-    sabr_traceCall("sabr_ump_inferVarintLength")
     if firstByte < 128 then return 1
     if firstByte < 192 then return 2
     if firstByte < 224 then return 3
@@ -56,8 +45,12 @@ function sabr_ump_inferVarintLength(firstByte as integer) as integer
     return 5
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_finalizeVarintValue
+' Purpose  : Normalizes decoded varint values into BrightScript-friendly ints
+'            while preserving unsigned 32-bit values when required.
+'------------------------------------------------------------------------------
 function sabr_ump_finalizeVarintValue(rawValue as dynamic) as dynamic
-    sabr_traceCall("sabr_ump_finalizeVarintValue")
     value = rawValue
     if (type(value) = "Float" or type(value) = "Double")
         if value >= -2147483648.0 and value <= 2147483647.0
@@ -69,8 +62,12 @@ function sabr_ump_finalizeVarintValue(rawValue as dynamic) as dynamic
     return value
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readVarint
+' Purpose  : Reads a SABR varint from a byte array, returning the value, next
+'            offset, and completion flag without throwing on malformed data.
+'------------------------------------------------------------------------------
 function sabr_ump_readVarint(buffer as object, offset as integer) as object
-    sabr_traceCall("sabr_ump_readVarint")
     info = {
         "value": -1
         "nextOffset": offset
@@ -122,8 +119,12 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
     return info
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSpoolPartMap
+' Purpose  : Scans a SABR spool file, interprets each part header, and returns
+'            structured metadata including segment linkage and summary stats.
+'------------------------------------------------------------------------------
 function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integer, keyParam = "" as string) as dynamic
-    sabr_traceCall("sabr_ump_buildSpoolPartMap")
     result = {
         "parts": []
         "durationMs": 0
@@ -479,8 +480,12 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
     return result
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSpoolSegmentMap
+' Purpose  : Groups raw UMP parts into higher-level segment records (media,
+'            init, control metadata) to support direct streaming from spool files.
+'------------------------------------------------------------------------------
 function sabr_ump_buildSpoolSegmentMap(partArray as object, keyParam as string, path as string) as object
-    sabr_traceCall("sabr_ump_buildSpoolSegmentMap")
     segmentMap = {}
     if not IsArray(partArray) then return segmentMap
 
@@ -551,8 +556,12 @@ function sabr_ump_buildSpoolSegmentMap(partArray as object, keyParam as string, 
 end function
 
 ' Reads bytes for a specific part payload from the spool file.
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readSpoolPayload
+' Purpose  : Reads a chunk of bytes from the SABR spool file while guarding
+'            against invalid offsets or lengths.
+'------------------------------------------------------------------------------
 function sabr_ump_readSpoolPayload(path as string, offset as dynamic, length as dynamic) as dynamic
-    sabr_traceCall("sabr_ump_readSpoolPayload")
     safeOffset = sabr_ump_toInt(offset)
     if safeOffset = invalid or safeOffset < 0 then return invalid
     safeLength = sabr_ump_toInt(length)
@@ -564,8 +573,12 @@ function sabr_ump_readSpoolPayload(path as string, offset as dynamic, length as 
 end function
 
 ' Pulls non-media UMP parts (policies, errors, redirects, etc.) out of the spool.
+'------------------------------------------------------------------------------
+' Function : sabr_ump_extractControlParts
+' Purpose  : Collects non-media UMP parts (policies, context updates, errors)
+'            so the streaming adapter can update its state machine quickly.
+'------------------------------------------------------------------------------
 function sabr_ump_extractControlParts(spoolMap as object, path as string) as object
-    sabr_traceCall("sabr_ump_extractControlParts")
     results = {}
     if not IsAssociativeArray(spoolMap) then return results
     parts = spoolMap?.parts
@@ -614,8 +627,12 @@ function sabr_ump_extractControlParts(spoolMap as object, path as string) as obj
     return results
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_extractSidxFromSpool
+' Purpose  : Parses the SIDX box from an init segment within the spool to
+'            build seekable timing metadata for subsequent requests.
+'------------------------------------------------------------------------------
 function sabr_ump_extractSidxFromSpool(path as string, segmentEntry as object) as dynamic
-    sabr_traceCall("sabr_ump_extractSidxFromSpool")
     if not IsAssociativeArray(segmentEntry) then return invalid
     if segmentEntry?.isInitSeg <> true then return invalid
     if not IsString(path) or path = "" then return invalid
@@ -632,8 +649,12 @@ function sabr_ump_extractSidxFromSpool(path as string, segmentEntry as object) a
     return sabr_ump_buildSidxIndexUpdate(invalid, mediaHeader, segmentBytes)
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readChunksFromSpool
+' Purpose  : Materializes chunk byte ranges into memory or the aggregation
+'            structure so streaming can read contiguous data efficiently.
+'------------------------------------------------------------------------------
 function sabr_ump_readChunksFromSpool(path as string, chunks as object, declaredTotal = invalid as dynamic) as object
-    sabr_traceCall("sabr_ump_readChunksFromSpool")
     if not IsArray(chunks) or chunks.count() = 0 then return invalid
 
     sortedChunks = []
@@ -703,8 +724,12 @@ function sabr_ump_readChunksFromSpool(path as string, chunks as object, declared
     return aggregate
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_partTypeLabel
+' Purpose  : Provides a human-readable label for UMP part IDs to improve logs
+'            and debugging output.
+'------------------------------------------------------------------------------
 function sabr_ump_partTypeLabel(partType as integer) as string
-    sabr_traceCall("sabr_ump_partTypeLabel")
     if partType = UMP_PART_ID_MEDIA_HEADER then return "MEDIA_HEADER"
     if partType = UMP_PART_ID_MEDIA then return "MEDIA"
     if partType = UMP_PART_ID_MEDIA_END then return "MEDIA_END"
@@ -720,8 +745,12 @@ function sabr_ump_partTypeLabel(partType as integer) as string
     return `${partType}`
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_decodePart
+' Purpose  : Helper that safely decodes a payload subsection using a provided
+'            protobuf decoder, logging failures and falling back to defaults.
+'------------------------------------------------------------------------------
 function sabr_ump_decodePart(decodeFunc as dynamic, payload as dynamic, defaultValue = invalid as dynamic, label = "" as string) as dynamic
-    sabr_traceCall("sabr_ump_decodePart")
     if decodeFunc = invalid then return defaultValue
     if not isValid(payload) then return defaultValue
 
@@ -744,8 +773,12 @@ function sabr_ump_decodePart(decodeFunc as dynamic, payload as dynamic, defaultV
     return defaultValue
 end function
 
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSidxIndexUpdate
+' Purpose  : Creates the normalized structure stored in playback context when
+'            new SIDX information is discovered in a spool payload.
+'------------------------------------------------------------------------------
 function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as object, segmentBytes as object) as dynamic
-    sabr_traceCall("sabr_ump_buildSidxIndexUpdate")
     if GetInterface(segmentBytes, "ifByteArray") = invalid or segmentBytes.count() <= 0 then return invalid
 
     indexInfo = sabr_mp4_extractSidxIndex(segmentBytes)

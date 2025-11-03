@@ -1,8 +1,15 @@
-import "pkg:/source/SabrInstrumentation.bs"
 ' Shared utility helpers used across SABR modules.
 
+' Returns mediaIdHash (string) or invalid if not found
+function sabr_extractMediaIdHash(url as string) as dynamic
+    ' /sabr/<anything-not-a-slash>(optional slash)
+    re = CreateObject("roRegex", "/sabr/([^/]+)/?", "i")
+    m = re.Match(url)
+    if m.Count() >= 2 then return m[1]
+    return invalid
+end function
+
 function sabr_toInt(value as dynamic) as dynamic
-    sabr_traceCall("sabr_toInt")
     if not isValid(value) then return invalid
     if IsInteger(value) then return value
     if IsFloat(value) or IsDouble(value) then return int(value)
@@ -15,14 +22,12 @@ function sabr_toInt(value as dynamic) as dynamic
 end function
 
 function sabr_safeToInt(value as dynamic) as integer
-    sabr_traceCall("sabr_safeToInt")
     result = sabr_toInt(value)
     if result = invalid then return 0
     return result
 end function
 
 function sabr_toSafeString(value as dynamic) as string
-    sabr_traceCall("sabr_toSafeString")
     if not isValid(value) then return ""
     if IsString(value) then return value.trim()
     if IsBoolean(value) then return value = true ? "true" : "false"
@@ -39,14 +44,12 @@ function sabr_toSafeString(value as dynamic) as string
 end function
 
 function sabr_currentTimestampMs() as integer
-    sabr_traceCall("sabr_currentTimestampMs")
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function
 
 function sabr_formatExceptionDetail(err as dynamic) as string
-    sabr_traceCall("sabr_formatExceptionDetail")
     if not isValid(err) then return ""
     if IsString(err) then return err
     if IsAssociativeArray(err)
@@ -78,7 +81,6 @@ function sabr_formatExceptionDetail(err as dynamic) as string
 end function
 
 function sabr_joinWithPipe(parts as object) as string
-    sabr_traceCall("sabr_joinWithPipe")
     if not IsArray(parts) then return ""
     total = parts.count()
     if total = 0 then return ""
@@ -92,7 +94,6 @@ function sabr_joinWithPipe(parts as object) as string
 end function
 
 function sabr_isNumericLiteralString(text as string) as boolean
-    sabr_traceCall("sabr_isNumericLiteralString")
     if not IsString(text) then return false
     trimmed = text.trim()
     if trimmed = "" then return false
@@ -115,7 +116,6 @@ function sabr_isNumericLiteralString(text as string) as boolean
 end function
 
 function sabr_valueToLabel(value as dynamic) as string
-    sabr_traceCall("sabr_valueToLabel")
     if not isValid(value) then return ""
     if IsString(value)
         trimmed = value.trim()
@@ -146,7 +146,6 @@ function sabr_valueToLabel(value as dynamic) as string
 end function
 
 function sabr_formatRequestedRangeForPath(byteRange as object) as string
-    sabr_traceCall("sabr_formatRequestedRangeForPath")
     if not isValid(byteRange) then return "none"
     startLabel = sabr_valueToLabel(byteRange?.startRange)
     if startLabel = "" then startLabel = sabr_valueToLabel(byteRange?.start)
@@ -163,7 +162,6 @@ function sabr_formatRequestedRangeForPath(byteRange as object) as string
 end function
 
 function sabr_extractRequestNumber(value as dynamic) as string
-    sabr_traceCall("sabr_extractRequestNumber")
     if not isValid(value) then return ""
     if IsAssociativeArray(value)
         if value.DoesExist("requestNumber")
@@ -175,7 +173,6 @@ function sabr_extractRequestNumber(value as dynamic) as string
 end function
 
 function sabr_formatToKey(format as dynamic) as string
-    sabr_traceCall("sabr_formatToKey")
     if not isValid(format) then return ""
     itagPart = ""
     if isValid(format.itag)
@@ -189,7 +186,6 @@ function sabr_formatToKey(format as dynamic) as string
 end function
 
 function sabr_cloneObject(value as dynamic) as dynamic
-    sabr_traceCall("sabr_cloneObject")
     if not isValid(value) then return invalid
     json = ""
     clone = invalid
@@ -206,7 +202,6 @@ function sabr_cloneObject(value as dynamic) as dynamic
 end function
 
 function sabr_formatToFormatId(format as object) as object
-    sabr_traceCall("sabr_formatToFormatId")
     if not isValid(format) then return {}
     return {
         "itag": format.itag,
@@ -216,7 +211,6 @@ function sabr_formatToFormatId(format as object) as object
 end function
 
 function sabr_findInArray(arr as object, value as string) as boolean
-    sabr_traceCall("sabr_findInArray")
     if not IsArray(arr) then return false
     for each item in arr
         if IsString(item) and item = value
@@ -227,14 +221,12 @@ function sabr_findInArray(arr as object, value as string) as boolean
 end function
 
 function sabr_urlEncode(value as string) as string
-    sabr_traceCall("sabr_urlEncode")
     if not isValid(value) then return ""
     encoder = CreateObject("roUrlTransfer")
     return encoder.Escape(value)
 end function
 
 function sabr_sanitizeForFilename(value as string) as string
-    sabr_traceCall("sabr_sanitizeForFilename")
     if not isValid(value) then return ""
     sanitized = ""
     for i = 1 to Len(value)
@@ -254,7 +246,6 @@ function sabr_sanitizeForFilename(value as string) as string
 end function
 
 function sabr_joinPath(base as string, name as string) as string
-    sabr_traceCall("sabr_joinPath")
     if not IsString(base) then base = ""
     if not IsString(name) then name = ""
     if base = "" then return name
@@ -264,7 +255,6 @@ function sabr_joinPath(base as string, name as string) as string
 end function
 
 function sabr_pathIsDir(path as string) as boolean
-    sabr_traceCall("sabr_pathIsDir")
     if not isValid(path) or path = "" then return false
 
     lastChar = Right(path, 1)
@@ -289,46 +279,37 @@ end function
 ' Aliases kept for legacy SABR UMP helpers so callers need not change.
 
 function sabr_ump_toInt(value as dynamic) as dynamic
-    sabr_traceCall("sabr_ump_toInt")
     return sabr_toInt(value)
 end function
 
 function sabr_ump_toSafeString(value as dynamic) as string
-    sabr_traceCall("sabr_ump_toSafeString")
     return sabr_toSafeString(value)
 end function
 
 function sabr_ump_joinWithPipe(values as object) as string
-    sabr_traceCall("sabr_ump_joinWithPipe")
     return sabr_joinWithPipe(values)
 end function
 
 function sabr_ump_valueToLabel(value as dynamic) as string
-    sabr_traceCall("sabr_ump_valueToLabel")
     return sabr_valueToLabel(value)
 end function
 
 function sabr_ump_findInArray(arr as object, value as string) as boolean
-    sabr_traceCall("sabr_ump_findInArray")
     return sabr_findInArray(arr, value)
 end function
 
 function sabr_ump_urlEncode(value as string) as string
-    sabr_traceCall("sabr_ump_urlEncode")
     return sabr_urlEncode(value)
 end function
 
 function sabr_ump_sanitizeForFilename(value as string) as string
-    sabr_traceCall("sabr_ump_sanitizeForFilename")
     return sabr_sanitizeForFilename(value)
 end function
 
 function sabr_ump_joinPath(base as string, name as string) as string
-    sabr_traceCall("sabr_ump_joinPath")
     return sabr_joinPath(base, name)
 end function
 
 function sabr_ump_pathIsDir(path as string) as boolean
-    sabr_traceCall("sabr_ump_pathIsDir")
     return sabr_pathIsDir(path)
 end function

@@ -4,57 +4,6 @@ import "pkg:/source/SabrStreamingAdapter.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
 
-function sabr_normalizeMessageType(value as dynamic) as string
-    if value = invalid then return ""
-    typeName = Type(value)
-    if typeName = "String" or typeName = "roString"
-        return LCase(value)
-    else if typeName = "roByteArray"
-        typeBytes = value
-        if GetInterface(typeBytes, "ifByteArray") <> invalid
-            return LCase(typeBytes.ToAsciiString())
-        end if
-    else if typeName = "Integer" or typeName = "roInt" or typeName = "roLong" or typeName = "Float" or typeName = "Double"
-        return LCase(Str(value))
-    end if
-    return LCase(Type(value))
-end function
-
-function sabr_buildServerCacheKey(request as object, contentType as string) as string
-    if not IsAssociativeArray(request) then return ""
-    method = "get"
-    if IsString(request?.method)
-        method = LCase(request.method)
-    else
-        methodLabel = sabr_valueToLabel(request?.method)
-        if methodLabel <> "" then method = LCase(methodLabel)
-    end if
-    path = ""
-    if IsString(request?.path)
-        path = LCase(request.path)
-    else
-        path = LCase(sabr_valueToLabel(request?.path))
-    end if
-    headers = request?.headers
-    rangeHeader = ""
-    if IsAssociativeArray(headers)
-        rangeHeader = sabr_valueToLabel(headers.Lookup("range"))
-        if rangeHeader = "" then rangeHeader = sabr_valueToLabel(headers.Lookup("Range"))
-    end if
-    if rangeHeader <> "" then rangeHeader = LCase(rangeHeader)
-    searchKey = ""
-    if IsAssociativeArray(request?.search)
-        searchKey = sabr_valueToLabel(request.search.Lookup("key"))
-    end if
-    if searchKey = "" and IsAssociativeArray(request?.search)
-        searchKey = sabr_valueToLabel(request.search.Lookup("itag"))
-    end if
-    if searchKey = "" and IsAssociativeArray(request?.headers)
-        searchKey = sabr_valueToLabel(request.headers.Lookup("X-Cache-Itag"))
-    end if
-    return `${method}|${path}|${LCase(contentType)}|${rangeHeader}|${LCase(searchKey)}`
-end function
-
 sub init()
     m.logs = logger()
     m.top.functionName = "YtsabrServer"
@@ -132,9 +81,6 @@ sub YtsabrServer()
                             'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handle_tcp(connection, port)
                         end if
-                        ' else
-                        '     sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
-                        ' stop
                     end if
                 end if
             catch e
@@ -175,115 +121,6 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
     end if
     return streamStatus
-end function
-
-function sabr_sendResponseForConnection(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
-    if not IsAssociativeArray(sabrResponse)
-        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Invalid SABR response; sending 204`)
-        return send_http_reply(connection, "204", "text/plain", "")
-    end if
-
-    responseBody = sabrResponse.body
-    responseBodyPath = sabrResponse?.bodyPath
-    responseBodyOffset = sabr_toInt(sabrResponse?.bodyOffset)
-    responseBodyLength = sabr_toInt(sabrResponse?.bodyLength)
-    responseHeaders = sabrResponse.headers
-    if not isValid(responseHeaders)
-        responseHeaders = CreateObject("roAssociativeArray")
-    end if
-    statusCode = sabrResponse.status
-    if not isValid(statusCode)
-        statusCode = 204
-    end if
-    if responseHeaders.DoesExist("Content-Length") = false
-        if responseBodyLength <> invalid and responseBodyLength >= 0
-            responseHeaders["Content-Length"] = responseBodyLength.toStr()
-        else if GetInterface(responseBody, "ifByteArray") <> invalid
-            responseHeaders["Content-Length"] = responseBody.count().toStr()
-        else
-            responseHeaders["Content-Length"] = "0"
-        end if
-    end if
-    if responseHeaders.DoesExist("Content-Type") = false
-        responseHeaders["Content-Type"] = "text/plain"
-    end if
-    if responseHeaders.DoesExist("Connection") = false
-        responseHeaders["Connection"] = "keep-alive"
-    end if
-    if GetInterface(responseBody, "ifByteArray") = invalid
-        responseBody = CreateObject("roByteArray")
-    end if
-
-    bodyCount = 0
-    if GetInterface(responseBody, "ifByteArray") <> invalid
-        bodyCount = responseBody.count()
-    end if
-
-    status = 0
-    timingInfo = sabrResponse?.timing
-    sendStartMs = sabr_currentTimestampMs()
-    if IsAssociativeArray(timingInfo)
-        timingInfo["sendStartMs"] = sendStartMs
-        queuedMs = sabr_toInt(timingInfo.Lookup("queuedAtMs"))
-        readyMs = sabr_toInt(timingInfo.Lookup("targetReadyMs"))
-        buildMs = sabr_toInt(timingInfo.Lookup("responseBuildMs"))
-        totalDelayLabel = ""
-        queuedToReadyLabel = ""
-        readyToSendLabel = ""
-        buildLabel = ""
-        if queuedMs <> invalid and readyMs <> invalid
-            queuedToReadyLabel = ` queuedToReady=${readyMs - queuedMs}ms`
-        end if
-        if readyMs <> invalid
-            readyToSendLabel = ` readyToSend=${sendStartMs - readyMs}ms`
-        end if
-        if queuedMs <> invalid
-            totalDelayLabel = ` totalSinceQueued=${sendStartMs - queuedMs}ms`
-        end if
-        if buildMs <> invalid and queuedMs <> invalid
-            buildLabel = ` queuedToBuild=${buildMs - queuedMs}ms`
-        end if
-        contentLenHeader = sabr_valueToLabel(responseHeaders.Lookup("Content-Length"))
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming response start len=${contentLenHeader} source=${isValid(responseBodyPath) and responseBodyPath <> "" ? "file" : "memory"}${queuedToReadyLabel}${readyToSendLabel}${buildLabel}${totalDelayLabel}`)
-    end if
-
-    streamUsed = false
-    if sabr_isFileStreamingEnabled() and isValid(responseBodyPath) and responseBodyPath <> ""
-        streamUsed = true
-        streamStatus = send_http_reply_stream(connection, statusCode, responseHeaders, responseBodyPath, responseBodyOffset, responseBodyLength)
-        if streamStatus <= 0
-            sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
-            if bodyCount > 0
-                status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
-            else
-                status = streamStatus
-            end if
-        else
-            status = streamStatus
-        end if
-    else
-        status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
-    end if
-
-    sendEndMs = sabr_currentTimestampMs()
-    if IsAssociativeArray(timingInfo)
-        timingInfo["sendEndMs"] = sendEndMs
-        sendDuration = sendEndMs - sendStartMs
-        readyMs = sabr_toInt(timingInfo.Lookup("targetReadyMs"))
-        queuedMs = sabr_toInt(timingInfo.Lookup("queuedAtMs"))
-        readyDurationLabel = ""
-        queueTotalLabel = ""
-        if readyMs <> invalid
-            readyDurationLabel = ` readyToFinish=${sendEndMs - readyMs}ms`
-        end if
-        if queuedMs <> invalid
-            queueTotalLabel = ` totalSinceQueued=${sendEndMs - queuedMs}ms`
-        end if
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming response complete bytesSent=${status} sendDuration=${sendDuration}ms${readyDurationLabel}${queueTotalLabel} via=${streamUsed ? "file" : "memory"}`)
-    else
-        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Status: ${status}`)
-    end if
-    return status
 end function
 
 ' Reads data from a client socket until an HTTP request is complete, then
@@ -368,8 +205,6 @@ function process_request(request as object, connection as object, port as object
             keyParam = sabr_valueToLabel(request.search.Lookup("key"))
         end if
         sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} range=${rangeHeader}`)
-        cacheKey = sabr_buildServerCacheKey(request, m.contentType)
-        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request cacheKey=${cacheKey}`)
 
         requestId = invalid
         if isValid(m.top?.utilsTask)
@@ -392,8 +227,6 @@ function process_request(request as object, connection as object, port as object
             status = send_http_reply(connection, "500", "text/plain", fatalReason)
         else if sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart")
             status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
-        else
-             status = sabr_sendResponseForConnection(connection, sabrResponse, requestLogTag)
         end if
         m.sockets[Stri(connection.getID())] = invalid
         m.connections[Stri(connection.getID())] = invalid

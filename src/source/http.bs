@@ -1,6 +1,19 @@
 import "pkg:/source/isItem.bs"
 
+function http_trace(functionName as string)
+    log = logger()
+    if isValid(log)
+        log.printl(log_level_Type.DEBUG, `[HTTP-Trace] ${functionName}`)
+    end if
+end function
+
+'------------------------------------------------------------------------------
+' Function : create_new_request
+' Purpose  : Initializes the HTTP request state machine with empty buffers
+'            ready to parse an incoming socket stream.
+'------------------------------------------------------------------------------
 function create_new_request()
+    http_trace("create_new_request")
     return { "state": 0
         "headers": {}
         "method": ""
@@ -13,7 +26,13 @@ function create_new_request()
     }
 end function
 
+'------------------------------------------------------------------------------
+' Function : read_http
+' Purpose  : Drives the HTTP request state machine by reading from the socket
+'            and dispatching to method/path/header/body parsers.
+'------------------------------------------------------------------------------
 function read_http(request as object, connection as object)
+    http_trace("read_http")
     length = connection.getCountRcvBuf()
     'print "Processing message on socket: " ; connection.getID() ; " of length " ; length
     if request.state < 6 or request.body_handler <> invalid then
@@ -48,7 +67,13 @@ function read_http(request as object, connection as object)
 end function
 
 
+'------------------------------------------------------------------------------
+' Function : parse_http_body
+' Purpose  : Transfers buffered bytes into the request body and signals
+'            completion when the declared Content-Length is satisfied.
+'------------------------------------------------------------------------------
 function parse_http_body(connection as object, request as object)
+    http_trace("parse_http_body")
     if request.body_handler <> invalid then
         return request.body_handler(request, connection)
     end if
@@ -61,7 +86,13 @@ function parse_http_body(connection as object, request as object)
     end if
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_headers
+' Purpose  : Alternates between header-name and header-value parsing until the
+'            blank line that terminates the HTTP header section is reached.
+'------------------------------------------------------------------------------
 function parse_http_headers(connection as object, request as object)
+    http_trace("parse_http_headers")
     while request.buffer.Count() > 0 and request.state < 5
         if request.state = 4 then
             ' From 4, either go to 5 or 6
@@ -74,7 +105,13 @@ function parse_http_headers(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_header_name
+' Purpose  : Reads bytes from the buffer to accumulate an HTTP header name and
+'            transitions to value parsing or body handling when needed.
+'------------------------------------------------------------------------------
 function parse_http_header_name(connection as object, request as object)
+    http_trace("parse_http_header_name")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 13 then
@@ -107,7 +144,13 @@ function parse_http_header_name(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_header_value
+' Purpose  : Decodes the header value until CRLF, trims whitespace, and stores
+'            it on the request object.
+'------------------------------------------------------------------------------
 function parse_http_header_value(connection as object, request as object)
+    http_trace("parse_http_header_value")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 13 then
@@ -132,7 +175,13 @@ function parse_http_header_value(connection as object, request as object)
 end function
 
 
+'------------------------------------------------------------------------------
+' Function : parse_http_version
+' Purpose  : Consumes the HTTP version token after the request path and then
+'            resumes header parsing.
+'------------------------------------------------------------------------------
 function parse_http_version(connection as object, request as object)
+    http_trace("parse_http_version")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 10 then
@@ -144,7 +193,13 @@ function parse_http_version(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_path
+' Purpose  : Collects the request path and detects query parameters so the
+'            parser can branch into search parsing or version parsing.
+'------------------------------------------------------------------------------
 function parse_http_path(connection as object, request as object)
+    http_trace("parse_http_path")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 63 then
@@ -163,7 +218,13 @@ function parse_http_path(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_method
+' Purpose  : Reads the HTTP method token and transitions to path parsing when
+'            the separating space is encountered.
+'------------------------------------------------------------------------------
 function parse_http_method(connection as object, request as object)
+    http_trace("parse_http_method")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 32 then
@@ -175,7 +236,13 @@ function parse_http_method(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : parse_http_search
+' Purpose  : Collects the query string bytes following the path and populates
+'            the request search map when the space before HTTP version arrives.
+'------------------------------------------------------------------------------
 function parse_http_search(connection as object, request as object)
+    http_trace("parse_http_search")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 32 then
@@ -188,7 +255,13 @@ function parse_http_search(connection as object, request as object)
     end while
 end function
 
+'------------------------------------------------------------------------------
+' Function : munge_search
+' Purpose  : Splits the raw query-string byte array into a key/value map stored
+'            on the request.
+'------------------------------------------------------------------------------
 sub munge_search(request as object)
+    http_trace("munge_search")
     name_bytes = createobject("roByteArray")
     name = invalid
     For each code in request.search_bytes
@@ -215,7 +288,13 @@ sub munge_search(request as object)
     end if
 end sub
 
+'------------------------------------------------------------------------------
+' Function : parse_url
+' Purpose  : Parses a simple URL string into protocol/host/port/path components
+'            for internal manifest rewriting utilities.
+'------------------------------------------------------------------------------
 function parse_url(s as string)
+    http_trace("parse_url")
     url = { "path": "/"
         "hostname": ""
         "port": 0
@@ -274,6 +353,7 @@ end function
 ' ***************************************************
 
 function pad_integer(source as integer)
+    http_trace("pad_integer")
     if source < 10 then
         return "0" + right(str(source), 1)
     else
@@ -281,7 +361,13 @@ function pad_integer(source as integer)
     end if
 end function
 
+'------------------------------------------------------------------------------
+' Function : send_http_reply
+' Purpose  : Sends a complete HTTP response constructed in-memory, including
+'            RFC822 date formatting and optional base64-decoded body content.
+'------------------------------------------------------------------------------
 function send_http_reply(connection as object, response_code as string, content_type as string, textData = "" as string, b64Data = "" as string)
+    http_trace("send_http_reply")
     loggers = logger()
     reply = createobject("roByteArray")
     data = createobject("roByteArray")
@@ -321,9 +407,13 @@ function send_http_reply(connection as object, response_code as string, content_
     return status
 end function
 
-' Streams an HTTP response back to the client, optionally reading payload
-' bytes from disk to avoid large in-memory buffers.
+'------------------------------------------------------------------------------
+' Function : http_sendHeaders
+' Purpose  : Writes only the HTTP status line and headers to the socket,
+'            logging range metadata and supporting partial responses.
+'------------------------------------------------------------------------------
 function http_sendHeaders(connection as object, response_code as integer, headers as object) as boolean
+    http_trace("http_sendHeaders")
     loggers = logger()
 
     resStatus = ""
@@ -375,194 +465,92 @@ function http_sendHeaders(connection as object, response_code as integer, header
     return true
 end function
 
-function http_resolveTotalBytes(headers as object, data as dynamic, dataPath as dynamic, dataLength as dynamic) as dynamic
-    totalBytes = dataLength
-    if totalBytes = invalid
-        if IsAssociativeArray(headers)
-            lenLabel = headers.Lookup("Content-Length")
-            if not isValid(lenLabel) then lenLabel = headers.Lookup("content-length")
-            if isValid(lenLabel)
-                lenValue = Val(lenLabel)
-                if lenValue <> invalid then totalBytes = lenValue
-            end if
-        end if
-    end if
-    if totalBytes = invalid
-        if GetInterface(data, "ifByteArray") <> invalid
-            totalBytes = data.Count()
-        else if IsString(dataPath) and dataPath <> ""
-            sizeGuess = http_getFileSize(dataPath)
-            if sizeGuess <> invalid then totalBytes = sizeGuess
-        else
-            totalBytes = 0
-        end if
-    end if
-    return totalBytes
-end function
+'------------------------------------------------------------------------------
+' Function : send_http_reply_stream_chunks
+' Purpose  : Streams a file to the client either via specific chunk offsets or
+'            sequentially when chunk metadata is absent, after sending headers.
+'------------------------------------------------------------------------------
+function send_http_reply_stream_chunks(connection as object, response_code as integer, headers as object, dataPath as string, chunks as object, totalBytes = invalid as dynamic) as integer
+    http_trace("send_http_reply_stream_chunks")
+    loggers = logger()
 
-function send_http_reply_raw(connection as object, response_code as integer, headers as object, data, port = invalid, dataPath = invalid as dynamic, dataOffset = 0 as dynamic, dataLength = invalid as dynamic)
+    if not IsAssociativeArray(headers)
+        headers = CreateObject("roAssociativeArray")
+    end if
+
+    if not IsString(dataPath) or dataPath = ""
+        loggers.printl(log_level_Type.WARN, `[HTTP] Chunk stream requested without valid dataPath; sending headers only`)
+        if http_sendHeaders(connection, response_code, headers) = false then return -1
+        return 0
+    end if
+
+    hasChunks = IsArray(chunks) and chunks.Count() > 0
+
+    computedTotal = totalBytes
+    if computedTotal = invalid
+        if hasChunks
+            computedTotal = 0
+            for each chunk in chunks
+                chunkLen = chunk?.length
+                if chunkLen <> invalid and chunkLen > 0
+                    computedTotal = computedTotal + chunkLen
+                end if
+            end for
+        else
+            computedTotal = http_getFileSize(dataPath)
+        end if
+    end if
+    if computedTotal <> invalid and computedTotal >= 0 and headers.DoesExist("Content-Length") = false
+        headers["Content-Length"] = computedTotal.toStr()
+    end if
+
     if http_sendHeaders(connection, response_code, headers) = false then return -1
 
-    loggers = logger()
-    totalBytes = http_resolveTotalBytes(headers, data, dataPath, dataLength)
-
     bytesSent = 0
-    chunkSize = 32768
 
-    if GetInterface(data, "ifByteArray") <> invalid and data.Count() > 0
+    if not hasChunks
+        chunkSize = 32768
         offset = 0
-        while offset < data.Count()
-            sendLen = chunkSize
-            if offset + sendLen > data.Count()
-                sendLen = data.Count() - offset
-            end if
-            if sendLen <= 0 then exit while
-            sent = connection.send(data, offset, sendLen)
-            if sent <= 0
-                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (byte array) offset=${offset} remaining=${data.Count() - offset} status=${sent}`)
-                try
-                    connection.Close()
-                catch e
-                end try
-                return sent
-            end if
-            offset = offset + sent
-            bytesSent = bytesSent + sent
-        end while
-    else if IsString(dataPath) and dataPath <> ""
-        currentOffset = dataOffset
-        if currentOffset = invalid then currentOffset = 0
-        remaining = totalBytes
+        remaining = computedTotal
         while remaining = invalid or remaining > 0
             readLen = chunkSize
             if remaining <> invalid and readLen > remaining
                 readLen = remaining
             end if
             if readLen <= 0 then exit while
-            chunk = CreateObject("roByteArray")
-            if chunk.ReadFile(dataPath, currentOffset, readLen) <> true
-                exit while
-            end if
-            chunkLen = chunk.Count()
+
+            buffer = CreateObject("roByteArray")
+            if buffer.ReadFile(dataPath, offset, readLen) <> true then exit while
+            chunkLen = buffer.Count()
             if chunkLen <= 0 then exit while
-            offset = 0
-            while offset < chunkLen
-                sendLen = chunkLen - offset
-                sent = connection.send(chunk, offset, sendLen)
+
+            sentOffset = 0
+            while sentOffset < chunkLen
+                sendLen = chunkLen - sentOffset
+                sent = connection.send(buffer, sentOffset, sendLen)
                 if sent <= 0
-                    loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset + offset} chunk=${sendLen} status=${sent}`)
+                    loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (sequential stream) path=${dataPath} offset=${offset + sentOffset} chunk=${sendLen} status=${sent}`)
                     try
                         connection.Close()
                     catch e
                     end try
                     return sent
                 end if
-                offset = offset + sent
+                sentOffset = sentOffset + sent
                 bytesSent = bytesSent + sent
             end while
-            currentOffset = currentOffset + chunkLen
+
+            offset = offset + chunkLen
             if remaining <> invalid
                 remaining = remaining - chunkLen
                 if remaining <= 0 then exit while
             end if
         end while
+
+        loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes sequential body`)
+        return bytesSent
     end if
 
-    loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body`)
-    return bytesSent
-end function
-
-function send_http_reply_stream(connection as object, response_code as integer, headers as object, dataPath as string, dataOffset = 0 as dynamic, dataLength = invalid as dynamic) as integer
-    loggers = logger()
-    if not IsString(dataPath) or dataPath = ""
-        loggers.printl(log_level_Type.WARN, `[HTTP] Stream requested without valid dataPath; falling back to empty response`)
-        return send_http_reply_raw(connection, response_code, headers, CreateObject("roByteArray"))
-    end if
-    if http_sendHeaders(connection, response_code, headers) = false then return -1
-
-    totalBytes = http_resolveTotalBytes(headers, invalid, dataPath, dataLength)
-    chunkSize = 32768
-    currentOffset = dataOffset
-    if currentOffset = invalid or currentOffset < 0 then currentOffset = 0
-    remaining = totalBytes
-    bytesSent = 0
-    chunk = CreateObject("roByteArray")
-
-    while remaining = invalid or remaining > 0
-        readLen = chunkSize
-        if remaining <> invalid and readLen > remaining
-            readLen = remaining
-        end if
-        if readLen <= 0 then exit while
-
-        if chunk.ReadFile(dataPath, currentOffset, readLen) <> true then exit while
-        chunkLen = chunk.Count()
-        if chunkLen <= 0 then exit while
-
-        ' if chunkLen < 2000 convert to base64 for logging
-        if chunkLen < 2000 then
-            b64Chunk = chunk.ToBase64String()
-            loggers.printl(log_level_Type.DEBUG, `[HTTP] Streamed chunk (file stream) path=${dataPath} offset=${currentOffset} size=${chunkLen} base64=${b64Chunk}`)
-        end if
-
-
-        offset = 0
-        while offset < chunkLen
-            sendLen = chunkLen - offset
-            sent = connection.send(chunk, offset, sendLen)
-            if sent <= 0
-                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (file stream) path=${dataPath} offset=${currentOffset + offset} chunk=${sendLen} status=${sent}`)
-                try
-                    connection.Close()
-                catch e
-                end try
-                return sent
-            end if
-            offset = offset + sent
-            bytesSent = bytesSent + sent
-        end while
-
-        currentOffset = currentOffset + chunkLen
-        if remaining <> invalid
-            remaining = remaining - chunkLen
-            if remaining <= 0 then exit while
-        end if
-    end while
-
-    loggers.printl(log_level_Type.INFO, `sent status: ${bytesSent} bytes body (file stream)`)
-    return bytesSent
-end function
-
-function send_http_reply_stream_chunks(connection as object, response_code as integer, headers as object, dataPath as string, chunks as object, totalBytes = invalid as dynamic) as integer
-    loggers = logger()
-    if not IsString(dataPath) or dataPath = ""
-        loggers.printl(log_level_Type.WARN, `[HTTP] Chunk stream requested without valid dataPath; falling back to empty response`)
-        return send_http_reply_raw(connection, response_code, headers, CreateObject("roByteArray"))
-    end if
-    if not IsArray(chunks) or chunks.count() = 0
-        loggers.printl(log_level_Type.WARN, `[HTTP] Chunk stream requested without chunks; falling back to standard stream`)
-        return send_http_reply_stream(connection, response_code, headers, dataPath, 0, totalBytes)
-    end if
-    if not IsAssociativeArray(headers)
-        headers = CreateObject("roAssociativeArray")
-    end if
-
-    if totalBytes = invalid
-        totalBytes = 0
-        for each chunk in chunks
-            chunkLen = chunk?.length
-            if chunkLen <> invalid and chunkLen > 0
-                totalBytes = totalBytes + chunkLen
-            end if
-        end for
-    end if
-    if totalBytes <> invalid and headers.DoesExist("Content-Length") = false
-        headers["Content-Length"] = totalBytes.toStr()
-    end if
-
-    if http_sendHeaders(connection, response_code, headers) = false then return -1
-
-    bytesSent = 0
     for each chunk in chunks
         chunkOffset = chunk?.offset
         chunkLength = chunk?.length
@@ -573,19 +561,19 @@ function send_http_reply_stream_chunks(connection as object, response_code as in
         chunkLen = buffer.Count()
         if chunkLen <= 0 then exit for
 
-        offset = 0
-        while offset < chunkLen
-            sendLen = chunkLen - offset
-            sent = connection.send(buffer, offset, sendLen)
+        sentOffset = 0
+        while sentOffset < chunkLen
+            sendLen = chunkLen - sentOffset
+            sent = connection.send(buffer, sentOffset, sendLen)
             if sent <= 0
-                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (chunk stream) path=${dataPath} offset=${chunkOffset + offset} chunk=${sendLen} status=${sent}`)
+                loggers.printl(log_level_Type.DEBUG, `[HTTP] Client closed socket mid-body (chunk stream) path=${dataPath} offset=${chunkOffset + sentOffset} chunk=${sendLen} status=${sent}`)
                 try
                     connection.Close()
                 catch e
                 end try
                 return sent
             end if
-            offset = offset + sent
+            sentOffset = sentOffset + sent
             bytesSent = bytesSent + sent
         end while
     end for
@@ -594,6 +582,11 @@ function send_http_reply_stream_chunks(connection as object, response_code as in
     return bytesSent
 end function
 
+'------------------------------------------------------------------------------
+' Function : http_getFileSize
+' Purpose  : Queries the filesystem for a path's size, returning invalid when
+'            the path is missing or stat fails.
+'------------------------------------------------------------------------------
 function http_getFileSize(path as string) as dynamic
     if not IsString(path) or path = "" then return invalid
     fs = CreateObject("roFileSystem")
