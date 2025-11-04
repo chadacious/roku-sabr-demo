@@ -8,6 +8,7 @@ BrighterScript Roku SceneGraph application that demonstrates how to adapt YouTub
 - Main scene bootstraps a branded splash screen and loads a DASH manifest stored under `src/assets/mpds/`.
 - A local manifest proxy (`httpServerTask`) rehosts the manifest at `http://0.0.0.0:7010/manifest/<id>` for the player.
 - Dedicated SABR servers (`ytsabrServerTask`) run on ports 7011 (video) and 7012 (audio) to process adaptive segment requests, decode SABR/UMP payloads, and stream the requested ranges directly from the SABR spool files in `tmp:/`.
+- Streaming taps watch the Roku download temp (`*.tmp`) files in-place, copy the completed bytes to a stable `*-res` path before cancelling the transfer, and immediately serve the requested range without waiting for the full SABR response to finish.
 - End-to-end smoke test (`scripts/e2e-smoke.js`) can deploy to a developer-enabled Roku, follow the logs, and capture screenshots.
 
 ## Prerequisites
@@ -86,7 +87,11 @@ artifacts/                # Log and screenshot outputs from automation
 If the same byte range keeps arriving, the repeat guard nudges the computed value forward by a small, duration-aware bump so SABR can advance to the next segment. The resolved time, source label, and any nudge amount are persisted to `playbackContext` (`lastResolvedPlayerTimeMs`, `lastResolvedPlayerTimeSource`) for diagnostics.
 
 ## Spool Streaming & Cleanup
-UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` scans that file to build an in-memory part map (payload offsets, byte ranges, SIDX data for init segments) and serves Roku requests by slicing the spool directly, skipping any non-MP4 bytes at part boundaries. Because segments are no longer materialized into `tmp:/sabr-cache`, the legacy cache maintenance routines are effectively no-ops. When a playback session finishes you can remove the entire `tmp:/<mediaIdHash>/` directory to reclaim space, or keep it around for debugging with the spool summary logs (`[YTSABR] UMP spool preview …`).
+ UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` now has two complementary paths:
+   - A **stream tap** tails the active temp file, and as soon as the target `MEDIA_END` part lands it copies the temp (`*.tmp`) file to its `*-res` sibling before cancelling the transfer. The HTTP layer immediately serves the requested range from that copied file so we do not need to await the rest of the SABR response.
+   - A **full scan** runs afterwards (or on cache misses) to build the aggregated part map (payload offsets, SIDX data, control directives) so subsequent requests can read ranges straight from disk without redownloading.
+
+Because segments are no longer materialized into `tmp:/sabr-cache`, the legacy cache maintenance routines are effectively no-ops. When a playback session finishes you can remove the entire `tmp:/<mediaIdHash>/` directory to reclaim space, or keep it around for debugging with the spool summary logs (`[YTSABR] UMP spool preview …`).
 
 ## Instrumentation & Debugging
 
