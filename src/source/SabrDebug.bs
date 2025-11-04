@@ -1,9 +1,7 @@
 ' Master switch for runtime debug logging and uploads
-const SABR_DEBUG_ENABLED = true
+import "pkg:/source/SabrUtils.bs"
 
-function sabr_debugEnabled() as boolean
-    return SABR_DEBUG_ENABLED
-end function
+const SABR_DEBUG_ENABLED = true
 
 sub sabr_log(logs as dynamic, level as integer, message as string, debugOnly = true as boolean)
     if debugOnly = false or SABR_DEBUG_ENABLED
@@ -96,7 +94,7 @@ sub sabr_debugUploadContent(debugUploadUrl as string, relativePath as string, co
         else
             tempDir = "tmp:/sabr-debug"
             fs.CreateDirectory(tempDir)
-            fileName = sabr_debugSanitizeFilename(originalPath)
+            fileName = sabr_sanitizeForFilename(originalPath)
             if fileName = "" then fileName = "roku-debug-bytes.bin"
             tmpFilePath = `${tempDir}/${fileName}`
 
@@ -126,40 +124,12 @@ sub sabr_debugUploadContent(debugUploadUrl as string, relativePath as string, co
     end if
 end sub
 
-function sabr_debugSanitizeFilename(value as string) as string
-    if not isValid(value) then return ""
-    sanitized = ""
-    for i = 1 to Len(value)
-        ch = Mid(value, i, 1)
-        ascii = Asc(ch)
-        if ch = "." or ch = "-" or ch = "_" or ch = " "
-            sanitized = sanitized + ch
-        else if ascii >= 48 and ascii <= 57
-            sanitized = sanitized + ch
-        else if ascii >= 65 and ascii <= 90
-            sanitized = sanitized + ch
-        else if ascii >= 97 and ascii <= 122
-            sanitized = sanitized + ch
-        else
-            sanitized = sanitized + "_"
-        end if
-    end for
-    return sanitized
-end function
+
 
 function sabr_debugUrlEncode(value as string) as string
     if not isValid(value) then return ""
     encoder = CreateObject("roUrlTransfer")
     return encoder.Escape(value)
-end function
-
-function sabr_debugNextDumpSequence() as integer
-    globals = GetGlobalAA()
-    if not globals.DoesExist("sabrDebugDumpSeq")
-        globals.sabrDebugDumpSeq = 0
-    end if
-    globals.sabrDebugDumpSeq = globals.sabrDebugDumpSeq + 1
-    return globals.sabrDebugDumpSeq
 end function
 
 function sabr_debugZeroPadDigits(value as dynamic, width as integer) as string
@@ -221,13 +191,15 @@ function sabr_debugBuildDumpLabel(playbackContext as object, prefix as string, r
     end if
     if batchIndex = "" then batchIndex = rn
 
-    seqLabel = sabr_debugNextDumpSequence()
+    batchDisplay = batchIndex
+    if batchDisplay = "" then batchDisplay = rn
 
     counterLabel = ""
     if isValid(dumpCounter)
         counterLabel = `${dumpCounter}`
     end if
-    if counterLabel = "" then counterLabel = `${seqLabel}`
+    if counterLabel = "" then counterLabel = batchDisplay
 
-    return `roku-player/${sabr_debugZeroPadDigits(seqLabel, 6)}-${prefix}-${contentLabel}-itag${itagLabel}-${batchIndex}-${counterLabel}-${rn}-${rangePart}`
+    rnLabel = sabr_debugZeroPadDigits(rn, 4)
+    return `roku-player/${rnLabel}-${prefix}-${contentLabel}-itag${itagLabel}-${batchDisplay}-${counterLabel}-${rn}-${rangePart}`
 end function

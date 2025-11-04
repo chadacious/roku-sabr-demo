@@ -7,7 +7,7 @@ BrighterScript Roku SceneGraph application that demonstrates how to adapt YouTub
 - Builds with the BrighterScript CLI (`bsc`) using the configuration in `bsconfig.json`.
 - Main scene bootstraps a branded splash screen and loads a DASH manifest stored under `src/assets/mpds/`.
 - A local manifest proxy (`httpServerTask`) rehosts the manifest at `http://0.0.0.0:7010/manifest/<id>` for the player.
-- Dedicated SABR servers (`ytsabrServerTask`) run on ports 7011 (video) and 7012 (audio) to process adaptive segment requests, decode SABR/UMP payloads, and cache data under the Roku `tmp:/` filesystem.
+- Dedicated SABR servers (`ytsabrServerTask`) run on ports 7011 (video) and 7012 (audio) to process adaptive segment requests, decode SABR/UMP payloads, and stream the requested ranges directly from the SABR spool files in `tmp:/`.
 - End-to-end smoke test (`scripts/e2e-smoke.js`) can deploy to a developer-enabled Roku, follow the logs, and capture screenshots.
 
 ## Prerequisites
@@ -24,9 +24,12 @@ npm install
 
 ### Build and packaging
 - `npm run build` – Compile the app into `dist/` without zipping.
-- `npm run build:prod` – Run the optimizer script that strips debug-only code and produces a lean production bundle.
+- `npm run build:prod` – Run the optimizer script that strips debug-only code, disables debug uploads, drops demo-only assets (MainScene/VideoPlayer/sample MPDs), and copies the reusable sources to `build/prod/`.
+- `npx bsc --project bsconfig.prod.json` – Compile and package the production bundle in `dist/prod/` (requires running `npm run build:prod` first).
+- `npm run build:core` – Copy only the reusable SABR runtime sources into `build/core/` with debug utilities stubbed out (see _Reusing the SABR core_ below).
 - `npm run package` – Compile and create a side-loadable package zip in `dist/`.
 - `npm run watch` – Run the compiler in watch mode for local development.
+- `bsc --project bsconfig.prod.json` – Compile/deploy against the production-pruned sources under `build/prod/` (run `npm run build:prod` first).
 
 ### Deploy to a Roku device
 Provide your Roku credentials via environment variables:
@@ -46,6 +49,7 @@ npm run test:e2e -- --host 192.168.1.42 --password your_dev_password
 Optional flags:
 - `--profile` – Name of a VS Code launch profile (reads from `.vscode/launch.json`).
 - `--username`, `--logPort`, `--ecpPort` – Override defaults (8085 and 8060 respectively).
+- `--bundle prod` (or `--prod`) – Exercise the production bundle. The smoke test runs `npm run build:prod` and deploys using `bsconfig.prod.json`.
 
 ## Project Layout
 ```
@@ -73,54 +77,16 @@ artifacts/                # Log and screenshot outputs from automation
 2. A SABR payload embedded in the manifest is decoded and cached under `tmp:/<mediaIdHash>/`.
 3. Manifest references to `sabr://` URLs are rewritten to local HTTP endpoints (`http://0.0.0.0:7011/` for video, `7012/` for audio).
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
-5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, stream media chunks directly to disk, store segment metadata via `SabrSimpleCache`, and feed playable data back to the Roku video stack without large in-memory buffers.
+5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, build in-memory spool maps (including SIDX data from init segments), and stream the requested byte ranges straight from the SABR spool file back to the Roku video stack without staging per-segment files.
 
-## Player Time Strategies
+## Player Time Strategy
 
-`SabrStreamingAdapter` supports multiple ways to translate a Roku byte-range request into the `playerTimeMs` value SABR expects. The active strategy is controlled by `playbackContext.playerTimeStrategy` (or the `m.top.playerTimeStrategy` override) and can be one of the following:
+`SabrStreamingAdapter` now relies exclusively on the SIDX metadata embedded in SABR init segments to resolve `playerTimeMs`. Each init response is parsed (`SabrUmpProcessor`) and the resulting entries are cached per format. When the Roku player requests a byte range, the adapter locates the SIDX entry that contains (or most closely precedes) the start byte and maps it to a playback timestamp.
 
-| Strategy | Description |
-| --- | --- |
-| `sidx` | Parse the MP4 SIDX index (captured from SABR init segments) and translate the requested byte range to its start time/duration. Uses the raw SABR index; falls back to lower entry if the exact start isn’t found. |
-| `metadata` | Predict from segment metadata accumulated as SABR responses arrive (coverage start/end, start time, duration). Also seeds the metadata map from SIDX entries when no coverage exists yet. |
-| `hybrid` *(default)* | Try the SIDX path first; if unavailable, fall back to metadata; finally use historical counters (delivered duration, last requested time, etc.) as a safety net. |
+If the same byte range keeps arriving, the repeat guard nudges the computed value forward by a small, duration-aware bump so SABR can advance to the next segment. The resolved time, source label, and any nudge amount are persisted to `playbackContext` (`lastResolvedPlayerTimeMs`, `lastResolvedPlayerTimeSource`) for diagnostics.
 
-The strategy engine logs each decision in the telnet console (e.g., `Strategy hybrid sidxIndex=...`, `Resolved playerTimeMs=... source=...`) which makes it easier to audit how requests were computed.
-
-### Switching Strategies
-
-At runtime you can inject the desired mode before issuing segment requests:
-
-```brightscript
-' inside SabrStreamingAdapter or a setup routine
-m.top.playerTimeStrategy = "metadata" ' or "sidx", "hybrid"
-```
-
-For automated testing, the constant `DEFAULT_PLAYER_TIME_STRATEGY` (in `src/source/SabrStreamingAdapter.bs`) initializes the strategy when nothing else is specified.
-
-### Prediction Paths
-
-#### SIDX Lookups
-1. UMP init segments are parsed (`SabrUmpProcessor`) and SIDX entries stored per format.
-2. Each entry captures byte start/end, segment duration, and timeline timing in milliseconds.
-3. When a request arrives, the adapter finds the SIDX entry whose range matches (or precedes) the requested start and returns `startMs + offset`.
-
-#### Metadata Predictions
-1. Every successful SABR response carries coverage/start-time metadata which is cached per format/range.
-2. Future requests use the exact range when available, or interpolate from the closest prior segment.
-3. If no coverage exists yet, the SIDX entries are used to seed the metadata map so the prediction can still succeed.
-
-Both strategies ultimately write the resolved values back to `playbackContext` (`lastResolvedPlayerTimeMs` / `…Source`) for diagnostics and future fallbacks.
-
-## Cache Management & Culling
-Segment data is delivered into `tmp:/sabr-cache/<mediaIdHash>/…`. The cache is aggressively self-managed:
-
-- Every delivery marks the segment metadata (`delivered=true`, timestamps, seek guards). Once the guard window expires, a background maintenance pass removes the file.
-- Maintenance runs automatically at the start of each SABR request and after deliveries. It enforces a rolling **10 MB** quota (`SABR_CACHE_TOTAL_SIZE_LIMIT`) and evicts the oldest files when the total directory size exceeds the limit.
-- Delivered segments within the last ~1.5 s, or those that fall inside an active seek guard (e.g., after a rewind), are temporarily preserved to avoid thrash.
-- Metadata snapshots are logged (see `[SabrCache] state phase=… total=…`) so you can audit how many pending/delivered entries remain across maintenance runs.
-
-If playback stops and no further SABR requests arrive, the cached set remains untouched until the next request triggers maintenance. For automated cleanup you can issue a manual `sabr_cacheRunMaintenance("")` or rely on the next playback session to trim the directory.
+## Spool Streaming & Cleanup
+UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` scans that file to build an in-memory part map (payload offsets, byte ranges, SIDX data for init segments) and serves Roku requests by slicing the spool directly, skipping any non-MP4 bytes at part boundaries. Because segments are no longer materialized into `tmp:/sabr-cache`, the legacy cache maintenance routines are effectively no-ops. When a playback session finishes you can remove the entire `tmp:/<mediaIdHash>/` directory to reclaim space, or keep it around for debugging with the spool summary logs (`[YTSABR] UMP spool preview …`).
 
 ## Instrumentation & Debugging
 
@@ -133,13 +99,23 @@ If playback stops and no further SABR requests arrive, the cached set remains un
 - `SabrDebug.bs` provides `sabr_log` helpers that honor the global debug flag. Toggle `SABR_DEBUG_ENABLED` when preparing production builds.
 - HTTP dumps (request/response bodies, metadata) are uploaded through the debug upload URL when configured; file-backed responses stream via `bodyPath` to keep memory usage low.
 - The repeat-guard instrumentation logs state transitions (`RepeatState …`) so you can see when the player is requesting the same range repeatedly.
-- Performance timers in `SabrUmpProcessor` (`SABR_PERF_LOGGING_ENABLED`) emit duration/memory snapshots for each major step of UMP processing.
+- Spool summaries emitted by `SabrUmpProcessor` log part counts, durations, and byte totals for each decoded UMP response.
 
 ## Customizing the Demo
 - Swap in your own manifests under `src/assets/mpds/` and adjust `MainScene.bs` to load the file you want.
 - Update branding assets (splash, icons) in `src/assets/images/` and refresh `src/manifest` entries if sizes change.
 - Extend `VideoPlayer.bs` to add controls, overlays, or analytics hooks.
 - Additional diagnostics can be added by expanding `logger.bs` or toggling log levels in individual tasks.
+
+## Reusing the SABR core
+The app ships with a stripped-down “core” bundle that contains just the runtime pieces needed to integrate SABR processing into another project.
+
+1. Run `npm run build:core`. This populates `build/core/source/` with the SABR adapters, cache, MP4 parser, protobuf bindings, and a no-op `SabrDebug.bs`.
+2. Copy everything under `build/core/source/` into the target project (for example under `source/` or `vendor/sabr/`).
+3. Add the copied files to the consuming project’s `bsconfig.json` so BrighterScript can compile them.
+4. To sanity-check the generated bundle in this repo, run `bsc --project bsconfig.core.json` (after `npm run build:core`). The config targets `build/core/source/` exclusively, so any syntax or typing problems in the exported files surface before you ship them.
+
+Because the generated stub disables all debug uploads and verbose logging by default, the core bundle is safe to ship in production channels. If you need diagnostics in the host app, replace the stub `SabrDebug.bs` with your own implementation before compiling.
 
 ## Troubleshooting
 - Check `artifacts/logs-*.txt` for deployment/test run logs.

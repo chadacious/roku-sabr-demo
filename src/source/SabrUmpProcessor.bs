@@ -20,8 +20,6 @@ import "pkg:/source/ytproto/generated/messages/ReloadPlaybackContext.brs"
 import "pkg:/source/ytproto/generated/messages/ReloadPlaybackParams.brs"
 import "pkg:/source/ytproto/generated/messages/MediaHeader.brs"
 import "pkg:/source/isItem.bs"
-' Toggle extra validation of init segments when true
-const SABR_INIT_DIAGNOSTICS_ENABLED = false
 
 ' UMP part identifiers used by YouTube SABR responses
 const UMP_PART_ID_MEDIA_HEADER = 20
@@ -37,1208 +35,7 @@ const UMP_PART_ID_STREAM_PROTECTION_STATUS = 58
 const UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY = 59
 const UMP_PART_ID_SNACKBAR_MESSAGE = 67
 
-' Controls performance instrumentation emitted by the processor
-const SABR_PERF_LOGGING_ENABLED = true
-const SABR_PERF_CAPTURE_MEMORY = true
-const SABR_PERF_THRESHOLD_MS = 0
-
-' Usage: call from SabrStreamingAdapter once you receive sabrUmpResponse bytes.
-'   processor = sabr_ump_createProcessor(requestMetadata, logs)
-'   result = processor.processChunk(sabrUmpResponse)
-' The processor keeps incremental state so you can feed additional chunks if needed.
-function sabr_ump_createProcessor(requestMetadata as object, logs = invalid) as object
-    processor = {
-        "requestMetadata": requestMetadata
-        "logs": logs
-
-        "_pendingBytes": createObject("roByteArray")
-        "_formatInitMetadata": []
-        "_desiredHeaderId": invalid
-        "_partialSegments": createObject("roAssociativeArray")
-        "_initMetadataByKey": createObject("roAssociativeArray")
-        "_debugCounters": createObject("roAssociativeArray")
-        "_debugTmpDirReady": false
-        "_hasDumpedTmp": false
-        "_pendingResult": invalid
-        "_requestSatisfied": false
-        "_processedPartTypes": []
-        "_segmentScan": []
-        "_segmentMatched": false
-        "_perfEnabled": SABR_PERF_LOGGING_ENABLED
-        "_perfCaptureMemory": SABR_PERF_CAPTURE_MEMORY
-        "_perfMemoryMonitor": invalid
-        "_chunkBufferPool": requestMetadata?.chunkBufferPool
-        "_chunkBufferPoolLimit": requestMetadata?.chunkBufferPoolLimit
-    }
-
-    if IsAssociativeArray(requestMetadata)
-        perfFlag = requestMetadata?.enablePerfLogs
-        if perfFlag = true
-            processor._perfEnabled = true
-        else if perfFlag = false
-            processor._perfEnabled = false
-        end if
-        captureFlag = requestMetadata?.perfCaptureMemory
-        if captureFlag = true
-            processor._perfCaptureMemory = true
-        else if captureFlag = false
-            processor._perfCaptureMemory = false
-        end if
-    end if
-
-    processor.processChunk = function(chunkBytes as object) as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_processChunk(ctx, chunkBytes) : end function
-    processor.getSegmentInfo = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getSegmentInfo(ctx) : end function
-    processor.getPendingSegmentsSummary = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getPendingSegmentsSummary(ctx) : end function
-    processor.getProcessedPartTypes = function() as object : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getProcessedPartTypes(ctx) : end function
-    processor.getSegmentScanSummary = function() as dynamic : ctx = sabr_ump_getProcessorContext() : return sabr_ump_getSegmentScanSummary(ctx) : end function
-
-    ' Provide access helpers for the closures above.
-    processor._self = processor
-    sabr_ump_setProcessorContext(processor)
-    return processor
-end function
-
-function sabr_ump_setProcessorContext(ctx as object) as void
-    m.sabrUmpProcessor = ctx
-end function
-
-function sabr_ump_getProcessorContext() as object
-    return m.sabrUmpProcessor
-end function
-
-' Consume the raw bytes returned in SabrStreamingAdapter's sabrUmpResponse (roByteArray).
-' Feeds raw SABR/UMP response bytes into the processor state machine,
-' handling chunk accumulation, part parsing, and downstream segment assembly.
-function sabr_ump_processChunk(ctx as object, incoming as object) as dynamic
-    chunkTimer = sabr_ump_perfStart(ctx, "process_chunk")
-    incomingType = Type(incoming)
-    if not isValid(incoming)
-        sabr_ump_perfLog(ctx, "process_chunk", chunkTimer, {
-            "outcome": "ignored_invalid"
-            "incomingType": incomingType
-        })
-        return invalid
-    end if
-
-    if IsString(incoming)
-        readTimer = sabr_ump_perfStart(ctx, "process_chunk_read_file")
-        fileBytes = createObject("roByteArray")
-        ok = fileBytes.readFile(incoming)
-        if not ok
-            sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Unable to read response file: ${incoming}`)
-            sabr_ump_perfLog(ctx, "process_chunk_read_file", readTimer, {
-                "outcome": "read_failed"
-                "path": incoming
-            })
-            return invalid
-        end if
-        sabr_ump_perfLog(ctx, "process_chunk_read_file", readTimer, {
-            "outcome": "read_ok"
-            "path": incoming
-            "bytes": sabr_ump_countBytes(fileBytes)
-        })
-        incoming = fileBytes
-    end if
-
-    pendingBefore = sabr_ump_countBytes(ctx?._pendingBytes)
-    incomingBytes = sabr_ump_countBytes(incoming)
-
-    incomingArray = invalid
-    if incomingBytes > 0 and GetInterface(incoming, "ifByteArray") <> invalid
-        incomingArray = incoming
-    end if
-
-    ' Reuse incoming buffer when there are no pending bytes to avoid an extra copy.
-    if pendingBefore = 0 and incomingArray <> invalid
-        ctx._pendingBytes = incomingArray
-    else if incomingBytes > 0
-        pendingArray = ctx._pendingBytes
-        if GetInterface(pendingArray, "ifByteArray") = invalid
-            pendingArray = CreateObject("roByteArray")
-            ctx._pendingBytes = pendingArray
-        end if
-        sourceArray = incomingArray
-        if sourceArray = invalid then sourceArray = incoming
-        sabr_ump_appendBytes(pendingArray, sourceArray)
-    end if
-
-    buffer = ctx._pendingBytes
-    offset = 0
-    totalLength = buffer.count()
-
-    ctx._pendingResult = invalid
-    ctx._processedPartTypes = []
-    ctx._segmentScan = []
-    ctx._segmentMatched = false
-
-    partsProcessed = 0
-
-    while offset < totalLength
-        partTypeInfo = sabr_ump_readVarint(buffer, offset)
-        if not partTypeInfo.complete then exit while
-        offset = partTypeInfo.nextOffset
-
-        partSizeInfo = sabr_ump_readVarint(buffer, offset)
-        if not partSizeInfo.complete then
-            offset = partTypeInfo.origOffset
-            exit while
-        end if
-        offset = partSizeInfo.nextOffset
-
-        partSize = partSizeInfo.value
-        remaining = totalLength - offset
-        if remaining < partSize then
-            offset = partTypeInfo.origOffset
-            exit while
-        end if
-
-        partDataStart = offset
-        offset = offset + partSize
-
-        part = {
-            "type": partTypeInfo.value
-            "size": partSize
-        }
-        if part.type = UMP_PART_ID_MEDIA
-            part["buffer"] = buffer
-            part["bufferOffset"] = partDataStart
-        else
-            part["data"] = sabr_ump_sliceByteArray(buffer, partDataStart, partSize)
-        end if
-
-        result = sabr_ump_handlePart(ctx, part)
-        partsProcessed = partsProcessed + 1
-        if isValid(result) and result.done = true
-            if not isValid(ctx._pendingResult)
-                ctx._pendingResult = result
-            end if
-        end if
-    end while
-
-    sabr_ump_finalizeChunkProcessing(ctx, buffer, offset, totalLength)
-    sabr_ump_releaseIncomingBuffer(ctx, buffer)
-    pendingAfter = sabr_ump_countBytes(ctx?._pendingBytes)
-    bytesConsumed = offset
-    pending = ctx._pendingResult
-    ctx._pendingResult = invalid
-    sabr_ump_perfLog(ctx, "process_chunk", chunkTimer, {
-        "incomingBytes": incomingBytes
-        "pendingBefore": pendingBefore
-        "pendingAfter": pendingAfter
-        "bytesConsumed": bytesConsumed
-        "partsSeen": partsProcessed
-        "resultReady": isValid(pending)
-    })
-    if isValid(pending) then return pending
-    return invalid
-end function
-
-function sabr_ump_finalizeChunkProcessing(ctx as object, buffer as object, offset as integer, totalLength as integer) as void
-    if offset <= 0 then return
-
-    leftover = totalLength - offset
-    if leftover > 0
-        ctx._pendingBytes = sabr_ump_sliceByteArray(buffer, offset, leftover)
-    else
-        ctx._pendingBytes = createObject("roByteArray")
-    end if
-end function
-
-function sabr_ump_getSegmentInfo(ctx as object) as dynamic
-    if not isValid(ctx._desiredHeaderId) then return invalid
-    key = str(ctx._desiredHeaderId)
-    if ctx._partialSegments.doesExist(key)
-        return ctx._partialSegments.Lookup(key)
-    end if
-    return invalid
-end function
-
-function sabr_ump_getSegmentScanSummary(ctx as object) as dynamic
-    segments = ctx?._segmentScan
-    if not IsArray(segments)
-        segments = []
-    end if
-    matchedFlag = false
-    if ctx?._segmentMatched = true then matchedFlag = true
-    summary = {
-        "segments": segments
-        "matched": matchedFlag
-    }
-    return summary
-end function
-
-function sabr_ump_getPendingSegmentsSummary(ctx as object) as object
-    summary = []
-    segments = ctx?._partialSegments
-    if not IsAssociativeArray(segments) then return summary
-
-    for each key in segments
-        entry = segments.Lookup(key)
-        if not IsAssociativeArray(entry) then continue for
-
-        mediaHeader = entry?.mediaHeader
-        chunkCount = sabr_ump_toInt(entry?.chunkCount)
-        if chunkCount = invalid then chunkCount = 0
-        receivedBytes = sabr_ump_toInt(entry?.bytesWritten)
-        if receivedBytes = invalid then receivedBytes = 0
-
-        summaryEntry = {
-            "headerId": entry?.headerId
-            "bufferedChunks": chunkCount
-            "receivedBytes": receivedBytes
-        }
-
-        desiredHeader = ctx?._desiredHeaderId
-        if isValid(desiredHeader)
-            summaryEntry["desiredHeaderId"] = desiredHeader
-        end if
-
-        seqVal = sabr_ump_toInt(mediaHeader?.sequenceNumber)
-        if seqVal <> invalid
-            summaryEntry["sequenceNumber"] = seqVal
-        end if
-
-        startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
-        if startRangeVal = invalid
-            startRangeVal = sabr_ump_toInt(mediaHeader?.start)
-        end if
-        if startRangeVal <> invalid
-            summaryEntry["startRange"] = startRangeVal
-        end if
-
-        contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
-        if contentLengthVal <> invalid
-            summaryEntry["contentLength"] = contentLengthVal
-        end if
-
-        lastChunkVal = sabr_ump_toInt(entry?.lastChunkSize)
-        if lastChunkVal <> invalid
-            summaryEntry["lastChunkSize"] = lastChunkVal
-        end if
-
-        if isValid(mediaHeader?.formatId)
-            summaryEntry["itag"] = mediaHeader.formatId?.itag
-            summaryEntry["xtags"] = mediaHeader.formatId?.xtags
-        else
-            if isValid(mediaHeader?.itag) then summaryEntry["itag"] = mediaHeader?.itag
-            if isValid(mediaHeader?.xtags) then summaryEntry["xtags"] = mediaHeader?.xtags
-        end if
-
-        summary.push(summaryEntry)
-    end for
-
-    return summary
-end function
-
-function sabr_ump_getProcessedPartTypes(ctx as object) as object
-    arr = ctx?._processedPartTypes
-    if not IsArray(arr) then return []
-    copy = []
-    for each partType in arr
-        copy.push(partType)
-    end for
-    return copy
-end function
-
-function sabr_ump_handlePart(ctx as object, part as object) as dynamic
-    ' sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Processing part type ${part.type} of size ${part.size}`)
-    if isValid(ctx?._processedPartTypes)
-        arr = ctx._processedPartTypes
-        if not IsArray(arr)
-            arr = []
-        end if
-    else
-        arr = []
-    end if
-    arr.push(part.type)
-    ctx._processedPartTypes = arr
-
-    partTimer = sabr_ump_perfStart(ctx, "handle_part")
-    handlerLabel = "unknown"
-    result = invalid
-
-    if part.type = UMP_PART_ID_FORMAT_INIT_METADATA
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Format Initialization Metadata part received with size ${part.size}`)
-        handlerLabel = "format_init_metadata"
-        result = sabr_ump_handleFormatInitMetadata(ctx, part)
-    else if part.type = UMP_PART_ID_NEXT_REQUEST_POLICY
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Next Request Policy part received with size ${part.size}`)
-        handlerLabel = "next_request_policy"
-        result = sabr_ump_handleNextRequestPolicy(ctx, part)
-    else if part.type = UMP_PART_ID_SABR_ERROR
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] SABR Error part received with size ${part.size}`)
-        handlerLabel = "sabr_error"
-        result = sabr_ump_handleSabrError(ctx, part)
-    else if part.type = UMP_PART_ID_SABR_REDIRECT
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] SABR Redirect part received with size ${part.size}`)
-        handlerLabel = "sabr_redirect"
-        result = sabr_ump_handleSabrRedirect(ctx, part)
-    else if part.type = UMP_PART_ID_SABR_CONTEXT_UPDATE
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] SABR Context Update part received with size ${part.size}`)
-        handlerLabel = "sabr_context_update"
-        result = sabr_ump_handleSabrContextUpdate(ctx, part)
-    else if part.type = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] SABR Context Sending Policy part received with size ${part.size}`)
-        handlerLabel = "sabr_context_sending_policy"
-        result = sabr_ump_handleSabrContextSendingPolicy(ctx, part)
-    else if part.type = UMP_PART_ID_SNACKBAR_MESSAGE
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Snackbar Message part received with size ${part.size}`)
-        handlerLabel = "snackbar_message"
-        result = sabr_ump_handleSnackbarMessage(ctx, part)
-    else if part.type = UMP_PART_ID_STREAM_PROTECTION_STATUS
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Stream Protection Status part received with size ${part.size}`)
-        handlerLabel = "stream_protection_status"
-        result = sabr_ump_handleStreamProtectionStatus(ctx, part)
-    else if part.type = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
-        sabr_ump_log(ctx, log_level_Type.FATAL, `**************************************************************************`)
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Reload Player Response part received with size ${part.size}`)
-        sabr_ump_log(ctx, log_level_Type.FATAL, `**************************************************************************`)
-        handlerLabel = "reload_player_response"
-        result = sabr_ump_handleReloadPlayerResponse(ctx, part)
-    else if part.type = UMP_PART_ID_MEDIA_HEADER
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Media Header part received with size ${part.size}`)
-        handlerLabel = "media_header"
-        result = sabr_ump_handleMediaHeader(ctx, part)
-    else if part.type = UMP_PART_ID_MEDIA
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Media part received with size ${part.size}`)
-        handlerLabel = "media"
-        result = sabr_ump_handleMedia(ctx, part)
-    else if part.type = UMP_PART_ID_MEDIA_END
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Media End part received with size ${part.size}`)
-        handlerLabel = "media_end"
-        result = sabr_ump_handleMediaEnd(ctx, part)
-    else
-        sabr_ump_log(ctx, log_level_Type.VERBOSE, `[SabrUmpProcessor] Skipping unsupported part: ${part.type}`)
-        handlerLabel = "unsupported"
-        result = invalid
-    end if
-
-    sabr_ump_perfLog(ctx, "handle_part", partTimer, {
-        "handler": handlerLabel
-        "type": part.type
-        "size": part.size
-        "resultReady": isValid(result) and result.done = true
-    })
-    return result
-end function
-
-function sabr_ump_handleFormatInitMetadata(ctx as object, part as object) as dynamic
-    metadata = sabr_ump_decodePart(FormatInitializationMetadataDecode, part.data, ctx, "format_init_metadata")
-    if isValid(metadata)
-        ctx._formatInitMetadata.push(metadata)
-        formatKey = sabr_ump_formatMetadataKey(metadata)
-        if formatKey <> ""
-            ctx._initMetadataByKey[formatKey] = metadata
-        end if
-    end if
-    sabr_ump_logPartDetails(ctx, "format_init_metadata", part.data, metadata)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "format_init_metadata", part.data, metadata)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleNextRequestPolicy(ctx as object, part as object) as dynamic
-    nextPolicy = sabr_ump_decodePart(NextRequestPolicyDecode, part.data, ctx, "next_request_policy")
-    if isValid(nextPolicy)
-        sabr_ump_mergeStreamInfo(ctx, { "nextRequestPolicy": nextPolicy })
-        cookieProto = nextPolicy?.playbackCookie
-        ' ctx.requestMetadata["playbackCookie"] = cookieProto
-        if isValid(cookieProto)
-            cookieEncoded = invalid
-            try
-                cookieEncoded = PlaybackCookieEncode(cookieProto)
-            catch e
-                cookieEncoded = invalid
-            end try
-            if isValid(cookieEncoded) and cookieEncoded <> ""
-                ctx.requestMetadata["playbackCookie"] = cookieEncoded
-            end if
-        end if
-    end if
-    sabr_ump_logPartDetails(ctx, "next_request_policy", part.data, nextPolicy)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "next_request_policy", part.data, nextPolicy)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleSabrError(ctx as object, part as object) as dynamic
-    sabrError = sabr_ump_decodePart(SabrErrorDecode, part.data, ctx, "sabr_error")
-    ctx.requestMetadata["error"] = { "sabrError": sabrError }
-    sabr_ump_logPartDetails(ctx, "sabr_error", part.data, sabrError)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "sabr_error", part.data, sabrError)
-    end if
-    sabr_ump_resetProcessingState(ctx)
-    return { "done": true }
-end function
-
-function sabr_ump_handleSabrRedirect(ctx as object, part as object) as dynamic
-    redirect = sabr_ump_decodePart(SabrRedirectDecode, part.data, ctx, "sabr_redirect")
-    if isValid(redirect)
-        sabr_ump_mergeStreamInfo(ctx, { "redirect": redirect })
-        if (ctx.requestMetadata?.isUMP = true) and (ctx.requestMetadata?.isSABR <> true)
-            sabr_ump_resetProcessingState(ctx)
-            return { "done": true }
-        end if
-    end if
-    sabr_ump_logPartDetails(ctx, "sabr_redirect", part.data, redirect)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "sabr_redirect", part.data, redirect)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleSabrContextUpdate(ctx as object, part as object) as dynamic
-    contextUpdate = sabr_ump_decodePart(SabrContextUpdateDecode, part.data, ctx, "sabr_context_update")
-    if isValid(contextUpdate)
-        sabr_ump_mergeStreamInfo(ctx, { "sabrContextUpdate": contextUpdate })
-    end if
-    sabr_ump_logPartDetails(ctx, "sabr_context_update", part.data, contextUpdate)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "sabr_context_update", part.data, contextUpdate)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleSabrContextSendingPolicy(ctx as object, part as object) as dynamic
-    policy = sabr_ump_decodePart(SabrContextSendingPolicyDecode, part.data, ctx, "sabr_context_sending_policy")
-    if isValid(policy)
-        sabr_ump_mergeStreamInfo(ctx, { "sabrContextSendingPolicy": policy })
-    end if
-    sabr_ump_logPartDetails(ctx, "sabr_context_sending_policy", part.data, policy)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "sabr_context_sending_policy", part.data, policy)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleSnackbarMessage(ctx as object, part as object) as dynamic
-    snackbarMessage = sabr_ump_decodePart(SnackbarMessageDecode, part.data, ctx, "snackbar_message")
-    if isValid(snackbarMessage)
-        sabr_ump_mergeStreamInfo(ctx, { "snackbarMessage": snackbarMessage })
-    end if
-    sabr_ump_logPartDetails(ctx, "snackbar_message", part.data, snackbarMessage)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "snackbar_message", part.data, snackbarMessage)
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleStreamProtectionStatus(ctx as object, part as object) as dynamic
-    status = sabr_ump_decodePart(StreamProtectionStatusDecode, part.data, ctx, "stream_protection_status")
-    if not isValid(status) then return invalid
-
-    sabr_ump_mergeStreamInfo(ctx, { "streamProtectionStatus": status })
-    sabr_ump_logPartDetails(ctx, "stream_protection_status", part.data, status)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "stream_protection_status", part.data, status)
-    end if
-
-    if status?.status = 3
-        sabr_ump_resetProcessingState(ctx)
-        return { "done": true }
-    end if
-    return invalid
-end function
-
-function sabr_ump_handleReloadPlayerResponse(ctx as object, part as object) as dynamic
-    reloadContext = sabr_ump_decodePart(ReloadPlaybackContextDecode, part.data, ctx, "reload_playback_response")
-    if isValid(reloadContext)
-        sabr_ump_mergeStreamInfo(ctx, { "reloadPlaybackContext": reloadContext })
-        sabr_ump_resetProcessingState(ctx)
-        sabr_ump_logPartDetails(ctx, "reload_playback_response", part.data, reloadContext)
-        if sabr_ump_shouldDebugDump(ctx)
-            sabr_ump_debugDumpPart(ctx, "reload_playback_response", part.data, reloadContext)
-        end if
-        return { "done": true }
-    end if
-    sabr_ump_logPartDetails(ctx, "reload_playback_response", part.data, reloadContext)
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, "reload_playback_response", part.data, reloadContext)
-    end if
-    return invalid
-end function
-
-' Processes a MEDIA_HEADER part, caching init metadata and preparing the
-' segment assembly tracking structures used by subsequent media chunks.
-function sabr_ump_handleMediaHeader(ctx as object, part as object) as dynamic
-    mediaHeader = sabr_ump_decodePart(MediaHeaderDecode, part.data, ctx, "media_header")
-    if not isValid(mediaHeader)
-        sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Failed to decode MediaHeader part")
-        return invalid
-    end if
-    if sabr_ump_shouldDebugDump(ctx)
-        label = "media_header"
-        headerLabelId = mediaHeader?.headerId
-        if isValid(headerLabelId)
-            label = `media_header_${headerLabelId}`
-        end if
-        sabr_ump_debugDumpPart(ctx, label, part.data, mediaHeader)
-    end if
-
-    targetKey = sabr_formatToKey(ctx.requestMetadata?.format)
-    segmentKey = sabr_ump_formatInitializationKey(mediaHeader)
-    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Raw MediaHeader: ${FormatJson(mediaHeader)}`)
-    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Evaluating media header; segmentKey='${segmentKey}' targetKey='${targetKey}' isSABR=${ctx.requestMetadata?.isSABR}`)
-    sabr_ump_logPartDetails(ctx, "media_header", part.data, mediaHeader)
-
-    if ctx.requestMetadata?.isSABR <> true or segmentKey = targetKey
-        headerId = mediaHeader?.headerId
-        if not isValid(headerId) and IsAssociativeArray(mediaHeader) and mediaHeader.DoesExist("header_id")
-            headerId = mediaHeader.Lookup("header_id")
-        end if
-        if not isValid(headerId)
-            sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] MediaHeader missing headerId")
-            return invalid
-        end if
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Preparing cache slot for header ${headerId}`)
-
-        segmentKeyStr = str(headerId)
-        tempFiles = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
-        ctx._partialSegments[segmentKeyStr] = {
-            "headerId": headerId
-            "mediaHeader": mediaHeader
-            "chunkDir": tempFiles?.dir ?? ""
-            "bytesWritten": 0
-            "chunkCount": 0
-            "lastChunkSize": 0
-            "tempBaseName": tempFiles?.base ?? ""
-            "tempFilePath": ""
-        }
-
-        if ctx._requestSatisfied <> true
-            matchesRequest = sabr_ump_headerMatchesRequest(ctx, mediaHeader)
-            if matchesRequest
-                if not isValid(ctx._desiredHeaderId) or ctx._desiredHeaderId <> headerId
-                    ctx._desiredHeaderId = headerId
-                    desiredStart = sabr_ump_resolveRequestedStart(ctx)
-                    startLabel = sabr_ump_toSafeString(desiredStart)
-                    if startLabel = ""
-                        startLabel = "unknown"
-                    end if
-                    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Marked header ${headerId} as target for start ${startLabel}`)
-                end if
-            else if not isValid(ctx._desiredHeaderId)
-                requestedStartVal = sabr_ump_resolveRequestedStart(ctx)
-                headerStartVal = sabr_ump_toInt(mediaHeader?.startRange)
-                sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Header ${headerId} start=${sabr_ump_toSafeString(headerStartVal)} does not match requested start=${sabr_ump_toSafeString(requestedStartVal)}; continuing to scan`)
-            end if
-        end if
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Cached media header ${headerId}; targetKey='${targetKey}' segmentKey='${segmentKey}' isSABR=${ctx.requestMetadata?.isSABR}`)
-    else
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Skipping media header; targetKey='${targetKey}' segmentKey='${segmentKey}' isSABR=${ctx.requestMetadata?.isSABR}`)
-    end if
-    return invalid
-end function
-
-' Streams MEDIA part bytes into the temp file backing the in-progress segment,
-' updating byte counts and chunk metadata as chunks arrive.
-function sabr_ump_handleMedia(ctx as object, part as object) as dynamic
-    mediaTimer = sabr_ump_perfStart(ctx, "media_chunk")
-    sourceBuffer = invalid
-    payloadOffset = 0
-    payloadLength = 0
-    headerId = invalid
-
-    dataArray = part?.data
-    if GetInterface(dataArray, "ifByteArray") <> invalid
-        if dataArray.count() = 0
-            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
-                "outcome": "empty_payload"
-            })
-            return invalid
-        end if
-        sourceBuffer = dataArray
-        headerId = sourceBuffer[0]
-        payloadOffset = 1
-        payloadLength = sourceBuffer.count() - 1
-    else
-        sourceBuffer = part?.buffer
-        if GetInterface(sourceBuffer, "ifByteArray") = invalid
-            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
-                "outcome": "invalid_payload"
-            })
-            return invalid
-        end if
-        bufferOffset = sabr_ump_toInt(part?.bufferOffset)
-        if bufferOffset = invalid then bufferOffset = 0
-        totalLength = sabr_ump_toInt(part?.size)
-        if totalLength = invalid then totalLength = 0
-        if totalLength <= 0 or bufferOffset + totalLength > sourceBuffer.count()
-            sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
-                "outcome": "empty_payload"
-            })
-            return invalid
-        end if
-        headerId = sourceBuffer[bufferOffset]
-        payloadOffset = bufferOffset + 1
-        payloadLength = totalLength - 1
-        if payloadLength < 0 then payloadLength = 0
-    end if
-
-    chunkBytes = payloadLength
-    key = str(headerId)
-    outcome = "ignored"
-    bufferedChunks = 0
-    appendOk = false
-
-    if ctx._partialSegments.doesExist(key)
-        segment = ctx._partialSegments.Lookup(key)
-        segment.lastChunkSize = chunkBytes
-        if chunkBytes = 0 or sabr_ump_appendChunkToTemp(ctx, segment, headerId, sourceBuffer, payloadOffset, chunkBytes) = true
-            segment.chunkCount = segment.chunkCount + 1
-            segment.bytesWritten = segment.bytesWritten + chunkBytes
-            appendOk = true
-        else
-            sabr_ump_log(ctx, log_level_Type.FATAL, `[SabrUmpProcessor] Aborting segment ${headerId} due to write failure`)
-            sabr_ump_cleanupSegmentChunks(segment)
-            ctx._partialSegments[key] = segment
-            return {
-                "done": true
-                "error": "segment_write_failed"
-                "headerId": headerId
-            }
-        end if
-        ctx._partialSegments[key] = segment
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Buffered media chunk for header ${headerId}; chunkBytes=${chunkBytes} totalChunks=${segment.chunkCount} stored=${appendOk}`)
-        sabr_ump_logPartDetails(ctx, `media_header${headerId}`, part.data, invalid)
-        outcome = "buffered"
-        bufferedChunks = segment.chunkCount
-    else
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Media chunk for header ${headerId} ignored; no matching media header cached`)
-        sabr_ump_logPartDetails(ctx, "media_unmatched", part.data, invalid)
-        outcome = "no_slot"
-    end if
-
-    if sabr_ump_shouldDebugDump(ctx)
-        label = "media"
-        if isValid(headerId)
-            label = `media_header${headerId}`
-        end if
-        sabr_ump_debugDumpPart(ctx, label, invalid, invalid)
-    end if
-
-    sabr_ump_perfLog(ctx, "media_chunk", mediaTimer, {
-        "outcome": outcome
-        "headerId": headerId
-        "chunkBytes": chunkBytes
-        "bufferedChunks": bufferedChunks
-    })
-    return invalid
-end function
-
-' Finalizes a MEDIA segment once all chunks have been received, assembling the
-' full payload and invoking cache storage.
-' Finalizes MEDIA segments once SABR signals completion, flushing metadata and delivery.
-function sabr_ump_handleMediaEnd(ctx as object, part as object) as dynamic
-    mediaEndTimer = sabr_ump_perfStart(ctx, "media_end")
-    if part.data.count() = 0
-        sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-            "outcome": "empty_payload"
-        })
-        return invalid
-    end if
-
-    headerId = part.data[0]
-    key = str(headerId)
-
-    endLabel = "media_end"
-    if isValid(headerId)
-        endLabel = `media_end_header${headerId}`
-    end if
-    if sabr_ump_shouldDebugDump(ctx)
-        sabr_ump_debugDumpPart(ctx, endLabel, part.data, invalid)
-    end if
-    if not ctx._partialSegments.doesExist(key) then
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] MediaEnd for header ${headerId} with no buffered segment`)
-        sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-            "outcome": "no_segment"
-            "headerId": headerId
-        })
-        return invalid
-    end if
-
-    segment = ctx._partialSegments.Lookup(key)
-
-    chunkCount = segment?.chunkCount ?? 0
-    needBytes = segment.mediaHeader?.isInitSeg = true
-    segmentInfo = sabr_ump_prepareSegmentAssembly(ctx, segment, needBytes)
-    segmentData = segmentInfo?.bytes
-    segmentBytes = sabr_ump_toInt(segmentInfo?.totalBytes)
-    if segmentBytes = invalid then segmentBytes = sabr_ump_countBytes(segmentData)
-    if segmentBytes = invalid then segmentBytes = 0
-    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Completed segment for header ${headerId}; chunks=${chunkCount} bytes=${segmentBytes}`)
-
-    headerStartVal = sabr_ump_toInt(segment.mediaHeader?.startRange)
-    if headerStartVal = invalid then headerStartVal = sabr_ump_toInt(segment.mediaHeader?.start)
-    segmentEndVal = headerStartVal
-    if headerStartVal <> invalid and segmentBytes > 0
-        segmentEndVal = headerStartVal + segmentBytes - 1
-    end if
-
-    requestedStartVal = sabr_ump_resolveRequestedStart(ctx)
-    requestedEndVal = sabr_ump_resolveRequestedEnd(ctx)
-    coverageMatches = false
-    if requestedStartVal <> invalid and headerStartVal <> invalid and segmentEndVal <> invalid
-        if requestedStartVal >= headerStartVal and requestedStartVal <= segmentEndVal
-            coverageMatches = true
-            if requestedEndVal <> invalid
-                coverageMatches = requestedEndVal <= segmentEndVal
-            end if
-        end if
-    end if
-    if requestedEndVal = invalid then requestedEndVal = requestedStartVal
-
-    if sabr_ump_shouldDebugDump(ctx) and GetInterface(segmentData, "ifByteArray") <> invalid
-        sabr_ump_debugUploadBytes(ctx, endLabel + "_segment", segmentData)
-    end if
-
-    storeResult = sabr_ump_storeCompletedSegment(ctx, segment.mediaHeader, segmentInfo)
-
-    sabr_ump_mergeStreamInfo(ctx, {
-        "formatInitMetadata": ctx._formatInitMetadata
-        "mediaHeader": segment.mediaHeader
-    })
-
-    seqNumber = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
-    scanEntry = {
-        "headerId": segment.headerId
-        "start": headerStartVal
-        "end": segmentEndVal
-        "sequenceNumber": seqNumber
-        "matched": false
-    }
-    if not IsArray(ctx._segmentScan)
-        ctx._segmentScan = []
-    end if
-    ctx._segmentScan.push(scanEntry)
-    scanIndex = ctx._segmentScan.count() - 1
-
-    if ctx.requestMetadata?.isInit = true and segment.mediaHeader?.isInitSeg = true and isValid(ctx.requestMetadata.format)
-        sabr_ump_runInitDiagnostics(ctx, segmentData, segment.mediaHeader, ctx.requestMetadata.format)
-
-        if sabr_ump_shouldDebugDump(ctx)
-            sabr_ump_debugUploadBytes(ctx, endLabel + "_init_full", segmentData)
-        end if
-
-        totalBytes = segmentBytes
-        coverageRange = {
-            "rangeStart": 0
-            "rangeEnd": totalBytes > 0 ? totalBytes - 1 : 0
-        }
-        coverageRange["headerId"] = segment.mediaHeader?.headerId
-        coverageRange["contentType"] = ctx.requestMetadata?.contentType
-        coverageRange["itag"] = segment.mediaHeader?.itag
-        if not isValid(coverageRange["itag"]) and isValid(segment.mediaHeader?.formatId)
-            coverageRange["itag"] = segment.mediaHeader.formatId?.itag
-        end if
-        if isValid(segment.mediaHeader?.xtags)
-            coverageRange["xtags"] = segment.mediaHeader?.xtags
-        else if isValid(segment.mediaHeader?.formatId)
-            coverageRange["xtags"] = segment.mediaHeader.formatId?.xtags
-        end if
-        coverageRange["mediaIdHash"] = ctx.requestMetadata?.mediaIdHash
-        seqVal = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
-        if seqVal <> invalid then coverageRange["sequenceNumber"] = seqVal
-
-        startSeqVal = sabr_ump_toInt(segment.mediaHeader?.sequenceNumber)
-        endSeqVal = sabr_ump_toInt(segment.mediaHeader?.endSequenceNumber)
-        if endSeqVal = invalid
-            endSeqVal = startSeqVal
-        end if
-        startTimeVal = sabr_ump_toInt(segment.mediaHeader?.startMs)
-        if startTimeVal = invalid then startTimeVal = sabr_ump_toInt(segment.mediaHeader?.startTimeMs)
-        timescaleVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.timescale)
-        startTicksVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.startTicks)
-        durationTicksVal = sabr_ump_toInt(segment.mediaHeader?.timeRange?.durationTicks)
-        durationVal = sabr_ump_toInt(segment.mediaHeader?.durationMs)
-        if durationVal = invalid and durationTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
-            durationVal = int((durationTicksVal * 1000) / timescaleVal)
-        end if
-        if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
-            startTimeVal = int((startTicksVal * 1000) / timescaleVal)
-        end if
-
-        initStore = {
-            "mediaIdHash": coverageRange?.mediaIdHash
-            "contentType": coverageRange?.contentType
-            "itag": coverageRange?.itag
-            "trackId": ctx.requestMetadata?.format?.audioTrackId
-            "rangeStart": coverageRange?.rangeStart
-            "rangeEnd": coverageRange?.rangeEnd
-            "isInit": true
-            "bytes": segmentData
-            "startSegmentIndex": startSeqVal
-            "endSegmentIndex": endSeqVal
-            "sequenceNumber": startSeqVal
-            "startTimeMs": startTimeVal
-            "durationMs": durationVal
-            "timescale": timescaleVal
-            "startTicks": startTicksVal
-            "durationTicks": durationTicksVal
-            "formatId": segment.mediaHeader?.formatId
-        }
-
-        if not isValid(initStore.itag) and isValid(segment.mediaHeader?.formatId)
-            initStore.itag = segment.mediaHeader.formatId?.itag
-        end if
-        if initStore.sequenceNumber = invalid and isValid(startSeqVal)
-            initStore.sequenceNumber = startSeqVal
-        end if
-
-        cacheResult = sabr_cacheStoreSegment(initStore)
-        cachedInit = cacheResult?.path ?? ""
-        if cachedInit <> "" and cachedInit.InStr("/") >= 0
-            partsInit = cachedInit.Split("/")
-            cachedInit = partsInit[partsInit.count() - 1]
-        end if
-        if cachedInit <> ""
-            sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Stored init segment ${cachedInit}`)
-        end if
-
-        sabr_ump_resetProcessingState(ctx)
-        result = {
-            "done": true
-        }
-        if GetInterface(segmentData, "ifByteArray") <> invalid
-            result["data"] = segmentData
-        end if
-        if isValid(storeResult?.path)
-            result["path"] = storeResult.path
-        end if
-        result["totalBytes"] = segmentBytes
-        result["coverage"] = coverageRange
-        sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-            "outcome": "init_ready"
-            "headerId": headerId
-            "segmentBytes": segmentBytes
-            "chunkCount": chunkCount
-            "coverageMatch": true
-        })
-        return result
-    end if
-
-    sabr_ump_cleanupSegmentChunks(segment)
-    ctx._partialSegments.Delete(key)
-
-    if ctx._requestSatisfied = true
-        sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-            "outcome": "request_already_satisfied"
-            "headerId": headerId
-            "segmentBytes": segmentBytes
-            "chunkCount": chunkCount
-        })
-        return invalid
-    end if
-
-    targetHeaderId = ctx._desiredHeaderId
-    if not isValid(targetHeaderId)
-        matchedByHeader = sabr_ump_headerMatchesRequest(ctx, segment.mediaHeader)
-        if matchedByHeader or coverageMatches
-            targetHeaderId = segment.headerId
-            ctx._desiredHeaderId = targetHeaderId
-            if matchedByHeader
-                sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Late-binding header ${segment.headerId} as target after media end`)
-            else
-                sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Late-binding header ${segment.headerId} via coverage match (${sabr_ump_toSafeString(headerStartVal)}-${sabr_ump_toSafeString(segmentEndVal)}) for requested start ${sabr_ump_toSafeString(requestedStartVal)}`)
-            end if
-        end if
-    end if
-
-    if segment.headerId <> targetHeaderId
-        matchedByHeader = sabr_ump_headerMatchesRequest(ctx, segment.mediaHeader)
-        if matchedByHeader or coverageMatches
-            targetHeaderId = segment.headerId
-            ctx._desiredHeaderId = targetHeaderId
-            if matchedByHeader
-                sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Late-binding header ${segment.headerId} as target after media end`)
-            else
-                sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Accepting header ${segment.headerId} via coverage match (${sabr_ump_toSafeString(headerStartVal)}-${sabr_ump_toSafeString(segmentEndVal)}) for requested ${sabr_ump_toSafeString(requestedStartVal)}-${sabr_ump_toSafeString(requestedEndVal)}`)
-            end if
-        else
-            sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Completed header ${segment.headerId} start=${sabr_ump_toSafeString(headerStartVal)} end=${sabr_ump_toSafeString(segmentEndVal)} but requested start=${sabr_ump_toSafeString(requestedStartVal)}; skipping segment return`)
-            sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-                "outcome": "header_mismatch"
-                "headerId": headerId
-                "segmentBytes": segmentBytes
-                "chunkCount": chunkCount
-            })
-            return invalid
-        end if
-    end if
-
-    if scanIndex >= 0 and IsArray(ctx._segmentScan) and scanIndex < ctx._segmentScan.count()
-        ctx._segmentScan[scanIndex].matched = true
-    end if
-    ctx._segmentMatched = true
-
-    ctx._requestSatisfied = true
-
-    sabr_ump_resetProcessingState(ctx)
-    coverageRange = sabr_ump_byteRangeToCoverage(ctx.requestMetadata?.byteRange)
-    result = {
-        "done": true
-    }
-    if GetInterface(segmentData, "ifByteArray") <> invalid
-        result["data"] = segmentData
-    end if
-    if isValid(storeResult?.path)
-        result["path"] = storeResult.path
-    end if
-    if isValid(coverageRange)
-        result["coverage"] = coverageRange
-    end if
-    result["totalBytes"] = segmentBytes
-    ctx._pendingResult = result
-    sabr_ump_perfLog(ctx, "media_end", mediaEndTimer, {
-        "outcome": "segment_pending_return"
-        "headerId": headerId
-        "segmentBytes": segmentBytes
-        "chunkCount": chunkCount
-        "coverageMatch": isValid(coverageRange)
-    })
-    return invalid
-end function
-
-' Persists a fully assembled segment into the SABR cache and returns the
-' metadata structure consumed by the streaming adapter.
-function sabr_ump_storeCompletedSegment(ctx as object, mediaHeader as object, segmentInfo as object) as object
-    if not isValid(ctx) then return invalid
-    if not IsAssociativeArray(segmentInfo) then return invalid
-
-    segmentData = segmentInfo?.bytes
-    totalBytes = sabr_ump_toInt(segmentInfo?.totalBytes)
-    if totalBytes = invalid and GetInterface(segmentData, "ifByteArray") <> invalid
-        totalBytes = segmentData.count()
-    end if
-    if totalBytes = invalid or totalBytes <= 0 then return invalid
-
-    isInitSeg = mediaHeader?.isInitSeg = true
-    startVal = sabr_ump_toInt(mediaHeader?.startRange)
-    if startVal = invalid then startVal = 0
-    rangeEnd = startVal + totalBytes - 1
-
-    startSeq = sabr_ump_toInt(mediaHeader?.startSequenceNumber)
-    if startSeq = invalid then startSeq = sabr_ump_toInt(mediaHeader?.sequenceNumber)
-    if startSeq = invalid then startSeq = sabr_ump_toInt(mediaHeader?.segmentIndex)
-    endSeq = sabr_ump_toInt(mediaHeader?.endSequenceNumber)
-    if endSeq = invalid then endSeq = startSeq
-    startTimeVal = sabr_ump_toInt(mediaHeader?.startMs)
-    if startTimeVal = invalid then startTimeVal = sabr_ump_toInt(mediaHeader?.startTimeMs)
-    timescaleVal = sabr_ump_toInt(mediaHeader?.timeRange?.timescale)
-    startTicksVal = sabr_ump_toInt(mediaHeader?.timeRange?.startTicks)
-    durationTicksVal = sabr_ump_toInt(mediaHeader?.timeRange?.durationTicks)
-    durationVal = sabr_ump_toInt(mediaHeader?.durationMs)
-    if durationVal = invalid and durationTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
-        durationVal = int((durationTicksVal * 1000) / timescaleVal)
-    end if
-    if startTimeVal = invalid and startTicksVal <> invalid and timescaleVal <> invalid and timescaleVal > 0
-        startTimeVal = int((startTicksVal * 1000) / timescaleVal)
-    end if
-
-    storeOptions = {
-        "mediaIdHash": ctx.requestMetadata?.mediaIdHash
-        "contentType": ctx.requestMetadata?.contentType
-        "itag": mediaHeader?.itag
-        "trackId": ctx.requestMetadata?.format?.audioTrackId
-        "rangeStart": startVal
-        "rangeEnd": rangeEnd
-        "isInit": isInitSeg
-        "totalBytes": totalBytes
-        "startSegmentIndex": startSeq
-        "endSegmentIndex": endSeq
-        "sequenceNumber": startSeq
-        "startTimeMs": startTimeVal
-        "durationMs": durationVal
-        "timescale": timescaleVal
-        "startTicks": startTicksVal
-        "durationTicks": durationTicksVal
-        "formatId": mediaHeader?.formatId
-    }
-
-    if not isValid(storeOptions.itag) and isValid(mediaHeader?.formatId)
-        storeOptions.itag = mediaHeader.formatId?.itag
-    end if
-    if storeOptions.sequenceNumber = invalid and isValid(startSeq)
-        storeOptions.sequenceNumber = startSeq
-    end if
-
-    if isInitSeg
-        sidxUpdate = sabr_ump_buildSidxIndexUpdate(ctx, mediaHeader, segmentData)
-        if IsAssociativeArray(sidxUpdate)
-            sabr_ump_mergeStreamInfo(ctx, { "sidxIndexUpdates": [sidxUpdate] })
-            reason = sidxUpdate?.unsupportedReason
-            if isValid(reason) and reason <> ""
-                sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] SIDX index ignored for format ${sidxUpdate?.formatKey ?? ""}: ${reason}`)
-            else
-                sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Captured SIDX index for format ${sidxUpdate?.formatKey ?? ""} references=${IsArray(sidxUpdate?.entries) ? sidxUpdate.entries.count() : 0}`)
-            end if
-        end if
-    end if
-
-    dataPath = sabr_ump_toSafeString(segmentInfo?.dataPath)
-    if dataPath <> ""
-        storeOptions.dataPath = dataPath
-    else if GetInterface(segmentData, "ifByteArray") <> invalid and segmentData.count() > 0
-        storeOptions.bytes = segmentData
-    else if IsArray(segmentInfo?.chunkFiles) and segmentInfo.chunkFiles.count() > 0
-        storeOptions.chunkFiles = segmentInfo.chunkFiles
-        storeOptions.chunkCount = sabr_ump_toInt(segmentInfo?.chunkCount)
-    end if
-
-    cacheResult = sabr_cacheStoreSegment(storeOptions)
-    cachedName = cacheResult?.path ?? ""
-    if cachedName <> "" and cachedName.InStr("/") >= 0
-        nameParts = cachedName.Split("/")
-        cachedName = nameParts[nameParts.count() - 1]
-    end if
-
-    if cachedName <> ""
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Cached segment ${cachedName} coverage=${startVal}-${rangeEnd}`)
-    else
-        sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Cached segment coverage=${startVal}-${rangeEnd}`)
-    end if
-
-    return cacheResult
-end function
-
-' Merges stream-level telemetry (coverage, init metadata) back into the
-' request metadata so future SABR calls have richer context.
-function sabr_ump_mergeStreamInfo(ctx as object, newInfo as object) as void
-    streamInfo = ctx.requestMetadata?.streamInfo
-    if not isValid(streamInfo) then streamInfo = {}
-
-    for each key in newInfo
-        streamInfo[key] = newInfo[key]
-    end for
-
-    ctx.requestMetadata["streamInfo"] = streamInfo
-end function
-
-function sabr_ump_headerMatchesRequest(ctx as object, mediaHeader as object) as boolean
-    if not isValid(ctx) or not isValid(mediaHeader) then return false
-
-    if ctx.requestMetadata?.isInit = true
-        return mediaHeader?.isInitSeg = true
-    end if
-
-    if mediaHeader?.isInitSeg = true then return false
-
-    requestedStart = sabr_ump_resolveRequestedStart(ctx)
-    headerStart = sabr_ump_toInt(mediaHeader?.startRange)
-    if headerStart = invalid then headerStart = sabr_ump_toInt(mediaHeader?.start)
-
-    if requestedStart = invalid then return true
-    if headerStart = invalid then return false
-    return headerStart = requestedStart
-end function
-
-' Resolves the desired byte-range start for the current SABR request using
-' metadata tracked on the processor context.
-function sabr_ump_resolveRequestedStart(ctx as object) as dynamic
-    byteRange = ctx.requestMetadata?.byteRange
-    if not isValid(byteRange) then return invalid
-    startVal = sabr_ump_toInt(byteRange?.start)
-    if startVal = invalid then startVal = sabr_ump_toInt(byteRange?.startRange)
-    return startVal
-end function
-
-' Resolves the desired byte-range end for the current SABR request.
-function sabr_ump_resolveRequestedEnd(ctx as object) as dynamic
-    byteRange = ctx.requestMetadata?.byteRange
-    if not isValid(byteRange) then return invalid
-    endVal = sabr_ump_toInt(byteRange?.end)
-    if endVal = invalid then endVal = sabr_ump_toInt(byteRange?.endRange)
-    return endVal
-end function
-
-sub sabr_ump_resetProcessingState(ctx as object)
-    segments = ctx?._partialSegments
-    if IsAssociativeArray(segments)
-        for each segKey in segments
-            segEntry = segments[segKey]
-            sabr_ump_cleanupSegmentChunks(segEntry)
-        end for
-    end if
-    ctx._formatInitMetadata = []
-    ctx._desiredHeaderId = invalid
-    ctx._partialSegments = createObject("roAssociativeArray")
-    ctx._processedPartTypes = []
-end sub
-
-' --- Helpers -----------------------------------------------------------------
-
-function sabr_ump_byteRangeToCoverage(byteRange as dynamic) as dynamic
-    if not isValid(byteRange) then return invalid
-    startVal = sabr_ump_toInt(byteRange?.start)
-    if startVal = invalid then startVal = sabr_ump_toInt(byteRange?.startRange)
-    endVal = sabr_ump_toInt(byteRange?.end)
-    if endVal = invalid then endVal = sabr_ump_toInt(byteRange?.endRange)
-    if startVal = invalid or endVal = invalid then return invalid
-    if endVal < startVal then return invalid
-    return {
-        "rangeStart": startVal
-        "rangeEnd": endVal
-    }
-end function
-
-function sabr_ump_readVarint(buffer as object, offset as integer) as object
-    info = {
-        "value": -1
-        "nextOffset": offset
-        "origOffset": offset
-        "complete": false
-    }
-
-    if offset >= buffer.count() then return info
-
-    firstByte = buffer[offset]
-    byteLength = sabr_ump_inferVarintLength(firstByte)
-
-    if byteLength <= 0 or (offset + byteLength) > buffer.count()
-        return info
-    end if
-
-    cursor = offset
-    value = 0
-
-    if byteLength = 1
-        value = buffer[cursor]
-        cursor = cursor + 1
-    else if byteLength = 2
-        byte1 = buffer[cursor] : cursor = cursor + 1
-        byte2 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h3f) + 64 * byte2
-    else if byteLength = 3
-        byte1 = buffer[cursor] : cursor = cursor + 1
-        byte2 = buffer[cursor] : cursor = cursor + 1
-        byte3 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h1f) + 32 * (byte2 + 256 * byte3)
-    else if byteLength = 4
-        byte1 = buffer[cursor] : cursor = cursor + 1
-        byte2 = buffer[cursor] : cursor = cursor + 1
-        byte3 = buffer[cursor] : cursor = cursor + 1
-        byte4 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h0f) + 16 * (byte2 + 256 * (byte3 + 256 * byte4))
-    else
-        ' 5-byte variant
-        cursor = cursor + 1
-        byte0 = buffer[cursor - 1]
-        byte1 = buffer[cursor] : cursor = cursor + 1
-        byte2 = buffer[cursor] : cursor = cursor + 1
-        byte3 = buffer[cursor] : cursor = cursor + 1
-        byte4 = buffer[cursor] : cursor = cursor + 1
-        value = byte0 and &h07
-        value = value + 8 * (byte1 + 256 * (byte2 + 256 * (byte3 + 256 * byte4)))
-    end if
-
-    info.value = value
-    info.nextOffset = cursor
-    info.complete = true
-    return info
-end function
+' Usage: the remaining helpers focus on scanning the SABR spool file directly.
 
 function sabr_ump_inferVarintLength(firstByte as integer) as integer
     if firstByte < 128 then return 1
@@ -1248,1192 +45,916 @@ function sabr_ump_inferVarintLength(firstByte as integer) as integer
     return 5
 end function
 
-function sabr_ump_appendBytes(target as object, source as object) as void
-    if not isValid(target) then return
-    if not isValid(source) then return
-
-    count = source.count()
-    if count = 0 then return
-
-    startIndex = target.count()
-    endIndex = startIndex + count - 1
-    target[endIndex] = 0
-    dest = startIndex
-    for i = 0 to count - 1
-        target[dest] = source[i]
-        dest = dest + 1
-    end for
-end function
-
-sub sabr_ump_releaseIncomingBuffer(ctx as object, buffer as dynamic)
-    if GetInterface(buffer, "ifByteArray") = invalid then return
-    pool = ctx?._chunkBufferPool
-    if not IsArray(pool) then return
-    limit = sabr_ump_toInt(ctx?._chunkBufferPoolLimit)
-    if limit = invalid or limit <= 0 then limit = 8
-    if pool.count() >= limit then return
-    pool.push(buffer)
-end sub
-
-function sabr_ump_sliceByteArray(buffer as object, startIndex as integer, length as integer) as object
-    result = createObject("roByteArray")
-    if length <= 0 then return result
-
-    lastIndex = startIndex + length - 1
-    if lastIndex >= buffer.count() then
-        length = buffer.count() - startIndex
-        if length <= 0 then return result
-        lastIndex = startIndex + length - 1
-    end if
-
-    result[length - 1] = 0
-    destIndex = 0
-    for i = startIndex to lastIndex
-        result[destIndex] = buffer[i]
-        destIndex = destIndex + 1
-    end for
-
-    return result
-end function
-
-function sabr_ump_concatenateChunks(ctx as object, chunkSource as object, totalBytes = invalid as dynamic) as object
-    concatTimer = sabr_ump_perfStart(ctx, "concat_chunks")
-    output = createObject("roByteArray")
-    if not isValid(chunkSource)
-        sabr_ump_perfLog(ctx, "concat_chunks", concatTimer, {
-            "outcome": "no_chunks"
-        })
-        return output
-    end if
-
-    chunkCount = 0
-
-    ' Determine total size if not provided
-    if totalBytes = invalid
-        if IsArray(chunkSource)
-            total = 0
-            for each entry in chunkSource
-                if GetInterface(entry, "ifByteArray") <> invalid
-                    total = total + entry.count()
-                else if IsString(entry)
-                    tempBytes = createObject("roByteArray")
-                    if tempBytes.ReadFile(entry)
-                        total = total + tempBytes.count()
-                    end if
-                end if
-            end for
-            totalBytes = total
-        else
-            totalBytes = 0
+'------------------------------------------------------------------------------
+' Function : sabr_ump_finalizeVarintValue
+' Purpose  : Normalizes decoded varint values into BrightScript-friendly ints
+'            while preserving unsigned 32-bit values when required.
+'------------------------------------------------------------------------------
+function sabr_ump_finalizeVarintValue(rawValue as dynamic) as dynamic
+    value = rawValue
+    if (type(value) = "Float" or type(value) = "Double")
+        if value >= -2147483648.0 and value <= 2147483647.0
+            return int(value)
+        else if value >= 0 and value <= 4294967295.0
+            return value
         end if
     end if
-
-    if totalBytes = invalid or totalBytes <= 0
-        sabr_ump_perfLog(ctx, "concat_chunks", concatTimer, {
-            "outcome": "empty"
-        })
-        return output
-    end if
-
-    output[totalBytes - 1] = 0
-    destIndex = 0
-
-    for each entry in chunkSource
-        chunkData = invalid
-        if GetInterface(entry, "ifByteArray") <> invalid
-            chunkData = entry
-        else if IsString(entry)
-            chunkData = createObject("roByteArray")
-            if chunkData.ReadFile(entry) <> true
-                chunkData = invalid
-            end if
-        end if
-
-        if chunkData <> invalid
-            count = chunkData.count()
-            for i = 0 to count - 1
-                output[destIndex] = chunkData[i]
-                destIndex = destIndex + 1
-            end for
-            chunkCount = chunkCount + 1
-        end if
-    end for
-
-    sabr_ump_perfLog(ctx, "concat_chunks", concatTimer, {
-        "outcome": "ok"
-        "chunkCount": chunkCount
-        "totalBytes": output.count()
-    })
-    return output
+    return value
 end function
 
-' Sets up the tracking object used while assembling a segment, optionally
-' provisioning in-memory buffers when required.
-function sabr_ump_prepareSegmentAssembly(ctx as object, segment as object, needBytes as boolean) as object
-    totalBytes = sabr_ump_toInt(segment?.bytesWritten)
-    if totalBytes = invalid then totalBytes = 0
-    chunkCountVal = sabr_ump_toInt(segment?.chunkCount)
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readVarint
+' Purpose  : Reads a SABR varint from a byte array, returning the value, next
+'            offset, and completion flag without throwing on malformed data.
+'------------------------------------------------------------------------------
+function sabr_ump_readVarint(buffer as object, offset as integer) as object
     info = {
-        "bytes": invalid
-        "chunkCount": chunkCountVal
-        "totalBytes": totalBytes
-        "dataPath": tempPath
+        "value": -1
+        "nextOffset": offset
+        "origOffset": offset
+        "complete": false
     }
 
-    if needBytes = true
-        if tempPath <> ""
-            bytes = CreateObject("roByteArray")
-            if bytes.ReadFile(tempPath) = true
-                info.bytes = bytes
-                if info.totalBytes = 0 then info.totalBytes = bytes.count()
-            else
-                info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
-                info.totalBytes = sabr_ump_countBytes(info.bytes)
-            end if
-        else
-            info.bytes = sabr_ump_loadSegmentFromChunks(ctx, segment)
-            info.totalBytes = sabr_ump_countBytes(info.bytes)
-        end if
-    else if info.totalBytes = 0 and tempPath <> ""
-        fs = CreateObject("roFileSystem")
-        stat = fs.Stat(tempPath)
-        if IsAssociativeArray(stat)
-            sizeVal = stat.Lookup("size")
-            if sizeVal = invalid then sizeVal = stat.Lookup("length")
-            if IsInteger(sizeVal) or IsFloat(sizeVal) or IsDouble(sizeVal)
-                info.totalBytes = Int(sizeVal)
-            end if
-        end if
+    if GetInterface(buffer, "ifByteArray") = invalid then return info
+    totalCount = buffer.count()
+    if offset < 0 or offset >= totalCount then return info
+
+    firstByte = buffer[offset]
+    byteLength = sabr_ump_inferVarintLength(firstByte)
+    if byteLength <= 0 or offset + byteLength > totalCount then return info
+
+    cursor = offset
+    value = 0.0
+
+    if byteLength = 1
+        value = buffer[cursor]
+        cursor = cursor + 1
+    else if byteLength = 2
+        byte1 = buffer[cursor] : cursor = cursor + 1
+        byte2 = buffer[cursor] : cursor = cursor + 1
+        value = (byte1 and &h3f) + 64.0 * byte2
+    else if byteLength = 3
+        byte1 = buffer[cursor] : cursor = cursor + 1
+        byte2 = buffer[cursor] : cursor = cursor + 1
+        byte3 = buffer[cursor] : cursor = cursor + 1
+        value = (byte1 and &h1f) + 32.0 * (byte2 + 256.0 * byte3)
+    else if byteLength = 4
+        byte1 = buffer[cursor] : cursor = cursor + 1
+        byte2 = buffer[cursor] : cursor = cursor + 1
+        byte3 = buffer[cursor] : cursor = cursor + 1
+        byte4 = buffer[cursor] : cursor = cursor + 1
+        value = (byte1 and &h0f) + 16.0 * (byte2 + 256.0 * (byte3 + 256.0 * byte4))
+    else
+        cursor = cursor + 1
+        byte1 = buffer[cursor] : cursor = cursor + 1
+        byte2 = buffer[cursor] : cursor = cursor + 1
+        byte3 = buffer[cursor] : cursor = cursor + 1
+        byte4 = buffer[cursor] : cursor = cursor + 1
+        value = byte1 + 256.0 * byte2 + 65536.0 * byte3 + 16777216.0 * byte4
     end if
 
+    info.value = sabr_ump_finalizeVarintValue(value)
+    info.nextOffset = cursor
+    info.complete = true
     return info
 end function
 
-function sabr_ump_countBytes(value as dynamic) as integer
-    if not isValid(value) then return 0
-    iface = GetInterface(value, "ifByteArray")
-    if iface = invalid then return 0
-    return value.count()
-end function
-
-function sabr_ump_perfEnabled(ctx as dynamic) as boolean
-    if not isValid(ctx) then return SABR_PERF_LOGGING_ENABLED
-    flag = ctx?._perfEnabled
-    if flag = invalid then return SABR_PERF_LOGGING_ENABLED
-    return flag = true
-end function
-
-function sabr_ump_perfShouldLog(ctx as dynamic, durationMs as integer) as boolean
-    threshold = SABR_PERF_THRESHOLD_MS
-    override = ctx?.requestMetadata?.perfThresholdMs
-    if override <> invalid
-        overrideInt = sabr_ump_toInt(override)
-        if overrideInt <> invalid then threshold = overrideInt
-    end if
-    if threshold < 0 then return true
-    return durationMs >= threshold
-end function
-
-' Starts a perf timer (and optional memory snapshot) for instrumentation blocks.
-function sabr_ump_perfStart(ctx as dynamic, label as string) as dynamic
-    if not sabr_ump_perfEnabled(ctx) then return invalid
-    marker = invalid
-    if marker = invalid
-        marker = CreateObject("roTimespan")
-        if marker <> invalid
-            marker.mark()
-        end if
-    end if
-    return marker
-end function
-
-sub sabr_ump_perfLog(ctx as dynamic, label as string, marker as dynamic, meta = invalid as dynamic)
-    if not sabr_ump_perfEnabled(ctx) then return
-
-    durationMs = 0
-    if marker <> invalid
-        iface = GetInterface(marker, "ifTimespan")
-        if iface <> invalid
-            durationMs = int(marker.TotalMilliseconds())
-        else if IsNumber(marker)
-            durationMs = int(marker)
-        end if
-    end if
-
-    if not sabr_ump_perfShouldLog(ctx, durationMs) then return
-
-    metaString = sabr_ump_perfMetaString(meta)
-    memoryLabel = ""
-    if ctx?._perfCaptureMemory = true and sabr_ump_perfShouldCaptureMemory(label)
-        memSnapshot = sabr_ump_perfCaptureMemory(ctx)
-        memoryLabel = sabr_ump_perfFormatMemory(memSnapshot)
-    end if
-
-    message = `[SabrUmpPerf] ${label} duration=${durationMs}`
-    if metaString <> "" then message = `${message} ${metaString}`
-    if memoryLabel <> "" then message = `${message} ${memoryLabel}`
-    sabr_ump_log(ctx, log_level_Type.DEBUG, message)
-end sub
-
-function sabr_ump_perfMetaString(meta as dynamic) as string
-    if not isValid(meta) then return ""
-    if IsString(meta) then return meta
-    if IsAssociativeArray(meta)
-        entries = []
-        for each key in meta
-            value = meta[key]
-            entries.push(`${key}=${sabr_ump_toSafeString(value)}`)
-        end for
-        if entries.count() > 0 then return entries.Join(" ")
-        return ""
-    end if
-    if IsArray(meta)
-        pieces = []
-        for each item in meta
-            pieces.push(sabr_ump_toSafeString(item))
-        end for
-        return pieces.Join(" ")
-    end if
-    return sabr_ump_toSafeString(meta)
-end function
-
-function sabr_ump_perfShouldCaptureMemory(label as string) as boolean
-    if not IsString(label) then return false
-    normalized = LCase(label)
-    if normalized = "process_chunk" or normalized = "media_end" or normalized = "concat_chunks" then return true
-    return false
-end function
-
-' Captures a lightweight memory snapshot when perf logging indicates it’s needed.
-function sabr_ump_perfCaptureMemory(ctx as dynamic) as dynamic
-    if not isValid(ctx) then return invalid
-    if IsString(ctx?._perfMemoryMonitor) and ctx?._perfMemoryMonitor = "unsupported" then return invalid
-
-    monitor = ctx?._perfMemoryMonitor
-    if GetInterface(monitor, "ifAppMemoryMonitor") = invalid
-        monitor = invalid
-        try
-            monitor = CreateObject("roAppMemoryMonitor")
-            ctx._perfMemoryMonitor = monitor
-        catch e
-            ctx._perfMemoryMonitor = "unsupported"
-            return invalid
-        end try
-    end if
-
-    if GetInterface(monitor, "ifAppMemoryMonitor") = invalid
-        ctx._perfMemoryMonitor = "unsupported"
-        return invalid
-    end if
-
-    snapshot = createObject("roAssociativeArray")
-
-    availableKb = invalid
-    try
-        availableKb = monitor.GetChannelAvailableMemory()
-    catch e
-        availableKb = invalid
-    end try
-    if availableKb <> invalid then snapshot["availableKb"] = availableKb
-
-    percent = invalid
-    try
-        percent = monitor.GetMemoryLimitPercent()
-    catch e
-        percent = invalid
-    end try
-    if percent <> invalid then snapshot["limitPercent"] = percent
-
-    limitInfo = invalid
-    try
-        limitInfo = monitor.GetChannelMemoryLimit()
-    catch e
-        limitInfo = invalid
-    end try
-    if IsAssociativeArray(limitInfo)
-        for each key in limitInfo
-            snapshot[key] = limitInfo[key]
-        end for
-    end if
-
-    if snapshot.count() = 0 then return invalid
-    return snapshot
-end function
-
-function sabr_ump_perfFormatMemory(snapshot as dynamic) as string
-    if not IsAssociativeArray(snapshot) then return ""
-
-    labels = []
-    knownKeys = [
-        "availableKb"
-        "limitPercent"
-        "maxForegroundMemory"
-        "maxBackgroundMemory"
-        "maxRokuManagedHeapMemory"
-    ]
-    for each key in knownKeys
-        if snapshot.DoesExist(key)
-            labels.push(`${key}=${sabr_ump_toSafeString(snapshot[key])}`)
-        end if
-    end for
-
-    if labels.count() = 0
-        for each key in snapshot
-            labels.push(`${key}=${sabr_ump_toSafeString(snapshot[key])}`)
-            if labels.count() >= 3 then exit for
-        end for
-    end if
-
-    if labels.count() = 0 then return ""
-    return `mem{${labels.Join(" ")}}`
-end function
-
-' Helper that invokes a protobuf decoder while catching/annotating failures for logs.
-function sabr_ump_decodePart(decoderFn as dynamic, data as object, ctx = invalid, label = "" as string) as dynamic
-    decodeTimer = sabr_ump_perfStart(ctx, "decode_part")
-    bytesIn = sabr_ump_countBytes(data)
-    if not isValid(data) or data.count() = 0
-        sabr_ump_perfLog(ctx, "decode_part", decodeTimer, {
-            "outcome": "no_data"
-            "label": label
-            "bytes": bytesIn
-        })
-        return invalid
-    end if
-
-    if not IsFunction(decoderFn)
-        sabr_ump_perfLog(ctx, "decode_part", decodeTimer, {
-            "outcome": "no_decoder"
-            "label": label
-            "bytes": bytesIn
-        })
-        return invalid
-    end if
-
-    base64Payload = data.ToBase64String()
-    if base64Payload = ""
-        sabr_ump_perfLog(ctx, "decode_part", decodeTimer, {
-            "outcome": "empty_payload"
-            "label": label
-            "bytes": bytesIn
-        })
-        return invalid
-    end if
-
-    decoded = invalid
-    try
-        decoded = decoderFn(base64Payload)
-    catch e
-        sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to decode part: ${e.message}`)
-        sabr_ump_perfLog(ctx, "decode_part", decodeTimer, {
-            "outcome": "exception"
-            "label": label
-            "bytes": bytesIn
-        })
-        return invalid
-    end try
-
-    sabr_ump_perfLog(ctx, "decode_part", decodeTimer, {
-        "outcome": "ok"
-        "label": label
-        "bytes": bytesIn
-        "hasResult": isValid(decoded)
-    })
-    return decoded
-end function
-
-function sabr_ump_log(ctx as object, level as integer, message as string) as void
-    taggedMessage = sabr_ump_applyRequestLogTag(ctx, message)
-    loggerRef = ctx?.logs
-    debugOnly = (level = log_level_Type.DEBUG) or (level = log_level_Type.VERBOSE)
-    sabr_log(loggerRef, level, taggedMessage, debugOnly)
-end function
-
-function sabr_ump_applyRequestLogTag(ctx as object, message as string) as string
-    if not IsString(message) then return message
-    prefix = "[SabrUmpProcessor]"
-    if Instr(1, message, prefix) = 1
-        replacement = sabr_ump_buildLogTag(ctx)
-        if replacement = "" then replacement = prefix
-        remainder = Mid(message, Len(prefix) + 1)
-        return `${replacement}${remainder}`
-    end if
-    return message
-end function
-
-function sabr_ump_buildLogTag(ctx as object) as string
-    parts = ["SabrUmpProcessor"]
-    typeLabel = sabr_ump_normalizeContentType(ctx?.requestMetadata?.contentType)
-    if typeLabel <> "" then parts.push(typeLabel)
-    requestLabel = sabr_ump_extractRequestNumber(ctx?.requestMetadata?.requestNumber)
-    if requestLabel <> "" then parts.push(requestLabel)
-    return `[${parts.Join("-")}]`
-end function
-
-function sabr_ump_normalizeContentType(value as dynamic) as string
-    label = LCase(sabr_ump_toSafeString(value))
-    if label = "" then return ""
-    if Instr(1, label, "video") > 0 then return "video"
-    if Instr(1, label, "audio") > 0 then return "audio"
-    if Instr(1, label, "text") > 0 then return "text"
-    if Instr(1, label, "caption") > 0 then return "text"
-    return label
-end function
-
-function sabr_ump_extractRequestNumber(value as dynamic) as string
-    if not isValid(value) then return ""
-    if IsAssociativeArray(value)
-        if value.DoesExist("requestNumber")
-            return sabr_ump_extractRequestNumber(value.requestNumber)
-        end if
-        return ""
-    end if
-    return sabr_ump_toSafeString(value)
-end function
-
-function sabr_ump_diagnosticsEnabled() as boolean
-    return SABR_INIT_DIAGNOSTICS_ENABLED
-end function
-
-function sabr_ump_resolveInitClipRange(ctx as object) as dynamic
-    format = ctx.requestMetadata?.format
-    if not isValid(format) then return invalid
-
-    metadata = sabr_ump_fetchInitMetadata(ctx, format)
-    if not isValid(metadata) then return invalid
-
-    initRange = sabr_ump_extractRange(metadata?.initRange)
-    if not isValid(initRange) then initRange = sabr_ump_extractRange(metadata?.init_range)
-    indexRange = sabr_ump_extractRange(metadata?.indexRange)
-    if not isValid(indexRange) then indexRange = sabr_ump_extractRange(metadata?.index_range)
-
-    startValue = invalid
-    endValue = invalid
-    if isValid(initRange)
-        startValue = initRange.start
-        endValue = initRange.end
-    end if
-    if isValid(indexRange)
-        if not isValid(startValue) or indexRange.start < startValue then startValue = indexRange.start
-        if not isValid(endValue) or indexRange.end > endValue then endValue = indexRange.end
-    end if
-
-    if not isValid(startValue) or not isValid(endValue) then return invalid
-
-    formatKey = sabr_formatToKey(format)
-    sabr_ump_log(ctx, log_level_Type.DEBUG, `[SabrUmpProcessor] Using metadata init clip ${startValue}-${endValue} for format ${formatKey}`)
-
-    return {
-        "start": startValue
-        "end": endValue
-        "source": "metadata"
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSpoolPartMap
+' Purpose  : Scans a SABR spool file, interprets each part header, and returns
+'            structured metadata including segment linkage and summary stats.
+'------------------------------------------------------------------------------
+function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integer, keyParam = "" as string) as dynamic
+    result = {
+        "parts": []
+        "durationMs": 0
+        "totalBytes": 0
+        "reads": 0
+        "sliceBytes": maxHeaderBytes
     }
-end function
+    if not IsString(path) or path = "" then return result
 
-function sabr_ump_fetchInitMetadata(ctx as object, format as object) as dynamic
-    formatKey = sabr_formatToKey(format)
-    if formatKey = "" then return invalid
-
-    if ctx._initMetadataByKey.doesExist(formatKey)
-        return ctx._initMetadataByKey.Lookup(formatKey)
-    end if
-
-    for each metadata in ctx._formatInitMetadata
-        metaKey = sabr_ump_formatMetadataKey(metadata)
-        if metaKey <> "" and metaKey = formatKey
-            ctx._initMetadataByKey[formatKey] = metadata
-            return metadata
-        end if
-    end for
-
-    return invalid
-end function
-
-function sabr_ump_formatMetadataKey(metadata as object) as string
-    if not isValid(metadata) then return ""
-    formatId = metadata?.formatId
-    if not isValid(formatId) then formatId = metadata?.format_id
-    if not isValid(formatId) then return ""
-    return sabr_formatToKey({ "itag": formatId?.itag, "xtags": formatId?.xtags })
-end function
-
-function sabr_ump_extractRange(range as dynamic) as dynamic
-    if not isValid(range) then return invalid
-    startValue = range?.start
-    if not isValid(startValue) then startValue = range?.legacyStart
-    if not isValid(startValue) then startValue = range?.legacy_start
-    endValue = range?.end
-    if not isValid(endValue) then endValue = range?.legacyEnd
-    if not isValid(endValue) then endValue = range?.legacy_end
-
-    if not isValid(startValue) or not isValid(endValue) then return invalid
-
-    startInt = sabr_ump_toInt(startValue)
-    endInt = sabr_ump_toInt(endValue)
-    if startInt = invalid or endInt = invalid then return invalid
-    if endInt < startInt then return invalid
-
-    return { "start": startInt, "end": endInt }
-end function
-
-sub sabr_ump_dumpTmpFiles(ctx as object)
-    baseUrl = sabr_ump_toSafeString(ctx?.requestMetadata?.debugUploadUrl)
-    if baseUrl = "" then return
-    if ctx._hasDumpedTmp = true then return
-    ctx._hasDumpedTmp = true
-
-    mediaIdHash = sabr_ump_toSafeString(ctx?.requestMetadata?.mediaIdHash)
-    if mediaIdHash <> ""
-        specificPath = `tmp:/${mediaIdHash}`
-        if sabr_ump_pathIsDir(specificPath)
-            sabr_ump_uploadDirectory(ctx, baseUrl, specificPath, mediaIdHash)
-            return
-        end if
-    end if
-
-    sabr_ump_uploadDirectory(ctx, baseUrl, "tmp:/", "")
-end sub
-
-sub sabr_ump_uploadDirectory(ctx as object, baseUrl as string, fullPath as string, relativePath as string)
-    entries = invalid
+    fs = CreateObject("roFileSystem")
+    stat = invalid
     try
-        fs = CreateObject("roFileSystem")
-        entries = fs.GetDirectoryListing(fullPath)
+        stat = fs.Stat(path)
     catch e
-        entries = invalid
+        stat = invalid
     end try
-    if not isValid(entries) then return
+    totalSize = invalid
+    if IsAssociativeArray(stat)
+        totalSize = stat.Lookup("size")
+        if totalSize = invalid then totalSize = stat.Lookup("length")
+    end if
+    if totalSize = invalid then return result
+    if totalSize <= 0 then
+        result.totalBytes = 0
+        return result
+    end if
 
-    for each entry in entries
-        if entry = "." or entry = ".."
-            ' skip
-        else
-            childFull = sabr_ump_joinPath(fullPath, entry)
-            childRel = entry
-            if relativePath <> ""
-                childRel = `${relativePath}/${entry}`
-            end if
-            if sabr_ump_pathIsDir(childFull)
-                sabr_ump_uploadDirectory(ctx, baseUrl, childFull, childRel)
-            else
-                sabr_ump_uploadSingleFile(ctx, baseUrl, childFull, childRel)
-            end if
+    timer = CreateObject("roTimespan")
+    if timer <> invalid then timer.Mark()
+
+    parts = []
+    headerIndex = createObject("roAssociativeArray")
+    segmentIndex = createObject("roAssociativeArray")
+    headerToSegmentKey = createObject("roAssociativeArray")
+    suffixBase = sabr_ump_toSafeString(keyParam)
+    currentHeaderId = invalid
+    offset = 0
+    actualBytesRead = 0
+    while offset < totalSize
+        remaining = totalSize - offset
+        sliceLength = maxHeaderBytes
+        if sliceLength > remaining then sliceLength = remaining
+        if sliceLength <= 0 then exit while
+
+        headerBytes = CreateObject("roByteArray")
+        if headerBytes.ReadFile(path, offset, sliceLength) <> true
+            result["error"] = "read_failed"
+            result["errorOffset"] = offset
+            exit while
         end if
-    end for
-end sub
+        result.reads = result.reads + 1
+        actualBytesRead = actualBytesRead + sliceLength
 
-sub sabr_ump_uploadSingleFile(ctx as object, baseUrl as string, fullPath as string, relativePath as string)
-    if relativePath = "" then relativePath = "tmp-root.bin"
-
-    sanitizedPath = sabr_ump_sanitizeForFilename(relativePath)
-    if sanitizedPath = "" then sanitizedPath = "tmp-root.bin"
-
-    baseName = sanitizedPath
-    extension = ""
-    lastDot = 0
-    for i = 1 to Len(sanitizedPath)
-        ch = Mid(sanitizedPath, i, 1)
-        if ch = "."
-            lastDot = i
+        typeInfo = sabr_ump_readVarint(headerBytes, 0)
+        if typeInfo.complete <> true
+            result["error"] = "type_incomplete"
+            result["errorOffset"] = offset
+            exit while
         end if
-    end for
-    if lastDot > 0
-        baseName = Left(sanitizedPath, lastDot - 1)
-        extension = Mid(sanitizedPath, lastDot)
-    end if
-    if baseName = "" then baseName = "dump"
 
-    suffixParts = []
-    sanitizedKey = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(ctx.requestMetadata?.sabrKey))
-    if sanitizedKey <> "" then suffixParts.push(`key-${sanitizedKey}`)
-
-    formatRef = ctx.requestMetadata?.format
-    formatKeyRaw = ""
-    if isValid(formatRef)
-        formatKeyRaw = sabr_formatToKey(formatRef)
-    end if
-    sanitizedFormat = sabr_ump_sanitizeForFilename(formatKeyRaw)
-    if sanitizedFormat <> "" then suffixParts.push(`fmt-${sanitizedFormat}`)
-
-    sanitizedRn = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(ctx.requestMetadata?.requestNumber))
-    if sanitizedRn <> "" then suffixParts.push(`rn-${sanitizedRn}`)
-
-    if suffixParts.count() > 0
-        suffixStr = ""
-        for i = 0 to suffixParts.count() - 1
-            if suffixStr <> "" then suffixStr = suffixStr + "_"
-            suffixStr = suffixStr + suffixParts[i]
-        end for
-        baseName = baseName + "_" + suffixStr
-    end if
-
-    fileName = baseName + extension
-    encodedPath = sabr_ump_urlEncode(fileName)
-    separator = "?"
-    if Instr(baseUrl, "?") > 0
-        separator = "&"
-    end if
-    url = `${baseUrl}${separator}path=${encodedPath}`
-
-    transfer = CreateObject("roUrlTransfer")
-    if Left(url, 5) = "https"
-        transfer.SetCertificatesFile("common:/certs/ca-bundle.crt")
-        transfer.InitClientCertificates()
-    end if
-    transfer.SetRequest("POST")
-    transfer.SetUrl(url)
-    transfer.AddHeader("Content-Type", "application/octet-stream")
-    ok = transfer.PostFromFile(fullPath)
-    if ok
-        sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Uploaded tmp file ${fileName}`)
-    else
-        sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to upload tmp file ${fileName}`)
-    end if
-end sub
-
-function sabr_ump_segmentTempRoot() as string
-    base = "tmp:/sabr-cache"
-    subDir = sabr_ump_joinPath(base, "segments")
-    sabr_ump_ensureDirectory(base)
-    sabr_ump_ensureDirectory(subDir)
-    return subDir
-end function
-
-' Computes the directory and base filename used to stream a segment to disk.
-function sabr_ump_prepareSegmentTempInfo(ctx as object, headerId as dynamic) as object
-    root = sabr_ump_segmentTempRoot()
-    mediaId = sabr_ump_toSafeString(ctx?.requestMetadata?.mediaIdHash)
-    if mediaId = "" then mediaId = "unknown"
-    mediaDir = sabr_ump_joinPath(root, mediaId)
-    sabr_ump_ensureDirectory(mediaDir)
-
-    requestLabel = sabr_ump_toSafeString(ctx?.requestMetadata?.requestNumber)
-    if requestLabel = "" then requestLabel = "req"
-    reqDir = sabr_ump_joinPath(mediaDir, `rn${requestLabel}`)
-    sabr_ump_ensureDirectory(reqDir)
-
-    headerLabel = sabr_ump_toSafeString(headerId)
-    if headerLabel = "" then headerLabel = "header"
-
-    return {
-        "dir": reqDir
-        "base": `header${headerLabel}`
-    }
-end function
-
-function sabr_ump_getSegmentTempPath(ctx as object, segment as object, headerId as dynamic) as string
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
-    if tempPath <> "" then return tempPath
-
-    info = sabr_ump_prepareSegmentTempInfo(ctx, headerId)
-    dirPath = sabr_ump_toSafeString(info?.dir)
-    if dirPath = "" then return ""
-    sabr_ump_ensureDirectory(dirPath)
-
-    baseName = sabr_ump_toSafeString(segment?.tempBaseName)
-    if baseName = ""
-        baseName = sabr_ump_toSafeString(info?.base)
-        if baseName = "" then baseName = "segment"
-        segment.tempBaseName = baseName
-    end if
-    segment.chunkDir = dirPath
-
-    tempPath = sabr_ump_joinPath(dirPath, `${baseName}_stream.tmp`)
-    fs = CreateObject("roFileSystem")
-    if fs.Exists(tempPath)
-        try
-            fs.Delete(tempPath)
-        catch e
-        end try
-    end if
-    segment.tempFilePath = tempPath
-    return tempPath
-end function
-
-' Writes the provided payload chunk into the segment’s temp file, handling offsets
-' and tracking written byte counts for later assembly.
-function sabr_ump_appendChunkToTemp(ctx as object, segment as object, headerId as dynamic, payload as object, payloadOffset = 0 as integer, payloadLength = invalid as dynamic) as boolean
-    if GetInterface(payload, "ifByteArray") = invalid then return false
-    tempPath = sabr_ump_getSegmentTempPath(ctx, segment, headerId)
-    if tempPath = "" then return false
-
-    totalBytes = payload.count()
-    if payloadLength = invalid or payloadLength > totalBytes - payloadOffset then payloadLength = totalBytes - payloadOffset
-    if payloadLength <= 0 then return true
-    if payloadOffset < 0 then payloadOffset = 0
-
-    wrote = false
-    if segment?.chunkCount = 0 and segment?.bytesWritten = 0
-        if payloadOffset = 0 and payloadLength = totalBytes
-            wrote = payload.WriteFile(tempPath)
-        else
-            wrote = payload.WriteFile(tempPath, payloadOffset, payloadLength)
+        sizeInfo = sabr_ump_readVarint(headerBytes, typeInfo.nextOffset)
+        if sizeInfo.complete <> true
+            result["error"] = "size_incomplete"
+            result["errorOffset"] = offset
+            exit while
         end if
-    else
-        if payloadOffset = 0 and payloadLength = totalBytes
-            wrote = payload.AppendFile(tempPath)
-        else
-            wrote = payload.AppendFile(tempPath, payloadOffset, payloadLength)
+
+        partType = sabr_ump_toInt(typeInfo.value)
+        partSize = sabr_ump_toInt(sizeInfo.value)
+        headerLength = sizeInfo.nextOffset
+
+        if partSize = invalid or partSize < 0
+            result["error"] = "invalid_size"
+            result["errorOffset"] = offset
+            exit while
         end if
-    end if
 
-    if wrote <> true
-        sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Failed to append chunk for header ${headerId} at ${tempPath}`)
-        return false
-    end if
-    return true
-end function
-
-
-
-sub sabr_ump_cleanupSegmentChunks(segment as object)
-    if not isValid(segment) then return
-    fs = CreateObject("roFileSystem")
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
-    if tempPath <> ""
-        try
-            if fs.Exists(tempPath) then fs.Delete(tempPath)
-        catch e
-        end try
-        segment.tempFilePath = ""
-    end if
-    chunkFiles = segment?.chunkFiles
-    if IsArray(chunkFiles)
-        for each chunkPath in chunkFiles
-            if IsString(chunkPath) and chunkPath <> ""
-                try
-                    if fs.Exists(chunkPath) then fs.Delete(chunkPath)
-                catch e
-                end try
-            end if
-        end for
-        segment.chunkFiles = []
-    end if
-    dirPath = segment?.chunkDir
-    if IsString(dirPath) and dirPath <> ""
-        try
-            entries = fs.GetDirectoryListing(dirPath)
-            if IsArray(entries) and entries.count() = 0
-                fs.Delete(dirPath)
-            end if
-        catch e
-        end try
-    end if
-end sub
-
-sub sabr_ump_ensureDirectory(path as string)
-    if not IsString(path) or path = "" then return
-    fs = CreateObject("roFileSystem")
-    exists = false
-    try
-        exists = fs.Exists(path)
-    catch e
-        exists = false
-    end try
-    if exists then return
-    fs.CreateDirectory(path)
-end sub
-
-function sabr_ump_shouldDebugDump(ctx as object) as boolean
-    return sabr_ump_toSafeString(ctx?.requestMetadata?.debugUploadUrl) <> ""
-end function
-
-function sabr_ump_labelWithRequestNumber(ctx as object, label as string) as string
-    requestNumber = sabr_ump_toSafeString(ctx?.requestMetadata?.requestNumber)
-    if requestNumber = "" then return label
-    prefix = `rn${requestNumber}_`
-    if Instr(1, label, prefix) = 1 then return label
-    return prefix + label
-end function
-
-function sabr_ump_nextDebugIndex(ctx as object, label as string) as integer
-    counters = ctx._debugCounters
-    current = counters.Lookup(label)
-    if not isValid(current) then current = 0
-    current = current + 1
-    counters[label] = current
-    return current
-end function
-
-sub sabr_ump_debugDumpPart(ctx as object, label as string, rawBytes as object, decoded as dynamic)
-    if not sabr_ump_shouldDebugDump(ctx) then return
-    index = sabr_ump_nextDebugIndex(ctx, label)
-    baseLabel = `part_${label}_${index}`
-    if isValid(rawBytes)
-        sabr_ump_debugUploadBytes(ctx, baseLabel + "_raw", rawBytes)
-    end if
-    if isValid(decoded)
-        json = FormatJson(decoded)
-        if isValid(json) and json <> ""
-            sabr_ump_debugUploadText(ctx, baseLabel + "_decoded", json)
-        end if
-    end if
-end sub
-
-sub sabr_ump_debugUploadBytes(ctx as object, baseLabel as string, bytes as object)
-    if not sabr_ump_shouldDebugDump(ctx) then return
-    if not isValid(bytes) then return
-    labelWithRn = sabr_ump_labelWithRequestNumber(ctx, baseLabel)
-    index = sabr_ump_nextDebugIndex(ctx, baseLabel)
-    fileName = sabr_ump_sanitizeForFilename(`${labelWithRn}_${index}`)
-    if fileName = "" then fileName = "dump"
-    fileName = fileName + ".bin"
-    sabr_ump_debugUploadByteArray(ctx, fileName, bytes, false)
-end sub
-
-sub sabr_ump_debugUploadText(ctx as object, baseLabel as string, text as string)
-    if not sabr_ump_shouldDebugDump(ctx) then return
-    if not isValid(text) then return
-    labelWithRn = sabr_ump_labelWithRequestNumber(ctx, baseLabel)
-    index = sabr_ump_nextDebugIndex(ctx, baseLabel)
-    fileName = sabr_ump_sanitizeForFilename(`${labelWithRn}_${index}`)
-    if fileName = "" then fileName = "dump"
-    fileName = fileName + ".json"
-    sabr_ump_debugUploadByteArray(ctx, fileName, text, true)
-end sub
-
-sub sabr_ump_debugUploadByteArray(ctx as object, fileName as string, content as dynamic, isText = false as boolean)
-    baseUrl = sabr_ump_toSafeString(ctx?.requestMetadata?.debugUploadUrl)
-    if baseUrl = "" then return
-
-    tmpDir = "tmp:/sabr-debug"
-    if ctx._debugTmpDirReady <> true
-        sabr_ump_prepareDebugDirectory(ctx, tmpDir)
-    end if
-
-    tmpPath = `${tmpDir}/${fileName}`
-    bytes = CreateObject("roByteArray")
-    if isText = true
-        bytes.FromAsciiString(content)
-    else
-        sabr_ump_appendBytes(bytes, content)
-    end if
-    bytes.WriteFile(tmpPath)
-    sabr_ump_uploadSingleFile(ctx, baseUrl, tmpPath, fileName)
-    sabr_ump_deletePath(tmpPath)
-end sub
-
-sub sabr_ump_prepareDebugDirectory(ctx as object, path as string)
-    fs = CreateObject("roFileSystem")
-    exists = false
-    try
-        exists = fs.Exists(path)
-    catch e
-        exists = false
-    end try
-    if exists
-        sabr_ump_deleteDirectoryContents(path)
-    else
-        fs.CreateDirectory(path)
-    end if
-    ctx._debugTmpDirReady = true
-end sub
-
-sub sabr_ump_deleteDirectoryContents(path as string)
-    entries = invalid
-    try
-        fs = CreateObject("roFileSystem")
-        entries = fs.GetDirectoryListing(path)
-    catch e
-        entries = invalid
-    end try
-    if not isValid(entries) then return
-
-    fs = CreateObject("roFileSystem")
-    for each entry in entries
-        if entry = "." or entry = ".." then continue for
-        fullPath = sabr_ump_joinPath(path, entry)
-        if sabr_ump_pathIsDir(fullPath)
-            sabr_ump_deleteDirectoryContents(fullPath)
-            try
-                if fs.Exists(fullPath) then fs.Delete(fullPath)
-            catch e
-            end try
-        else
-            try
-                if fs.Exists(fullPath) then fs.Delete(fullPath)
-            catch e
-            end try
-        end if
-    end for
-end sub
-
-sub sabr_ump_deletePath(path as string)
-    if not isValid(path) or path = "" then return
-    fs = CreateObject("roFileSystem")
-    try
-        if fs.Exists(path)
-            fs.Delete(path)
-        end if
-    catch e
-    end try
-end sub
-
-sub sabr_ump_logPartDetails(ctx as object, label as string, rawData as dynamic, decoded as dynamic)
-    if not isValid(ctx?.logs) then return
-
-    hexPreview = ""
-    size = 0
-    if isValid(rawData)
-        if GetInterface(rawData, "ifByteArray") <> invalid
-            size = rawData.count()
-            hexPreview = rawData.ToHexString()
-        else if IsString(rawData)
-            tempBa = CreateObject("roByteArray")
-            tempBa.FromAsciiString(rawData)
-            size = tempBa.count()
-            hexPreview = tempBa.ToHexString()
-        end if
-    end if
-
-    if Len(hexPreview) > 512
-        hexPreview = Left(hexPreview, 512) + "..."
-    end if
-
-    ' sabr_ump_log(ctx, log_level_Type.VERBOSE, `[SabrUmpProcessor] Part ${label} size=${size} hex=${hexPreview}`)
-
-    if isValid(decoded)
-        decodedText = FormatJson(decoded)
-        if isValid(decodedText)
-            if Len(decodedText) > 2048
-                decodedText = Left(decodedText, 2048) + "..."
-            end if
-            sabr_ump_log(ctx, log_level_Type.VERBOSE, `[SabrUmpProcessor] Part ${label} decoded=${decodedText}`)
-        end if
-    end if
-end sub
-
-sub sabr_ump_runInitDiagnostics(ctx as object, bytes as object, mediaHeader as object, format as object)
-    if not sabr_ump_diagnosticsEnabled() then return
-    if not isValid(bytes) or bytes.count() = 0 then return
-
-    boxes = sabr_mp4_parseBoxes(bytes, 10)
-    types = []
-    for each mp4box in boxes
-        types.push(mp4box.type)
-    end for
-
-    cacheKey = sabr_ump_buildCacheKey(ctx, mediaHeader, invalid, invalid, true)
-    sabr_ump_log(ctx, log_level_Type.INFO, `[SabrUmpProcessor] Init diagnostics: boxes=${FormatJson(types)} size=${bytes.count()} cacheKey=${cacheKey}`)
-
-    if not sabr_ump_findInArray(types, "ftyp")
-        sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing ftyp box")
-    end if
-    if not sabr_ump_findInArray(types, "moov")
-        sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing moov box")
-    end if
-    if not sabr_ump_findInArray(types, "sidx")
-        sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: missing sidx box")
-    end if
-
-    for each mp4box in boxes
-        if mp4box.type = "moof" or mp4box.type = "traf" or mp4box.type = "tfhd" or mp4box.type = "trun"
-            sabr_ump_log(ctx, log_level_Type.WARN, `[SabrUmpProcessor] Init diagnostics: unexpected fragment box '${mp4box.type}' at offset ${mp4box.offset}`)
-        end if
-    end for
-
-    shouldAbort = (not sabr_ump_findInArray(types, "ftyp")) or (not sabr_ump_findInArray(types, "moov")) or (not sabr_ump_findInArray(types, "sidx"))
-    if shouldAbort
-        sabr_ump_log(ctx, log_level_Type.WARN, "[SabrUmpProcessor] Init diagnostics: aborting due to malformed init segment")
-        sabr_ump_dumpTmpFiles(ctx)
-        ctx.requestMetadata["error"] = {
-            "reason": "Malformed init segment"
-            "observedBoxes": types
-            "header": mediaHeader
-            "format": format
+        partEntry = {
+            "type": partType
+            "typeLabel": sabr_ump_partTypeLabel(partType)
+            "offset": offset
+            "headerBytes": headerLength
+            "payloadOffset": offset + headerLength
+            "payloadSize": partSize
+            "payloadEnd": (offset + headerLength + partSize) - 1
+            "totalLength": headerLength + partSize
         }
-        ctx._formatInitMetadata = []
-        ctx._desiredHeaderId = invalid
-        ctx._partialSegments = createObject("roAssociativeArray")
-        throw "MalformedInitSegment"
+
+        if partType = UMP_PART_ID_MEDIA_HEADER
+            headerData = CreateObject("roByteArray")
+            if partSize > 0 and headerData.ReadFile(path, partEntry.payloadOffset, partSize) = true
+                result.reads = result.reads + 1
+                actualBytesRead = actualBytesRead + partSize
+                decodedHeader = sabr_ump_decodePart(MediaHeaderDecode, headerData, invalid, "spool_media_header")
+                ' headerRecord = decodedHeader
+                if IsAssociativeArray(decodedHeader)
+                    headerIdVal = sabr_ump_toInt(decodedHeader.Lookup("headerId"))
+                    itagVal = sabr_ump_toInt(decodedHeader.Lookup("itag"))
+                    isInitFlag = decodedHeader.Lookup("isInitSeg") = true
+                    rangeStartVal = sabr_ump_toInt(decodedHeader.Lookup("startRange"))
+                    contentLengthVal = sabr_ump_toInt(decodedHeader.Lookup("contentLength"))
+                    rangeEndVal = invalid
+                    if rangeStartVal <> invalid and contentLengthVal <> invalid and contentLengthVal > 0
+                        rangeEndVal = rangeStartVal + contentLengthVal - 1
+                    end if
+
+                    partEntry["mediaHeader"] = decodedHeader
+                    if headerIdVal <> invalid then partEntry["headerId"] = headerIdVal
+                    if itagVal <> invalid then partEntry["itag"] = itagVal
+                    if isInitFlag then partEntry["segmentIsInit"] = true
+                    if rangeStartVal <> invalid then partEntry["segmentRangeStart"] = rangeStartVal
+                    if rangeEndVal <> invalid then partEntry["segmentRangeEnd"] = rangeEndVal
+
+                    headerRecord = {
+                        "headerId": headerIdVal
+                        "itag": itagVal
+                        "segmentIsInit": isInitFlag
+                    }
+                    headerRecord["mediaHeader"] = decodedHeader
+                    if rangeStartVal <> invalid then headerRecord["segmentRangeStart"] = rangeStartVal
+                    if rangeEndVal <> invalid then headerRecord["segmentRangeEnd"] = rangeEndVal
+                    if contentLengthVal <> invalid and contentLengthVal > 0
+                        partEntry["segmentContentLength"] = contentLengthVal
+                        headerRecord["segmentContentLength"] = contentLengthVal
+                    end if
+                    if headerIdVal <> invalid
+                        headerKey = sabr_ump_toSafeString(headerIdVal)
+                        if headerKey <> ""
+                            headerIndex[headerKey] = headerRecord
+                        end if
+                        currentHeaderId = headerIdVal
+                    else
+                        currentHeaderId = invalid
+                    end if
+                else
+                    currentHeaderId = invalid
+                end if
+            else
+                currentHeaderId = invalid
+            end if
+        else if partType = UMP_PART_ID_MEDIA or partType = UMP_PART_ID_MEDIA_END
+            headerIdVal = invalid
+            if partSize > 0
+                peekLength = maxHeaderBytes
+                if partType = UMP_PART_ID_MEDIA_END and peekLength > 1 then peekLength = 1
+                if peekLength > partSize then peekLength = partSize
+                if peekLength > 0
+                    peekBytes = CreateObject("roByteArray")
+                    if peekBytes.ReadFile(path, partEntry.payloadOffset, peekLength) = true
+                        result.reads = result.reads + 1
+                        actualBytesRead = actualBytesRead + peekLength
+                        if partType = UMP_PART_ID_MEDIA
+                            headerVar = sabr_ump_readVarint(peekBytes, 0)
+                            if headerVar.complete = true
+                                headerIdVal = sabr_ump_toInt(headerVar.value)
+                            end if
+                        else if partType = UMP_PART_ID_MEDIA_END
+                            if peekBytes.count() > 0
+                                headerIdVal = peekBytes[0]
+                            else
+                                headerIdVal = invalid
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+
+            if headerIdVal <> invalid
+                partEntry["headerId"] = headerIdVal
+                headerKey = sabr_ump_toSafeString(headerIdVal)
+                headerRecord = invalid
+                if headerKey <> "" and headerIndex.DoesExist(headerKey)
+                    headerRecord = headerIndex.Lookup(headerKey)
+                else if currentHeaderId <> invalid and headerIdVal = currentHeaderId
+                    currentKey = sabr_ump_toSafeString(currentHeaderId)
+                    if currentKey <> "" and headerIndex.DoesExist(currentKey)
+                        headerRecord = headerIndex.Lookup(currentKey)
+                    end if
+                end if
+                if IsAssociativeArray(headerRecord)
+                    if headerRecord.DoesExist("itag") then partEntry["itag"] = headerRecord.itag
+                    if headerRecord.DoesExist("segmentIsInit") and headerRecord.segmentIsInit = true
+                        partEntry["segmentIsInit"] = true
+                    end if
+                    if headerRecord.DoesExist("mediaHeader") then partEntry["mediaHeader"] = headerRecord.mediaHeader
+                    if headerRecord.DoesExist("segmentRangeStart")
+                        partEntry["segmentRangeStart"] = headerRecord.segmentRangeStart
+                    end if
+                    if headerRecord.DoesExist("segmentRangeEnd")
+                        partEntry["segmentRangeEnd"] = headerRecord.segmentRangeEnd
+                    end if
+                    if headerRecord.DoesExist("segmentContentLength")
+                        partEntry["segmentContentLength"] = headerRecord.segmentContentLength
+                    end if
+                end if
+            end if
+
+            if partType = UMP_PART_ID_MEDIA_END
+                currentHeaderId = invalid
+            end if
+        end if
+
+        parts.push(partEntry)
+
+        if IsAssociativeArray(partEntry)
+            partTypeVal = sabr_ump_toInt(partEntry?.type)
+            headerIdForPart = sabr_ump_toInt(partEntry?.headerId)
+            if headerIdForPart <> invalid and (partTypeVal = UMP_PART_ID_MEDIA_HEADER or partTypeVal = UMP_PART_ID_MEDIA)
+                headerKeyLabel = sabr_ump_toSafeString(headerIdForPart)
+                existingSegmentKey = invalid
+                if headerKeyLabel <> "" and headerToSegmentKey.DoesExist(headerKeyLabel)
+                    existingSegmentKey = headerToSegmentKey.Lookup(headerKeyLabel)
+                end if
+
+                if partTypeVal = UMP_PART_ID_MEDIA_HEADER or existingSegmentKey = invalid
+                    startRangeVal = sabr_ump_toInt(partEntry?.segmentRangeStart)
+                    mediaHeader = partEntry?.mediaHeader
+                    if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                        startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+                        if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+                    end if
+
+                    endRangeVal = sabr_ump_toInt(partEntry?.segmentRangeEnd)
+                    if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                        contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+                        if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+                            endRangeVal = startRangeVal + contentLengthVal - 1
+                        end if
+                    end if
+
+                    suffixLabel = suffixBase
+                    if suffixLabel = "" then suffixLabel = sabr_ump_toSafeString(partEntry?.itag)
+                    if suffixLabel <> ""
+                        suffixLastChar = Mid(suffixLabel, Len(suffixLabel), 1)
+                        if suffixLastChar <> ":"
+                            suffixLabel = `${suffixLabel}:`
+                        end if
+                    end if
+
+                    startLabel = sabr_ump_toSafeString(startRangeVal)
+                    if startLabel = "" then startLabel = "0"
+                    segmentKey = suffixLabel <> "" ? `${startLabel}:${suffixLabel}` : `${startLabel}:`
+
+                    segmentRecord = invalid
+                    if segmentKey <> "" and segmentIndex.DoesExist(segmentKey)
+                        segmentRecord = segmentIndex.Lookup(segmentKey)
+                    end if
+                    if segmentRecord = invalid
+                        segmentRecord = {
+                            "path": path
+                            "headerId": headerIdForPart
+                            "startRange": startRangeVal
+                            "endRange": endRangeVal
+                            "isInitSeg": (partEntry?.segmentIsInit = true)
+                            "chunks": []
+                        }
+                        segmentRecord["mediaHeader"] = mediaHeader
+                        segmentRecord["itag"] = sabr_ump_toInt(partEntry?.itag)
+                        segmentRecord["totalBytes"] = 0
+                    else
+                        if segmentRecord.startRange = invalid then segmentRecord.startRange = startRangeVal
+                        if segmentRecord.endRange = invalid then segmentRecord.endRange = endRangeVal
+                        if segmentRecord.mediaHeader = invalid and IsAssociativeArray(mediaHeader)
+                            segmentRecord.mediaHeader = mediaHeader
+                        end if
+                        if partEntry?.segmentIsInit = true then segmentRecord.isInitSeg = true
+                        if segmentRecord.DoesExist("itag") = false or segmentRecord.itag = invalid
+                            segmentRecord["itag"] = sabr_ump_toInt(partEntry?.itag)
+                        end if
+                    end if
+
+                    if segmentKey <> ""
+                        segmentIndex[segmentKey] = segmentRecord
+                        if headerKeyLabel <> ""
+                            headerToSegmentKey[headerKeyLabel] = segmentKey
+                        end if
+                        existingSegmentKey = segmentKey
+                    end if
+                end if
+
+                if partTypeVal = UMP_PART_ID_MEDIA and existingSegmentKey <> invalid and existingSegmentKey <> ""
+                    if segmentIndex.DoesExist(existingSegmentKey)
+                        segmentRecord = segmentIndex.Lookup(existingSegmentKey)
+                        chunks = segmentRecord?.chunks
+                        if not IsArray(chunks) then chunks = []
+
+                        payloadOffsetVal = sabr_ump_toInt(partEntry?.payloadOffset)
+                        payloadSizeVal = sabr_ump_toInt(partEntry?.payloadSize)
+                        if payloadOffsetVal <> invalid and payloadSizeVal <> invalid and payloadSizeVal > 1
+                            chunk = {
+                                "offset": payloadOffsetVal + 1
+                                "length": payloadSizeVal - 1
+                            }
+                            if chunk.length > 0
+                                chunks.push(chunk)
+                                segmentRecord["chunks"] = chunks
+                                totalBytesVal = sabr_ump_toInt(segmentRecord?.totalBytes)
+                                if totalBytesVal = invalid then totalBytesVal = 0
+                                segmentRecord["totalBytes"] = totalBytesVal + chunk.length
+                                segmentIndex[existingSegmentKey] = segmentRecord
+                            end if
+                        end if
+                    end if
+                end if
+            end if
+        end if
+
+        nextOffset = offset + headerLength + partSize
+        if nextOffset <= offset
+            result["error"] = "non_progress"
+            result["errorOffset"] = offset
+            exit while
+        end if
+        offset = nextOffset
+    end while
+
+    if IsAssociativeArray(segmentIndex)
+        for each segmentKey in segmentIndex
+            entry = segmentIndex.Lookup(segmentKey)
+            if entry?.isInitSeg = true
+                sidxUpdate = sabr_ump_extractSidxFromSpool(path, entry)
+                if IsAssociativeArray(sidxUpdate)
+                    entry["sidxIndex"] = sidxUpdate
+                    segmentIndex[segmentKey] = entry
+                end if
+            end if
+        end for
     end if
-end sub
 
-function sabr_ump_formatKeyFromHeader(mediaHeader as object) as string
-    if not isValid(mediaHeader) then return ""
-
-    itagPart = sabr_ump_valueToLabel(mediaHeader?.itag)
-    xtagsPart = sabr_ump_valueToLabel(mediaHeader?.xtags)
-
-    formatId = mediaHeader?.formatId
-    if itagPart = "" and IsAssociativeArray(formatId)
-        itagPart = sabr_ump_valueToLabel(formatId?.itag)
+    result["parts"] = parts
+    result["segmentIndex"] = segmentIndex
+    result["segmentMap"] = sabr_ump_buildSpoolSegmentMap(parts, keyParam, path)
+    result["totalBytes"] = totalSize
+    result["actualBytesRead"] = actualBytesRead
+    result["partCount"] = parts.count()
+    containsInit = false
+    for each partSummary in parts
+        if IsAssociativeArray(partSummary)
+            if partSummary.DoesExist("segmentIsInit") and partSummary.segmentIsInit = true
+                containsInit = true
+                exit for
+            end if
+        end if
+    end for
+    if containsInit then result["containsInit"] = true
+    if timer <> invalid
+        result["durationMs"] = Int(timer.TotalMilliseconds())
     end if
-    if xtagsPart = "" and IsAssociativeArray(formatId)
-        xtagsPart = sabr_ump_valueToLabel(formatId?.xtags)
+    if not result.DoesExist("error") and offset >= totalSize
+        result["complete"] = true
     end if
-
-    return `${itagPart}:${xtagsPart}`
+    result["bytesScanned"] = offset
+    return result
 end function
 
-function sabr_ump_formatKeyFromFormat(format as object) as string
-    if not isValid(format) then return ""
-    itagPart = sabr_ump_valueToLabel(format?.itag)
-    xtagPart = sabr_ump_valueToLabel(format?.xtags)
-    return `${itagPart}:${xtagPart}`
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSpoolSegmentMap
+' Purpose  : Groups raw UMP parts into higher-level segment records (media,
+'            init, control metadata) to support direct streaming from spool files.
+'------------------------------------------------------------------------------
+function sabr_ump_buildSpoolSegmentMap(partArray as object, keyParam as string, path as string) as object
+    segmentMap = {}
+    if not IsArray(partArray) then return segmentMap
+
+    suffixBase = sabr_ump_toSafeString(keyParam)
+
+    for each part in partArray
+        if not IsAssociativeArray(part) then continue for
+        ' if part.type = UMP_PART_ID_MEDIA_HEADER then headerOffsetBytes = sabr_ump_toInt(part?.headerBytes)
+        if part?.type <> UMP_PART_ID_MEDIA then continue for
+
+        payloadOffset = sabr_ump_toInt(part?.payloadOffset) + part.headerBytes - 1
+        payloadSize = sabr_ump_toInt(part?.payloadSize)
+        if payloadOffset = invalid or payloadSize = invalid or payloadSize <= 0 then continue for
+
+        mediaHeader = part?.mediaHeader
+        rangeStart = sabr_ump_toInt(part?.segmentRangeStart)
+        if rangeStart = invalid and IsAssociativeArray(mediaHeader)
+            rangeStart = sabr_ump_toInt(mediaHeader?.startRange)
+            if rangeStart = invalid then rangeStart = sabr_ump_toInt(mediaHeader?.start)
+        end if
+        if rangeStart = invalid then continue for
+
+        rangeEnd = sabr_ump_toInt(part?.segmentRangeEnd)
+        if rangeEnd = invalid and IsAssociativeArray(mediaHeader)
+            contentLength = sabr_ump_toInt(mediaHeader?.contentLength)
+            if contentLength <> invalid and contentLength > 0
+                rangeEnd = rangeStart + contentLength - 1
+            end if
+        end if
+
+        itagVal = sabr_ump_toSafeString(part?.itag)
+        if itagVal = "" and IsAssociativeArray(mediaHeader)
+            itagVal = sabr_ump_toSafeString(mediaHeader?.itag)
+        end if
+
+        suffixLabel = suffixBase
+        if suffixLabel = "" then suffixLabel = itagVal
+        if suffixLabel <> "" and Right(suffixLabel, 1) <> ":"
+            suffixLabel = `${suffixLabel}:`
+        end if
+
+        startLabel = sabr_ump_toSafeString(rangeStart)
+        if startLabel = "" then startLabel = "0"
+        key = suffixLabel <> "" ? `${startLabel}:${suffixLabel}` : `${startLabel}:`
+
+        entry = {
+            "payloadOffset": payloadOffset
+            "payloadSize": payloadSize
+            "payloadEnd": sabr_ump_toInt(part?.payloadEnd)
+            "headerId": sabr_ump_toInt(part?.headerId)
+            "itag": sabr_ump_toInt(part?.itag)
+            "startRange": rangeStart
+            "endRange": rangeEnd
+            "isInitSeg": (part?.segmentIsInit = true)
+            "path": path
+        }
+        if entry.payloadEnd = invalid
+            entry.payloadEnd = payloadOffset + payloadSize - 1
+        end if
+        if IsAssociativeArray(mediaHeader)
+            entry["mediaHeader"] = mediaHeader
+        end if
+
+        segmentMap[key] = entry
+    end for
+
+    return segmentMap
 end function
 
-' Parses MP4 SIDX boxes from an init segment and returns structured entries
-' that can seed player-time predictions or metadata maps.
-' Parses MP4 SIDX boxes from an init segment and returns structured entries
-' that can seed player-time predictions or metadata maps.
-function sabr_ump_buildSidxIndexUpdate(ctx as object, mediaHeader as object, segmentData as object) as dynamic
-    if not isValid(mediaHeader) then return invalid
-    if not isValid(segmentData) then return invalid
+' Reads bytes for a specific part payload from the spool file.
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readSpoolPayload
+' Purpose  : Reads a chunk of bytes from the SABR spool file while guarding
+'            against invalid offsets or lengths.
+'------------------------------------------------------------------------------
+function sabr_ump_readSpoolPayload(path as string, offset as dynamic, length as dynamic) as dynamic
+    safeOffset = sabr_ump_toInt(offset)
+    if safeOffset = invalid or safeOffset < 0 then return invalid
+    safeLength = sabr_ump_toInt(length)
+    if safeLength = invalid or safeLength <= 0 then return invalid
+    if not IsString(path) or path = "" then return invalid
+    bytes = CreateObject("roByteArray")
+    if bytes.ReadFile(path, safeOffset, safeLength) <> true then return invalid
+    return bytes
+end function
 
-    sidxInfo = sabr_mp4_extractSidxIndex(segmentData)
-    if not IsAssociativeArray(sidxInfo) then return invalid
+function sabr_ump_materializeInitSegment(entry as object, spoolPath as string, mediaIdHash as string, contentType as string, keyParam as string) as string
+    if not IsAssociativeArray(entry) then return ""
+    if entry?.isInitSeg <> true then return ""
+    if not IsString(spoolPath) or spoolPath = "" then return ""
+    if not IsString(mediaIdHash) or mediaIdHash = "" then return ""
 
-    references = sidxInfo?.references
-    if not IsArray(references) or references.count() = 0 then return invalid
+    payloadOffset = sabr_ump_toInt(entry?.payloadOffset)
+    payloadSize = sabr_ump_toInt(entry?.payloadSize)
+    if payloadOffset = invalid or payloadSize = invalid or payloadSize <= 0 then return ""
 
-    timescale = sabr_ump_toInt(sidxInfo?.timescale)
-    formatKey = sabr_ump_formatKeyFromHeader(mediaHeader)
-    if formatKey = "" and isValid(ctx?.requestMetadata?.format)
-        formatKey = sabr_ump_formatKeyFromFormat(ctx.requestMetadata.format)
+    typeLabel = contentType
+    if not IsString(typeLabel) or typeLabel = "" then typeLabel = "unknown"
+
+    keyLabel = sabr_ump_toSafeString(keyParam)
+    if keyLabel = "" then keyLabel = "nokey"
+
+    itagLabel = sabr_ump_toSafeString(entry?.itag)
+    if itagLabel = "" then itagLabel = "noitag"
+
+    startRangeVal = sabr_ump_toInt(entry?.startRange)
+    endRangeVal = sabr_ump_toInt(entry?.endRange)
+    mediaHeader = entry?.mediaHeader
+    if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+        startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+        if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+    end if
+    if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+        contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+        if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+            endRangeVal = startRangeVal + contentLengthVal - 1
+        end if
     end if
 
-    if formatKey = "" then return invalid
+    startLabelValue = startRangeVal <> invalid ? `${startRangeVal}` : "start"
+    endLabelValue = endRangeVal <> invalid ? `${endRangeVal}` : "end"
+    startLabel = sabr_ump_sanitizeForFilename(startLabelValue)
+    endLabel = sabr_ump_sanitizeForFilename(endLabelValue)
+    keyLabel = sabr_ump_sanitizeForFilename(keyLabel)
+    itagLabel = sabr_ump_sanitizeForFilename(itagLabel)
+
+    baseDir = `tmp:/${mediaIdHash}`
+    fs = CreateObject("roFileSystem")
+    fs.CreateDirectory(baseDir)
+    fileName = sabr_ump_sanitizeForFilename(`init-${typeLabel}-${keyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
+    if fileName = "" then fileName = "init.bin"
+    targetPath = `${baseDir}/${fileName}`
+
+    if fs.Exists(targetPath) then return targetPath
+
+    payloadBytes = sabr_ump_readSpoolPayload(spoolPath, payloadOffset, payloadSize)
+    if GetInterface(payloadBytes, "ifByteArray") = invalid or payloadBytes.count() = 0 then return ""
+
+    if payloadBytes.WriteFile(targetPath) <> true then return ""
+
+    return targetPath
+end function
+
+' Pulls non-media UMP parts (policies, errors, redirects, etc.) out of the spool.
+'------------------------------------------------------------------------------
+' Function : sabr_ump_extractControlParts
+' Purpose  : Collects non-media UMP parts (policies, context updates, errors)
+'            so the streaming adapter can update its state machine quickly.
+'------------------------------------------------------------------------------
+function sabr_ump_extractControlParts(spoolMap as object, path as string, mediaIdHash = "" as string, contentType = "" as string, keyParam = "" as string) as object
+    results = {}
+    if not IsAssociativeArray(spoolMap) then return results
+
+    if IsString(mediaIdHash) and mediaIdHash <> "" and IsString(path) and path <> ""
+        segmentIndex = spoolMap?.segmentIndex
+        if IsAssociativeArray(segmentIndex)
+            safeKeyLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(keyParam))
+            if safeKeyLabel = "" then safeKeyLabel = "nokey"
+            safeTypeLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(contentType))
+            if safeTypeLabel = "" then safeTypeLabel = "unknown"
+            baseDir = `tmp:/${mediaIdHash}`
+            fs = CreateObject("roFileSystem")
+            if fs <> invalid
+                fs.CreateDirectory(baseDir)
+                keys = segmentIndex.Keys()
+                if IsArray(keys)
+                    for each segmentKey in keys
+                        segEntry = segmentIndex.Lookup(segmentKey)
+                        if not IsAssociativeArray(segEntry) then continue for
+                        if segEntry?.isInitSeg <> true then continue for
+                        startRangeVal = sabr_ump_toInt(segEntry?.startRange)
+                        endRangeVal = sabr_ump_toInt(segEntry?.endRange)
+                        mediaHeader = segEntry?.mediaHeader
+                        if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+                            if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+                        end if
+                        if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+                            if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+                                endRangeVal = startRangeVal + contentLengthVal - 1
+                            end if
+                        end if
+
+                        startLabel = startRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${startRangeVal}`) : "start"
+                        endLabel = endRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${endRangeVal}`) : "end"
+                        itagLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(segEntry?.itag))
+                        if itagLabel = "" then itagLabel = "noitag"
+
+                        fileName = sabr_ump_sanitizeForFilename(`init-${safeTypeLabel}-${safeKeyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
+                        if fileName = "" then fileName = "init.bin"
+                        targetPath = `${baseDir}/${fileName}`
+                        if fs.Exists(targetPath) <> true
+                            chunkData = sabr_ump_readChunksFromSpool(path, segEntry?.chunks, sabr_ump_toInt(segEntry?.totalBytes))
+                            if GetInterface(chunkData, "ifByteArray") = invalid or chunkData.count() <= 0 then continue for
+                            if chunkData.WriteFile(targetPath) <> true then continue for
+                        end if
+                        segEntry["initPath"] = targetPath
+                        segmentIndex[segmentKey] = segEntry
+                        results["initSegmentPath"] = targetPath
+                    end for
+                end if
+            end if
+        end if
+    end if
+
+    parts = spoolMap?.parts
+    if not IsArray(parts) or parts.count() = 0 then return results
+
+    for each part in parts
+        partType = sabr_ump_toInt(part?.type)
+        if partType = invalid then partType = sabr_ump_toInt(part?.typeId)
+        if partType = UMP_PART_ID_NEXT_REQUEST_POLICY or partType = UMP_PART_ID_SABR_CONTEXT_UPDATE or partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY or partType = UMP_PART_ID_SABR_REDIRECT or partType = UMP_PART_ID_SABR_ERROR or partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+            payload = sabr_ump_readSpoolPayload(path, part?.payloadOffset, part?.payloadSize)
+            if GetInterface(payload, "ifByteArray") = invalid or payload.count() = 0 then continue for
+            if partType = UMP_PART_ID_NEXT_REQUEST_POLICY
+                decoded = sabr_ump_decodePart(NextRequestPolicyDecode, payload, invalid, "spool_next_request_policy")
+                if isValid(decoded)
+                    results["nextRequestPolicy"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE
+                decoded = sabr_ump_decodePart(SabrContextUpdateDecode, payload, invalid, "spool_context_update")
+                if isValid(decoded)
+                    results["sabrContextUpdate"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY
+                decoded = sabr_ump_decodePart(SabrContextSendingPolicyDecode, payload, invalid, "spool_context_sending_policy")
+                if isValid(decoded)
+                    results["sabrContextSendingPolicy"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_REDIRECT
+                decoded = sabr_ump_decodePart(SabrRedirectDecode, payload, invalid, "spool_redirect")
+                if isValid(decoded)
+                    results["redirect"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_ERROR
+                decoded = sabr_ump_decodePart(SabrErrorDecode, payload, invalid, "spool_sabr_error")
+                if isValid(decoded)
+                    results["sabrError"] = decoded
+                end if
+            else if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+                decoded = sabr_ump_decodePart(ReloadPlaybackContextDecode, payload, invalid, "spool_reload_playback_response")
+                if isValid(decoded)
+                    results["reloadPlaybackContext"] = decoded
+                end if
+            end if
+        end if
+    end for
+
+    return results
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_extractSidxFromSpool
+' Purpose  : Parses the SIDX box from an init segment within the spool to
+'            build seekable timing metadata for subsequent requests.
+'------------------------------------------------------------------------------
+function sabr_ump_extractSidxFromSpool(path as string, segmentEntry as object) as dynamic
+    if not IsAssociativeArray(segmentEntry) then return invalid
+    if segmentEntry?.isInitSeg <> true then return invalid
+    if not IsString(path) or path = "" then return invalid
+
+    mediaHeader = segmentEntry?.mediaHeader
+    if not IsAssociativeArray(mediaHeader) then return invalid
+
+    chunks = segmentEntry?.chunks
+    if not IsArray(chunks) or chunks.count() = 0 then return invalid
+
+    segmentBytes = sabr_ump_readChunksFromSpool(path, chunks, sabr_ump_toInt(segmentEntry?.totalBytes))
+    if GetInterface(segmentBytes, "ifByteArray") = invalid or segmentBytes.count() <= 0 then return invalid
+
+    return sabr_ump_buildSidxIndexUpdate(invalid, mediaHeader, segmentBytes)
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_readChunksFromSpool
+' Purpose  : Materializes chunk byte ranges into memory or the aggregation
+'            structure so streaming can read contiguous data efficiently.
+'------------------------------------------------------------------------------
+function sabr_ump_readChunksFromSpool(path as string, chunks as object, declaredTotal = invalid as dynamic) as object
+    if not IsArray(chunks) or chunks.count() = 0 then return invalid
+
+    sortedChunks = []
+    for each entry in chunks
+        if not IsAssociativeArray(entry) then continue for
+        offsetVal = sabr_ump_toInt(entry?.offset)
+        lengthVal = sabr_ump_toInt(entry?.length)
+        if offsetVal = invalid or lengthVal = invalid or lengthVal <= 0 then continue for
+        sortedChunks.push({
+            "offset": offsetVal
+            "length": lengthVal
+        })
+    end for
+
+    totalChunks = sortedChunks.count()
+    if totalChunks = 0 then return invalid
+
+    ' simple insertion sort by offset
+    for i = 0 to totalChunks - 2
+        minIndex = i
+        for j = i + 1 to totalChunks - 1
+            if sortedChunks[j].offset < sortedChunks[minIndex].offset then minIndex = j
+        end for
+        if minIndex <> i
+            temp = sortedChunks[i]
+            sortedChunks[i] = sortedChunks[minIndex]
+            sortedChunks[minIndex] = temp
+        end if
+    end for
+
+    totalBytes = sabr_ump_toInt(declaredTotal)
+    if totalBytes = invalid or totalBytes <= 0
+        totalBytes = 0
+        for each chunkInfo in sortedChunks
+            totalBytes = totalBytes + chunkInfo.length
+        end for
+    end if
+    if totalBytes <= 0 then return invalid
+
+    aggregate = CreateObject("roByteArray")
+    aggregate[totalBytes - 1] = 0
+    destIndex = 0
+
+    for each chunkInfo in sortedChunks
+        chunkBytes = CreateObject("roByteArray")
+        if chunkBytes.ReadFile(path, chunkInfo.offset, chunkInfo.length) <> true then return invalid
+        chunkLen = chunkBytes.count()
+        if chunkLen <= 0 then return invalid
+        for idx = 0 to chunkLen - 1
+            aggregate[destIndex] = chunkBytes[idx]
+            destIndex = destIndex + 1
+        end for
+    end for
+
+    if destIndex < totalBytes
+        ' trim unused tail
+        trimmed = CreateObject("roByteArray")
+        if destIndex > 0
+            trimmed[destIndex - 1] = 0
+            for k = 0 to destIndex - 1
+                trimmed[k] = aggregate[k]
+            end for
+        end if
+        return trimmed
+    end if
+
+    return aggregate
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_partTypeLabel
+' Purpose  : Provides a human-readable label for UMP part IDs to improve logs
+'            and debugging output.
+'------------------------------------------------------------------------------
+function sabr_ump_partTypeLabel(partType as integer) as string
+    if partType = UMP_PART_ID_MEDIA_HEADER then return "MEDIA_HEADER"
+    if partType = UMP_PART_ID_MEDIA then return "MEDIA"
+    if partType = UMP_PART_ID_MEDIA_END then return "MEDIA_END"
+    if partType = UMP_PART_ID_NEXT_REQUEST_POLICY then return "NEXT_REQUEST_POLICY"
+    if partType = UMP_PART_ID_FORMAT_INIT_METADATA then return "FORMAT_INIT_METADATA"
+    if partType = UMP_PART_ID_SABR_REDIRECT then return "SABR_REDIRECT"
+    if partType = UMP_PART_ID_SABR_ERROR then return "SABR_ERROR"
+    if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE then return "RELOAD_PLAYBACK_CONTEXT"
+    if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE then return "SABR_CONTEXT_UPDATE"
+    if partType = UMP_PART_ID_STREAM_PROTECTION_STATUS then return "STREAM_PROTECTION_STATUS"
+    if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY then return "SABR_CONTEXT_SENDING_POLICY"
+    if partType = UMP_PART_ID_SNACKBAR_MESSAGE then return "SNACKBAR_MESSAGE"
+    return `${partType}`
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_decodePart
+' Purpose  : Helper that safely decodes a payload subsection using a provided
+'            protobuf decoder, logging failures and falling back to defaults.
+'------------------------------------------------------------------------------
+function sabr_ump_decodePart(decodeFunc as dynamic, payload as dynamic, defaultValue = invalid as dynamic, label = "" as string) as dynamic
+    if decodeFunc = invalid then return defaultValue
+    if not isValid(payload) then return defaultValue
+
+    encoded = invalid
+    if GetInterface(payload, "ifByteArray") <> invalid
+        encoded = payload.ToBase64String()
+    else if IsString(payload)
+        encoded = payload
+    end if
+    if not IsString(encoded) or encoded = "" then return defaultValue
+
+    result = defaultValue
+    success = true
+    try
+        result = decodeFunc(encoded)
+    catch e
+        success = false
+    end try
+    if success then return result
+    return defaultValue
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_buildSidxIndexUpdate
+' Purpose  : Creates the normalized structure stored in playback context when
+'            new SIDX information is discovered in a spool payload.
+'------------------------------------------------------------------------------
+function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as object, segmentBytes as object) as dynamic
+    if GetInterface(segmentBytes, "ifByteArray") = invalid or segmentBytes.count() <= 0 then return invalid
+
+    indexInfo = sabr_mp4_extractSidxIndex(segmentBytes)
+    if not IsAssociativeArray(indexInfo) then return invalid
+
+    timescale = sabr_toInt(indexInfo?.timescale)
+    if timescale = invalid or timescale <= 0 then timescale = 1
+
+    entries = []
+    accumulated = 0
+    references = indexInfo?.references
+    if IsArray(references)
+        for each reference in references
+            if not IsAssociativeArray(reference) then continue for
+            duration = sabr_toInt(reference?.subsegmentDuration)
+            if duration = invalid or duration < 0 then duration = 0
+            startMs = int((accumulated * 1000.0) / timescale)
+            durationMs = int((duration * 1000.0) / timescale)
+            rangeStart = sabr_toInt(reference?.rangeStart)
+            if rangeStart = invalid then rangeStart = int(reference?.rangeStart)
+            rangeEnd = sabr_toInt(reference?.rangeEnd)
+            if rangeEnd = invalid then rangeEnd = int(reference?.rangeEnd)
+            entries.push({
+                "rangeStart": rangeStart
+                "rangeEnd": rangeEnd
+                "startTimeMs": startMs
+                "durationMs": durationMs
+                "referenceType": sabr_toInt(reference?.referenceType)
+            })
+            accumulated = accumulated + duration
+        end for
+    end if
+
+    formatKey = ""
+    formatInfo = mediaHeader?.formatId
+    if not IsAssociativeArray(formatInfo)
+        formatInfo = mediaHeader?.format
+    end if
+    if IsAssociativeArray(formatInfo)
+        itagLabel = sabr_valueToLabel(formatInfo.Lookup("itag"))
+        xtagLabel = sabr_valueToLabel(formatInfo.Lookup("xtags"))
+        formatKey = `${itagLabel}:${xtagLabel}`
+    else
+        itagLabel = sabr_valueToLabel(mediaHeader?.itag)
+        xtagLabel = sabr_valueToLabel(mediaHeader?.xtags)
+        formatKey = `${itagLabel}:${xtagLabel}`
+    end if
+    if formatKey = ":" then formatKey = ""
+
+    contentType = `${mediaHeader?.contentType ?? ""}`
+    if contentType = "" and IsAssociativeArray(mediaHeader?.format)
+        contentType = `${mediaHeader.format?.contentType ?? ""}`
+    end if
 
     update = {
         "formatKey": formatKey
+        "entries": entries
         "timescale": timescale
-        "earliestPresentationTime": sidxInfo?.earliestPresentationTime
-        "baseRangeStart": sidxInfo?.baseRangeStart
-        "firstOffset": sidxInfo?.firstOffset
-        "entries": []
+        "earliestPresentationTime": indexInfo?.earliestPresentationTime
+        "contentType": contentType
     }
 
-    if timescale = invalid or timescale <= 0
-        update["unsupportedReason"] = "invalid_timescale"
-        return update
-    end if
-
-    hasHierarchical = false
-    currentPts = sabr_ump_toInt(sidxInfo?.earliestPresentationTime)
-    if currentPts = invalid then currentPts = 0
-    runningStartMs = 0
-
-    for each ref in references
-        if not IsAssociativeArray(ref) then continue for
-
-        refType = sabr_ump_toInt(ref?.referenceType)
-        if refType = invalid then refType = 0
-        if refType <> 0 then hasHierarchical = true
-
-        startByte = sabr_ump_valueToLabel(ref?.rangeStart)
-        endByte = sabr_ump_valueToLabel(ref?.rangeEnd)
-        subDuration = sabr_ump_toInt(ref?.subsegmentDuration)
-
-        entry = {
-            "rangeStart": startByte
-            "rangeEnd": endByte
-            "referenceType": refType
-            "subsegmentDuration": subDuration
-        }
-
-        if refType = 0
-            durationMs = 0
-            if subDuration <> invalid and subDuration > 0
-                durationMs = int((subDuration * 1000) / timescale)
-            end if
-            entry["startTimeMs"] = runningStartMs
-            entry["durationMs"] = durationMs
-            if subDuration <> invalid and subDuration > 0
-                currentPts = currentPts + subDuration
-                runningStartMs = runningStartMs + durationMs
-            end if
-        end if
-
-        update.entries.push(entry)
-    end for
-
-    if hasHierarchical
-        update["unsupportedReason"] = "hierarchical_index"
-    end if
-
-    if isValid(ctx?.requestMetadata?.contentType)
-        update["contentType"] = ctx.requestMetadata.contentType
+    if entries.count() = 0
+        update["unsupportedReason"] = "empty_sidx"
     end if
 
     return update
-end function
-
-function sabr_ump_formatInitializationKey(mediaHeader as dynamic) as string
-    if not isValid(mediaHeader) then return ""
-    parts = []
-    if isValid(mediaHeader.itag) then parts.push(`${mediaHeader.itag}`)
-    if isValid(mediaHeader.xtags) then parts.push(`${mediaHeader.xtags}`)
-
-    if parts.count() = 0
-        formatId = mediaHeader?.formatId
-        if isValid(formatId)
-            if isValid(formatId.itag) then parts.push(`${formatId.itag}`)
-            if isValid(formatId.xtags) then parts.push(`${formatId.xtags}`)
-        end if
-    end if
-
-    return parts.join(":")
-end function
-
-function sabr_ump_buildCacheKey(ctx as object, mediaHeader as object, rangeStart = invalid, rangeEnd = invalid, isInitSegment = false) as string
-    request = ctx?.requestMetadata
-    format = request?.format
-
-    mediaId = sabr_ump_toSafeString(request?.mediaIdHash)
-    contentType = sabr_ump_toSafeString(request?.contentType)
-    itagLabel = sabr_ump_toSafeString(mediaHeader?.itag)
-    if itagLabel = "" then itagLabel = sabr_ump_toSafeString(format?.itag)
-
-    xtagLabel = sabr_ump_toSafeString(mediaHeader?.xtags)
-    if xtagLabel = "" then xtagLabel = sabr_ump_toSafeString(format?.xtags)
-
-    trackId = sabr_ump_toSafeString(format?.audioTrackId)
-
-    keyParts = []
-    if mediaId <> "" then keyParts.push(mediaId)
-    if contentType <> "" then keyParts.push(contentType)
-    if itagLabel <> "" then keyParts.push(itagLabel)
-    if xtagLabel <> "" then keyParts.push(xtagLabel)
-    if trackId <> "" then keyParts.push(trackId)
-
-    if isInitSegment = true
-        keyParts.push("init")
-    else
-        startLabel = sabr_ump_valueToLabel(rangeStart)
-        if startLabel = "" then startLabel = sabr_ump_valueToLabel(mediaHeader?.startRange)
-        if startLabel = "" then startLabel = sabr_ump_valueToLabel(request?.byteRange?.startRange)
-        if startLabel = "" then startLabel = sabr_ump_valueToLabel(request?.byteRange?.start)
-        if startLabel = "" then startLabel = "0"
-
-        endLabel = sabr_ump_valueToLabel(rangeEnd)
-        if endLabel = "" then endLabel = sabr_ump_valueToLabel(mediaHeader?.endRange)
-        if endLabel = "" then endLabel = sabr_ump_valueToLabel(request?.byteRange?.endRange)
-        if endLabel = "" then endLabel = sabr_ump_valueToLabel(request?.byteRange?.end)
-
-        if startLabel <> "" and endLabel <> ""
-            keyParts.push(`${startLabel}-${endLabel}`)
-        else if startLabel <> ""
-            keyParts.push(startLabel)
-        else
-            keyParts.push("segment")
-        end if
-    end if
-
-    return sabr_ump_joinWithPipe(keyParts)
-end function
-
-function sabr_ump_loadSegmentFromChunks(ctx as object, segment as object) as object
-    tempPath = sabr_ump_toSafeString(segment?.tempFilePath)
-    if tempPath <> ""
-        data = CreateObject("roByteArray")
-        if data.ReadFile(tempPath) = true
-            return data
-        end if
-    end if
-    chunkFiles = segment?.chunkFiles
-    totalBytes = sabr_ump_toInt(segment?.bytesWritten)
-    if totalBytes = invalid then totalBytes = 0
-    return sabr_ump_concatenateChunks(ctx, chunkFiles, totalBytes)
 end function

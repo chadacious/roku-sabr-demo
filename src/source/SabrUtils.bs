@@ -1,5 +1,14 @@
 ' Shared utility helpers used across SABR modules.
 
+' Returns mediaIdHash (string) or invalid if not found
+function sabr_extractMediaIdHash(url as string) as dynamic
+    ' /sabr/<anything-not-a-slash>(optional slash)
+    re = CreateObject("roRegex", "/sabr/([^/]+)/?", "i")
+    m = re.Match(url)
+    if m.Count() >= 2 then return m[1]
+    return invalid
+end function
+
 function sabr_toInt(value as dynamic) as dynamic
     if not isValid(value) then return invalid
     if IsInteger(value) then return value
@@ -22,6 +31,15 @@ function sabr_toSafeString(value as dynamic) as string
     if not isValid(value) then return ""
     if IsString(value) then return value.trim()
     if IsBoolean(value) then return value = true ? "true" : "false"
+    if IsInteger(value) then return value.toStr()
+    if IsFloat(value) or IsDouble(value)
+        precise = FormatJson(value)
+        if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0 then return precise
+        intVal = int(value)
+        if Abs(value - intVal) < 0.000001 then return intVal.toStr()
+        ' fallback to manual formatting without scientific notation
+        return Str(value).trim()
+    end if
     return Str(value).trim()
 end function
 
@@ -29,6 +47,37 @@ function sabr_currentTimestampMs() as integer
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0
     return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
+end function
+
+function sabr_formatExceptionDetail(err as dynamic) as string
+    if not isValid(err) then return ""
+    if IsString(err) then return err
+    if IsAssociativeArray(err)
+        serializable = {}
+        for each key in err
+            serializable[key] = err[key]
+        end for
+        detail = invalid
+        try
+            detail = FormatJson(serializable)
+        catch jsonErr
+            detail = invalid
+        end try
+        if isValid(detail) and detail <> ""
+            return detail
+        end if
+        return Str(err).trim()
+    end if
+    detail = invalid
+    try
+        detail = FormatJson(err)
+    catch jsonErr
+        detail = invalid
+    end try
+    if isValid(detail) and detail <> ""
+        return detail
+    end if
+    return Str(err).trim()
 end function
 
 function sabr_joinWithPipe(parts as object) as string
@@ -44,12 +93,34 @@ function sabr_joinWithPipe(parts as object) as string
     return result
 end function
 
+function sabr_isNumericLiteralString(text as string) as boolean
+    if not IsString(text) then return false
+    trimmed = text.trim()
+    if trimmed = "" then return false
+
+    hasDigit = false
+    total = Len(trimmed)
+    for i = 1 to total
+        ch = Mid(trimmed, i, 1)
+        ascii = Asc(ch)
+        if ascii >= 48 and ascii <= 57
+            hasDigit = true
+        else if ascii = 43 or ascii = 45 or ascii = 46 or ascii = 69 or ascii = 101
+            ' allowed characters: + - . E e
+        else
+            return false
+        end if
+    end for
+
+    return hasDigit
+end function
+
 function sabr_valueToLabel(value as dynamic) as string
     if not isValid(value) then return ""
     if IsString(value)
         trimmed = value.trim()
         if trimmed = "" then return ""
-        if Instr(1, trimmed, "e") > 0 or Instr(1, trimmed, "E") > 0
+        if (Instr(1, trimmed, "e") > 0 or Instr(1, trimmed, "E") > 0) and sabr_isNumericLiteralString(trimmed)
             numeric = trimmed.toFloat()
             if numeric <> invalid
                 return sabr_valueToLabel(numeric)

@@ -11,20 +11,19 @@ function sabr_createRequestMetadataManager() as object
     }
 
     manager.store = function(self as object, requestNumber as string, metadata as object) as void
-        sabr_metadata_store(self, requestNumber, metadata)
+         sabr_metadata_store(self, requestNumber, metadata)
     end function
     manager.fetch = function(self as object, requestNumber as string, remove = false as boolean) as dynamic
-        return sabr_metadata_fetch(self, requestNumber, remove)
+         return sabr_metadata_fetch(self, requestNumber, remove)
     end function
     manager.cleanup = function(self as object) as void
-        sabr_metadata_cleanup(self)
+         sabr_metadata_cleanup(self)
     end function
 
     return manager
 end function
 
-sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as object)
-    if not isValid(requestNumber) or requestNumber = "" then return
+sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as object)    if not isValid(requestNumber) or requestNumber = "" then return
     if not isValid(metadata) then return
 
     ctx.entries[requestNumber] = {
@@ -54,8 +53,7 @@ function sabr_metadata_fetch(ctx as object, requestNumber as string, remove as b
     return entry.data
 end function
 
-sub sabr_metadata_cleanup(ctx as object)
-    now = sabr_metadata_timestamp()
+sub sabr_metadata_cleanup(ctx as object)    now = sabr_metadata_timestamp()
     for each key in ctx.entries.keys()
         entry = ctx.entries.Lookup(key)
         if isValid(entry) and now - entry.storedAt > ctx.entryMaxAgeMs

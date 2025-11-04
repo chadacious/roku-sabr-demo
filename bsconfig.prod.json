@@ -1,10 +1,10 @@
 {
-  "projectName": "roku-sabr-demo",
-  "rootDir": "src",
-  "stagingDir": "dist",
-  "retainStagingDir": true,
-  "createPackage": false,
-  "sourceMap": true,
+  "projectName": "roku-sabr-demo-prod",
+  "rootDir": "build/prod",
+  "stagingDir": "dist/prod",
+  "retainStagingDir": false,
+  "createPackage": true,
+  "sourceMap": false,
   "allowBrighterScriptInBrightScript": true,
   "autoImportComponentScript": true,
   "files": [

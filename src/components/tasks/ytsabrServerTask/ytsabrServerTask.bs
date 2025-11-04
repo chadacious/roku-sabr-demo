@@ -2,6 +2,7 @@ import "pkg:/source/logger.bs"
 import "pkg:/source/http.bs"
 import "pkg:/source/SabrStreamingAdapter.bs"
 import "pkg:/source/SabrDebug.bs"
+import "pkg:/source/SabrUtils.bs"
 
 sub init()
     m.logs = logger()
@@ -42,7 +43,6 @@ sub YtsabrServer()
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
-        ' if msgType <> "Invalid" then sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] got something ${msgType}`)
         if msgType = "roSocketEvent"
             try
                 if msg.getSocketID() = tcp.getID()
@@ -60,7 +60,18 @@ sub YtsabrServer()
                     ' If connection is invalid, what does that mean?
                     if isValid(connection)
                         ' FIXME: Do we actually correctly close sockets?
-                        if connection.isReadable() and connection.getCountRcvBuf() = 0 and connection.isListening() = false then
+                        safeCountRcv = invalid
+                        errOnCount = false
+                        if connection.isReadable()
+                            try
+                                safeCountRcv = connection.getCountRcvBuf()
+                            catch e
+                                errOnCount = true
+                                safeCountRcv = -1
+                            end try
+                        end if
+
+                        if connection.isReadable() and (safeCountRcv = 0 or errOnCount) and connection.isListening() = false then
                             ' Apparently this means the connection has been closed
                             ' What a terrible way to indicate it
                             sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Connection ${connection.getID()} is closed`)
@@ -70,9 +81,6 @@ sub YtsabrServer()
                             'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handle_tcp(connection, port)
                         end if
-                    ' else
-                    '     sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid connection: ${msg.getSocketID()}`)
-                        ' stop
                     end if
                 end if
             catch e
@@ -82,6 +90,38 @@ sub YtsabrServer()
         end if
     end while
 end sub
+
+function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
+    path = sabrResponse.path
+    chunks = sabrResponse?.chunks
+    totalBytes = sabr_toInt(sabrResponse?.totalBytes)
+    payloadStart = sabrResponse.payloadStart
+    payloadSize = sabrResponse.payloadSize
+    streamStatus = 0
+    responseHeaders = sabrResponse.headers
+    if not isValid(responseHeaders)
+        responseHeaders = CreateObject("roAssociativeArray")
+    end if
+    statusCode = sabrResponse.status
+    if not isValid(statusCode)
+        statusCode = 206
+    end if
+    if totalBytes = invalid
+        totalBytes = 0
+        for each chunk in chunks
+            chunkLen = sabr_toInt(chunk?.length)
+            if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
+        end for
+    end if
+    if totalBytes = invalid then totalBytes = 0
+    responseHeaders["Content-Length"] = totalBytes.toStr()
+    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP chunks count=${chunks.count()} totalBytes=${totalBytes}`)
+    streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
+    if streamStatus <= 0
+        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
+    end if
+    return streamStatus
+end function
 
 ' Reads data from a client socket until an HTTP request is complete, then
 ' dispatches it to `process_request`. Manages connection lifetime bookkeeping.
@@ -156,45 +196,44 @@ function process_request(request as object, connection as object, port as object
             sabrPayload = m.sabrPayloads[mediaIdHash]
             sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
         end if
-        sabrResponse = invalid
-        sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode)
-
-        if isValid(sabrResponse)
-            responseBody = sabrResponse.body
-            responseBodyPath = sabrResponse?.bodyPath
-            responseBodyOffset = sabr_toInt(sabrResponse?.bodyOffset)
-            responseBodyLength = sabr_toInt(sabrResponse?.bodyLength)
-            responseHeaders = sabrResponse.headers
-            if not isValid(responseHeaders)
-                responseHeaders = CreateObject("roAssociativeArray")
-            end if
-            statusCode = sabrResponse.status
-            if not isValid(statusCode)
-                statusCode = 204
-            end if
-            if responseHeaders.DoesExist("Content-Length") = false
-                if responseBodyLength <> invalid and responseBodyLength >= 0
-                    responseHeaders["Content-Length"] = responseBodyLength.toStr()
-                else if GetInterface(responseBody, "ifByteArray") <> invalid
-                    responseHeaders["Content-Length"] = responseBody.count().toStr()
-                else
-                    responseHeaders["Content-Length"] = "0"
-                end if
-            end if
-            if responseHeaders.DoesExist("Content-Type") = false
-                responseHeaders["Content-Type"] = "text/plain"
-            end if
-            if responseHeaders.DoesExist("Connection") = false
-                responseHeaders["Connection"] = "close"
-            end if
-            status = send_http_reply_raw(connection, statusCode, responseHeaders, responseBody, invalid, responseBodyPath, responseBodyOffset, responseBodyLength)
-        else
-            status = send_http_reply(connection, "204", "text/plain", "")
+        rangeHeader = ""
+        if IsAssociativeArray(request?.headers)
+            rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
         end if
+        keyParam = ""
+        if IsAssociativeArray(request?.search)
+            keyParam = sabr_valueToLabel(request.search.Lookup("key"))
+        end if
+        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} range=${rangeHeader}`)
+
+        requestId = invalid
+        if isValid(m.top?.utilsTask)
+            requestId = m.top.utilsTask.callFunc("getNextId", "ytsabrServerRequest")
+        end if
+        if requestId = invalid
+            requestId = Stri(connection.getID())
+        end if
+        requestLogTag = sabr_utilLogTag(m.contentType, requestId)
+        sabrResponse = invalid
+        fatalReason = ""
+        try
+            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid)
+        catch e
+            fatalReason = sabr_formatExceptionDetail(e)
+            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} sabr_handleRequest exception: ${fatalReason}`, false)
+        end try
+
+        if fatalReason <> ""
+            status = send_http_reply(connection, "500", "text/plain", fatalReason)
+        else if sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart")
+            status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
+        end if
+        m.sockets[Stri(connection.getID())] = invalid
+        m.connections[Stri(connection.getID())] = invalid
+        return true
     else
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`, false)
     end if
 
-    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] Status: ${status}`)
     return false ' false = Keep-alive
 end function
