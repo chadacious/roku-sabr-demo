@@ -120,6 +120,417 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
 end function
 
 '------------------------------------------------------------------------------
+' Function : sabr_ump_createStreamTap
+' Purpose  : Builds a lightweight streaming parser that watches a growing SABR
+'            spool file and stops the download once the target segment is ready.
+'------------------------------------------------------------------------------
+function sabr_ump_createStreamTap(config as object) as object
+    if not IsAssociativeArray(config) then return invalid
+
+    tap = {
+        "config": config
+        "offset": 0
+        "peekBytes": 16
+        "headerIndex": createObject("roAssociativeArray")
+        "controlEffects": createObject("roAssociativeArray")
+        "formatInitList": []
+        "targetChunks": []
+        "targetTotalBytes": 0
+    }
+
+    peekOverride = sabr_ump_toInt(config?.peekBytes)
+    if peekOverride <> invalid and peekOverride > 4 then tap.peekBytes = peekOverride
+
+    tap.destPath = sabr_ump_toSafeString(config?.destPath)
+    tap.keyParam = sabr_ump_toSafeString(config?.keyParam)
+    tap.targetItag = sabr_ump_toInt(config?.targetItag)
+    tap.targetRangeStart = sabr_ump_toInt(config?.targetRangeStart)
+    tap.targetRangeEnd = sabr_ump_toInt(config?.targetRangeEnd)
+    tap.isInitRequest = config?.isInitRequest = true
+    tap.contentType = sabr_ump_toSafeString(config?.contentType)
+    tap.mediaIdHash = sabr_ump_toSafeString(config?.mediaIdHash)
+
+    tap.poll = function(path as string, fileSize as integer) as dynamic
+        return sabr_ump_streamTapPoll(m, path, fileSize)
+    end function
+
+    tap.resetForNewFile = sub()
+        m.offset = 0
+        m.headerIndex = createObject("roAssociativeArray")
+        m.controlEffects = createObject("roAssociativeArray")
+        m.formatInitList = []
+        m.targetChunks = []
+        m.targetTotalBytes = 0
+        m.targetHeaderId = invalid
+        m.targetMatched = false
+        m.targetComplete = false
+        m.resultReady = false
+        m.segmentMediaHeader = invalid
+        m.segmentEntry = invalid
+        m.segmentCoverage = invalid
+    end sub
+
+    tap.resetForNewFile()
+
+    return tap
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_ump_streamTapPoll
+' Purpose  : Advances the streaming reader state while the spool file grows.
+'------------------------------------------------------------------------------
+function sabr_ump_streamTapPoll(tap as object, path as string, fileSize as integer) as dynamic
+    if not IsAssociativeArray(tap) then return invalid
+    if not IsString(path) or path = "" then return invalid
+
+    sizeVal = sabr_ump_toInt(fileSize)
+    if sizeVal = invalid or sizeVal <= tap.offset then return invalid
+
+    peekBytes = sabr_ump_toInt(tap?.peekBytes)
+    if peekBytes = invalid or peekBytes <= 4 then peekBytes = 16
+
+    while tap.offset < sizeVal
+        remaining = sizeVal - tap.offset
+        sliceLength = peekBytes
+        if sliceLength > remaining then sliceLength = remaining
+        if sliceLength <= 0 then exit while
+
+        headerBytes = CreateObject("roByteArray")
+        if headerBytes.ReadFile(path, tap.offset, sliceLength) <> true then exit while
+
+        typeInfo = sabr_ump_readVarint(headerBytes, 0)
+        if typeInfo.complete <> true then exit while
+
+        sizeInfo = sabr_ump_readVarint(headerBytes, typeInfo.nextOffset)
+        if sizeInfo.complete <> true then exit while
+
+        partType = sabr_ump_toInt(typeInfo.value)
+        partSize = sabr_ump_toInt(sizeInfo.value)
+        headerLength = sizeInfo.nextOffset
+
+        if partType = invalid or partSize = invalid or partSize < 0 then
+            tap.offset = tap.offset + 1
+            continue while
+        end if
+
+        nextOffset = tap.offset + headerLength + partSize
+        if nextOffset > sizeVal then
+            tap.nextRequired = nextOffset
+            exit while
+        end if
+
+        payloadOffset = tap.offset + headerLength
+
+        if partType = UMP_PART_ID_MEDIA_HEADER then
+            sabr_ump_streamHandleMediaHeader(tap, path, payloadOffset, partSize)
+        else if partType = UMP_PART_ID_MEDIA then
+            sabr_ump_streamHandleMediaPart(tap, path, payloadOffset, partSize)
+        else if partType = UMP_PART_ID_MEDIA_END then
+            sabr_ump_streamHandleMediaEnd(tap, path, payloadOffset, partSize)
+        else if partType = UMP_PART_ID_FORMAT_INIT_METADATA then
+            sabr_ump_streamHandleInitMetadata(tap, path, payloadOffset, partSize)
+        else if partType = UMP_PART_ID_NEXT_REQUEST_POLICY or partType = UMP_PART_ID_SABR_CONTEXT_UPDATE or partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY or partType = UMP_PART_ID_SABR_REDIRECT or partType = UMP_PART_ID_SABR_ERROR or partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE or partType = UMP_PART_ID_STREAM_PROTECTION_STATUS or partType = UMP_PART_ID_SNACKBAR_MESSAGE then
+            sabr_ump_streamHandleControlPart(tap, partType, path, payloadOffset, partSize)
+        end if
+
+        tap.offset = nextOffset
+
+        if tap.targetComplete = true and tap.resultReady <> true then
+            tap.resultReady = true
+            result = {
+                "cancel": true
+                "done": true
+            }
+
+            segmentEntry = tap.segmentEntry
+            if not IsAssociativeArray(segmentEntry) then segmentEntry = invalid
+            if IsAssociativeArray(segmentEntry)
+                if tap.destPath <> "" then segmentEntry["path"] = tap.destPath
+                result["segmentEntry"] = segmentEntry
+            end if
+
+            coverage = tap.segmentCoverage
+            if IsAssociativeArray(coverage) then result["coverage"] = coverage
+
+            controlEffects = tap.controlEffects
+            if IsAssociativeArray(controlEffects) and controlEffects.Count() > 0
+                result["controlEffects"] = controlEffects
+            end if
+
+            if IsArray(tap.formatInitList) and tap.formatInitList.Count() > 0
+                result["formatInitMetadata"] = tap.formatInitList
+            end if
+
+            spoolKey = sabr_ump_streamComputeSpoolKey(segmentEntry, tap.keyParam)
+            if spoolKey <> "" then result["spoolKey"] = spoolKey
+
+            return result
+        end if
+    end while
+
+    return invalid
+end function
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamComputeSpoolKey
+'------------------------------------------------------------------------------
+function sabr_ump_streamComputeSpoolKey(segmentEntry as object, keyParam as string) as string
+    if not IsAssociativeArray(segmentEntry) then return ""
+    startRange = sabr_ump_toInt(segmentEntry?.startRange)
+    startLabel = sabr_ump_toSafeString(startRange)
+    if startLabel = "" then startLabel = "0"
+    suffix = sabr_ump_toSafeString(keyParam)
+    return `${startLabel}:${suffix}`
+end function
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHandleMediaHeader
+'------------------------------------------------------------------------------
+sub sabr_ump_streamHandleMediaHeader(tap as object, path as string, payloadOffset as integer, partSize as integer)
+    if not IsAssociativeArray(tap) then return
+    if partSize <= 0 then return
+
+    payload = CreateObject("roByteArray")
+    if payload.ReadFile(path, payloadOffset, partSize) <> true then return
+
+    decodedHeader = sabr_ump_decodePart(MediaHeaderDecode, payload, invalid, "stream_media_header")
+    if not IsAssociativeArray(decodedHeader) then return
+
+    headerIdVal = sabr_ump_toInt(decodedHeader.Lookup("headerId"))
+    itagVal = sabr_ump_toInt(decodedHeader.Lookup("itag"))
+    rangeStartVal = sabr_ump_toInt(decodedHeader.Lookup("startRange"))
+    if rangeStartVal = invalid then rangeStartVal = sabr_ump_toInt(decodedHeader.Lookup("start"))
+    contentLengthVal = sabr_ump_toInt(decodedHeader.Lookup("contentLength"))
+    rangeEndVal = invalid
+    if rangeStartVal <> invalid and contentLengthVal <> invalid and contentLengthVal > 0
+        rangeEndVal = rangeStartVal + contentLengthVal - 1
+    end if
+
+    headerRecord = {
+        "headerId": headerIdVal
+        "itag": itagVal
+        "segmentRangeStart": rangeStartVal
+        "segmentRangeEnd": rangeEndVal
+        "segmentContentLength": contentLengthVal
+        "mediaHeader": decodedHeader
+        "segmentIsInit": decodedHeader.Lookup("isInitSeg") = true
+    }
+
+    if headerIdVal <> invalid
+        tap.headerIndex[`${headerIdVal}`] = headerRecord
+    end if
+
+    if sabr_ump_streamHeaderMatchesTarget(tap, headerRecord)
+        tap.targetHeaderId = headerIdVal
+        tap.targetMatched = true
+        tap.segmentMediaHeader = decodedHeader
+        tap.segmentRangeStart = rangeStartVal
+        tap.segmentRangeEnd = rangeEndVal
+        tap.segmentIsInit = headerRecord.segmentIsInit
+        tap.targetChunks = []
+        tap.targetTotalBytes = 0
+        tap.segmentEntry = {
+            "headerId": headerIdVal
+            "itag": itagVal
+            "startRange": rangeStartVal
+            "endRange": rangeEndVal
+            "isInitSeg": headerRecord.segmentIsInit
+            "mediaHeader": decodedHeader
+            "chunks": []
+            "totalBytes": 0
+        }
+        tap.segmentCoverage = {
+            "rangeStart": rangeStartVal
+            "rangeEnd": rangeEndVal
+        }
+        if tap.destPath <> "" then tap.segmentEntry["path"] = tap.destPath
+    end if
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHeaderMatchesTarget
+'------------------------------------------------------------------------------
+function sabr_ump_streamHeaderMatchesTarget(tap as object, headerRecord as object) as boolean
+    if not IsAssociativeArray(tap) or not IsAssociativeArray(headerRecord) then return false
+
+    targetItag = sabr_ump_toInt(tap?.targetItag)
+    headerItag = sabr_ump_toInt(headerRecord?.itag)
+    if targetItag <> invalid and headerItag <> invalid and targetItag <> headerItag then return false
+
+    targetStart = sabr_ump_toInt(tap?.targetRangeStart)
+    headerStart = sabr_ump_toInt(headerRecord?.segmentRangeStart)
+    if tap?.isInitRequest = true
+        if headerRecord?.segmentIsInit <> true then return false
+    else if targetStart <> invalid and headerStart <> invalid and targetStart <> headerStart
+        return false
+    end if
+
+    targetEnd = sabr_ump_toInt(tap?.targetRangeEnd)
+    headerEnd = sabr_ump_toInt(headerRecord?.segmentRangeEnd)
+    if targetEnd <> invalid and headerEnd <> invalid and targetEnd <> headerEnd
+        return false
+    end if
+
+    return true
+end function
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHandleMediaPart
+'------------------------------------------------------------------------------
+sub sabr_ump_streamHandleMediaPart(tap as object, path as string, payloadOffset as integer, partSize as integer)
+    if not IsAssociativeArray(tap) then return
+    if partSize <= 1 then return
+
+    varInfo = sabr_ump_streamReadVarintFromFile(path, payloadOffset, partSize)
+    if not IsAssociativeArray(varInfo) then return
+    headerIdVal = sabr_ump_toInt(varInfo?.value)
+    if headerIdVal = invalid then return
+
+    if tap.targetMatched <> true or tap.targetHeaderId = invalid then return
+    if headerIdVal <> tap.targetHeaderId then return
+
+    headerIdLength = sabr_ump_toInt(varInfo?.length)
+    if headerIdLength = invalid or headerIdLength <= 0 or headerIdLength > partSize then headerIdLength = 1
+
+    chunkOffset = payloadOffset + headerIdLength
+    chunkLength = partSize - headerIdLength
+    if chunkLength <= 0 then return
+
+    chunkRecord = {
+        "offset": chunkOffset
+        "length": chunkLength
+    }
+
+    tap.targetChunks.push(chunkRecord)
+    tap.targetTotalBytes = tap.targetTotalBytes + chunkLength
+
+    if IsAssociativeArray(tap.segmentEntry)
+        if tap.segmentEntry.DoesExist("payloadOffset") = false
+            tap.segmentEntry["payloadOffset"] = payloadOffset
+            tap.segmentEntry["payloadSize"] = partSize
+        else
+            totalPayloadSize = sabr_ump_toInt(tap.segmentEntry.Lookup("payloadSize"))
+            if totalPayloadSize = invalid then totalPayloadSize = 0
+            tap.segmentEntry["payloadSize"] = totalPayloadSize + partSize
+        end if
+        tap.segmentEntry["payloadEnd"] = payloadOffset + partSize - 1
+
+        chunks = tap.segmentEntry.Lookup("chunks")
+        if not IsArray(chunks) then chunks = []
+        chunks.push(chunkRecord)
+        tap.segmentEntry["chunks"] = chunks
+        tap.segmentEntry["totalBytes"] = tap.targetTotalBytes
+    end if
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHandleMediaEnd
+'------------------------------------------------------------------------------
+sub sabr_ump_streamHandleMediaEnd(tap as object, path as string, payloadOffset as integer, partSize as integer)
+    if not IsAssociativeArray(tap) then return
+    if partSize <= 0 then return
+
+    headerBytes = CreateObject("roByteArray")
+    readLen = partSize
+    if readLen > 8 then readLen = 8
+    if headerBytes.ReadFile(path, payloadOffset, readLen) <> true then return
+    if headerBytes.count() <= 0 then return
+
+    headerIdVal = headerBytes[0]
+
+    if tap.targetMatched <> true or tap.targetHeaderId = invalid then return
+    if headerIdVal <> tap.targetHeaderId then return
+
+    tap.targetComplete = true
+    if IsAssociativeArray(tap.segmentEntry)
+        tap.segmentEntry["payloadEnd"] = payloadOffset + partSize - 1
+        tap.segmentEntry["totalBytes"] = tap.targetTotalBytes
+    end if
+
+    if IsAssociativeArray(tap.segmentCoverage)
+        if tap.isInitRequest = true and tap.targetRangeStart <> invalid and tap.targetRangeEnd <> invalid
+            tap.segmentCoverage["rangeStart"] = tap.targetRangeStart
+            tap.segmentCoverage["rangeEnd"] = tap.targetRangeEnd
+        else
+            if tap.targetRangeStart <> invalid then tap.segmentCoverage["rangeStart"] = tap.targetRangeStart
+            if tap.targetRangeEnd <> invalid then tap.segmentCoverage["rangeEnd"] = tap.targetRangeEnd
+        end if
+    end if
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHandleInitMetadata
+'------------------------------------------------------------------------------
+sub sabr_ump_streamHandleInitMetadata(tap as object, path as string, payloadOffset as integer, partSize as integer)
+    if not IsAssociativeArray(tap) then return
+    if partSize <= 0 then return
+
+    payload = CreateObject("roByteArray")
+    if payload.ReadFile(path, payloadOffset, partSize) <> true then return
+
+    decoded = sabr_ump_decodePart(FormatInitializationMetadataDecode, payload, invalid, "stream_format_init")
+    if decoded <> invalid then tap.formatInitList.push(decoded)
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamHandleControlPart
+'------------------------------------------------------------------------------
+sub sabr_ump_streamHandleControlPart(tap as object, partType as integer, path as string, payloadOffset as integer, partSize as integer)
+    if not IsAssociativeArray(tap) then return
+    if partSize <= 0 then return
+
+    payload = CreateObject("roByteArray")
+    if payload.ReadFile(path, payloadOffset, partSize) <> true then return
+
+    decoded = invalid
+    if partType = UMP_PART_ID_NEXT_REQUEST_POLICY then
+        decoded = sabr_ump_decodePart(NextRequestPolicyDecode, payload, invalid, "stream_next_request_policy")
+        if decoded <> invalid then tap.controlEffects["nextRequestPolicy"] = decoded
+    else if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE then
+        decoded = sabr_ump_decodePart(SabrContextUpdateDecode, payload, invalid, "stream_context_update")
+        if decoded <> invalid then tap.controlEffects["sabrContextUpdate"] = decoded
+    else if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY then
+        decoded = sabr_ump_decodePart(SabrContextSendingPolicyDecode, payload, invalid, "stream_context_sending_policy")
+        if decoded <> invalid then tap.controlEffects["sabrContextSendingPolicy"] = decoded
+    else if partType = UMP_PART_ID_SABR_REDIRECT then
+        decoded = sabr_ump_decodePart(SabrRedirectDecode, payload, invalid, "stream_redirect")
+        if decoded <> invalid then tap.controlEffects["redirect"] = decoded
+    else if partType = UMP_PART_ID_SABR_ERROR then
+        decoded = sabr_ump_decodePart(SabrErrorDecode, payload, invalid, "stream_sabr_error")
+        if decoded <> invalid then tap.controlEffects["sabrError"] = decoded
+    else if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE then
+        decoded = sabr_ump_decodePart(ReloadPlaybackContextDecode, payload, invalid, "stream_reload_playback")
+        if decoded <> invalid then tap.controlEffects["reloadPlaybackContext"] = decoded
+    else if partType = UMP_PART_ID_STREAM_PROTECTION_STATUS then
+        decoded = sabr_ump_decodePart(StreamProtectionStatusDecode, payload, invalid, "stream_protection_status")
+        if decoded <> invalid then tap.controlEffects["streamProtectionStatus"] = decoded
+    else if partType = UMP_PART_ID_SNACKBAR_MESSAGE then
+        decoded = sabr_ump_decodePart(SnackbarMessageDecode, payload, invalid, "stream_snackbar")
+        if decoded <> invalid then tap.controlEffects["snackbarMessage"] = decoded
+    end if
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_streamReadVarintFromFile
+'------------------------------------------------------------------------------
+function sabr_ump_streamReadVarintFromFile(path as string, offset as integer, partSize as integer) as object
+    maxLen = partSize
+    if maxLen > 8 then maxLen = 8
+    if maxLen <= 0 then return invalid
+
+    bytes = CreateObject("roByteArray")
+    if bytes.ReadFile(path, offset, maxLen) <> true then return invalid
+
+    varInfo = sabr_ump_readVarint(bytes, 0)
+    if varInfo.complete <> true then return invalid
+
+    return {
+        "value": varInfo.value
+        "length": varInfo.nextOffset
+    }
+end function
+
+'------------------------------------------------------------------------------
 ' Function : sabr_ump_buildSpoolPartMap
 ' Purpose  : Scans a SABR spool file, interprets each part header, and returns
 '            structured metadata including segment linkage and summary stats.

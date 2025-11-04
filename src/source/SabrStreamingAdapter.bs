@@ -596,14 +596,34 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 if rangeLabelForFile = "" then rangeLabelForFile = "range"
                 protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${keyLabelForDump}-${rangeLabelForFile}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
+                responseFilePath = `${protoFilePath}-res`
+                streamTap = invalid
+                tapConfig = {
+                    "destPath": responseFilePath
+                    "keyParam": keyParam
+                    "targetItag": sabr_toInt(currentFormat?.itag)
+                    "targetRangeStart": sabr_toInt(requestByteRange?.startRange)
+                    "targetRangeEnd": sabr_toInt(requestByteRange?.endRange)
+                    "isInitRequest": isInitSegmentRequest
+                    "contentType": contentType
+                    "mediaIdHash": mediaIdHash
+                }
+                streamTap = sabr_ump_createStreamTap(tapConfig)
+
+                optionsPayload = {
+                    "method": "POST_FILE_TO_FILE_WITH_DECODINGS",
+                    "body": protoFilePath,
+                    "responseFilePath": responseFilePath
+                }
+                if IsAssociativeArray(streamTap)
+                    optionsPayload["streamTap"] = streamTap
+                end if
+
                 sabrRequest = {
                     "url": sabrAbrUrl,
                     "requestType": "proxy",
                     "timeout": 10000,
-                    "options": {
-                        "method": "POST_FILE_TO_FILE_WITH_DECODINGS",
-                        "body": protoFilePath
-                    }
+                    "options": optionsPayload
                 }
 
                 sabr_log(m.logs, log_level_Type.INFO, `[RELAY] Performing proxied request to: ${FormatJson(sabrAbrUrl)}`)
@@ -621,6 +641,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     response = sabr_buildErrorResponseForPlayer(500, "SABR request failed")
                 else if res.status >= 200 and res?.status <= 206
                     responseFilePath = res.body
+                    tapResult = res?.streamTapResult
                     fatalReason = ""
                     segmentInfo = invalid
                     umpResult = invalid
@@ -665,7 +686,53 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             sabr_cullOldSpoolFiles(playbackContext, responseFilePath, contentType)
                         end if
 
-                        spoolFetch = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
+                        spoolFetch = invalid
+                        if IsAssociativeArray(tapResult)
+                            spoolKeyTap = sabr_toSafeString(tapResult?.spoolKey)
+                            segmentEntryTap = tapResult?.segmentEntry
+                            if IsAssociativeArray(segmentEntryTap)
+                                if not IsAssociativeArray(playbackContext?.umpSpoolMaps)
+                                    playbackContext["umpSpoolMaps"] = {}
+                                end if
+                                if spoolKeyTap <> ""
+                                    playbackContext["umpSpoolMaps"][spoolKeyTap] = segmentEntryTap
+                                end if
+
+                                if segmentEntryTap?.isInitSeg = true
+                                    sidxUpdateTap = sabr_ump_extractSidxFromSpool(responseFilePath, segmentEntryTap)
+                                    if IsAssociativeArray(sidxUpdateTap)
+                                        segmentEntryTap["sidxIndex"] = sidxUpdateTap
+                                        playbackContext["umpSpoolMaps"][spoolKeyTap] = segmentEntryTap
+                                        sabr_storeSidxIndexUpdate(playbackContext, contentType, sidxUpdateTap)
+                                    end if
+                                end if
+
+                                spoolFetch = {
+                                    "spooledSegment": segmentEntryTap
+                                    "spoolKey": spoolKeyTap
+                                }
+                            end if
+                        end if
+
+                        if IsAssociativeArray(tapResult)
+                            segmentEntryTap = tapResult?.segmentEntry
+                            if IsAssociativeArray(segmentEntryTap) and segmentEntryTap?.isInitSeg = true
+                                if not IsAssociativeArray(playbackContext?.initSegments)
+                                    playbackContext["initSegments"] = {}
+                                end if
+                                initCacheTap = playbackContext.initSegments
+                                cacheKeyTap = `${contentType}|${sabr_toSafeString(keyParam)}`
+                                initPathTap = sabr_ump_materializeInitSegment(segmentEntryTap, responseFilePath, mediaIdHash, contentType, keyParam)
+                                if IsString(initPathTap) and initPathTap <> ""
+                                    initCacheTap[cacheKeyTap] = initPathTap
+                                end if
+                                playbackContext.initSegments = initCacheTap
+                            end if
+                        end if
+
+                        if not IsAssociativeArray(spoolFetch)
+                            spoolFetch = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
+                        end if
                         if IsAssociativeArray(spoolFetch)
                             spoolSegment = spoolFetch.spooledSegment
                             spoolChunks = spoolSegment?.chunks
@@ -718,7 +785,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             end if
                         end if
 
-                        controlEffects = sabr_ump_extractControlParts(spoolMap, responseFilePath, mediaIdHash, contentType, keyParam)
+                        controlEffects = invalid
+                        if IsAssociativeArray(tapResult) and IsAssociativeArray(tapResult?.controlEffects)
+                            controlEffects = tapResult.controlEffects
+                        else
+                            controlEffects = sabr_ump_extractControlParts(spoolMap, responseFilePath, mediaIdHash, contentType, keyParam)
+                        end if
                         streamInfoSeed = {}
                         if IsAssociativeArray(controlEffects)
                             if isValid(controlEffects.nextRequestPolicy)

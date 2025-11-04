@@ -67,7 +67,10 @@ function makeRequest(params as object)
                 ' removeFile("tmp", options.body)
             else if method = "POST_FILE_TO_FILE_WITH_DECODINGS"
                 timeSpan = logs.mark()
-                destFile = `${options.body}-res`
+                destFile = options?.responseFilePath
+                if not IsString(destFile) or destFile = ""
+                    destFile = `${options.body}-res`
+                end if
                 ut.setRequest("POST")
                 requestSent = ut.asyncPostFromFileToFile(options.body, destFile)
                 logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
@@ -84,23 +87,216 @@ function makeRequest(params as object)
                 requestSent = ut.asyncGetToString()
             end if
             if (requestSent)
-                msg = wait(timeout ?? 20000, port1)
-                if (type(msg) = "roUrlEvent")
-                    statusCode = msg.GetResponseCode()
-                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_WITH_DECODINGS" or method = "GET_TO_FILE"
-                        body = destFile
-                        logs.printl(log_level_Type.TRACE, `[HTTPRequest] Proxying response to file: ${destFile}`)' ` from ${url}`)
-                    else
-                        body = msg.GetString()
+                streamTap = options?.streamTap
+                tapIsValid = IsAssociativeArray(streamTap)
+                if tapIsValid and streamTap.DoesExist("resetForNewFile") then streamTap.resetForNewFile()
+
+                timeoutMs = timeout ?? 20000
+                pollInterval = options?.streamTapPollMs
+                if not IsInteger(pollInterval) or pollInterval <= 0 then pollInterval = 100
+
+                fs = invalid
+                tapResult = invalid
+                tapCancelIssued = false
+                finalPath = destFile
+                tapFilePrepared = false
+                transferDone = false
+                responseEvent = invalid
+                timedOut = false
+                waitTimer = CreateObject("roTimespan")
+                if waitTimer <> invalid then waitTimer.Mark()
+
+                while transferDone = false
+                    waitMs = timeoutMs
+                    if tapIsValid
+                        waitMs = pollInterval
+                    else if waitTimer <> invalid and timeoutMs > 0
+                        elapsed = waitTimer.TotalMilliseconds()
+                        remaining = timeoutMs - elapsed
+                        if remaining < 0 then remaining = 0
+                        waitMs = remaining
                     end if
-                    headers = GetHeadersWithSetCookies(msg)
-                    ok = statusCode >= 200 and statusCode <= 206 ? true : false
+
+                    if waitMs < 0 then waitMs = 0
+
+                    msg = wait(waitMs, port1)
+
+                    if type(msg) = "roUrlEvent"
+                        responseEvent = msg
+                        transferDone = true
+                    else if msg = invalid
+                        if tapIsValid
+                            if waitTimer <> invalid and timeoutMs > 0 and waitTimer.TotalMilliseconds() >= timeoutMs
+                                timedOut = true
+                                transferDone = true
+                            else
+                                if fs = invalid then fs = CreateObject("roFileSystem")
+                                tmpPath = `${destFile}.tmp`
+                                activePath = tmpPath
+                                if fs.Exists(destFile) then
+                                    activePath = destFile
+                                else if fs.Exists(tmpPath)
+                                    activePath = tmpPath
+                                end if
+
+                                statInfo = invalid
+                                if fs.Exists(activePath)
+                                    try
+                                        statInfo = fs.Stat(activePath)
+                                    catch e
+                                        statInfo = invalid
+                                    end try
+                                end if
+
+                                currentSize = invalid
+                                if IsAssociativeArray(statInfo)
+                                    currentSize = statInfo.Lookup("size")
+                                    if currentSize = invalid then currentSize = statInfo.Lookup("length")
+                                end if
+
+                                if currentSize <> invalid and streamTap.DoesExist("poll")
+                                    pollResponse = streamTap.poll(activePath, currentSize)
+                                    if IsAssociativeArray(pollResponse)
+                                        if pollResponse.Lookup("done") = true then tapResult = pollResponse
+                                        if tapCancelIssued <> true and pollResponse.Lookup("cancel") = true
+                                            if tapFilePrepared <> true
+                                                ensureTmpPath = `${destFile}.tmp`
+                                                newPath = destFile
+                                                if fs = invalid then fs = CreateObject("roFileSystem")
+                                                if fs.Exists(ensureTmpPath)
+                                                    if fs.Exists(destFile)
+                                                        fs.Delete(destFile)
+                                                    end if
+                                                    copyOk = false
+                                                    try
+                                                        copyOk = fs.CopyFile(ensureTmpPath, destFile)
+                                                    catch copyErr
+                                                        copyOk = false
+                                                    end try
+                                                    if copyOk = true
+                                                        newPath = destFile
+                                                    else
+                                                        newPath = ensureTmpPath
+                                                    end if
+                                                else if fs.Exists(destFile)
+                                                    newPath = destFile
+                                                else if fs.Exists(ensureTmpPath)
+                                                    newPath = ensureTmpPath
+                                                end if
+                                                finalPath = newPath
+                                                tapFilePrepared = true
+                                            end if
+                                            tapCancelIssued = true
+                                            tapResult = pollResponse
+                                            ut.AsyncCancel()
+                                        end if
+                                    end if
+                                end if
+                            end if
+                        else
+                            timedOut = true
+                            transferDone = true
+                        end if
+                    else
+                        ' ignore other messages
+                    end if
+
+                    if tapIsValid = false and transferDone = false and timeoutMs > 0 and waitTimer <> invalid and waitTimer.TotalMilliseconds() >= timeoutMs
+                        timedOut = true
+                        transferDone = true
+                    end if
+                end while
+
+                if fs = invalid then fs = CreateObject("roFileSystem")
+                tmpPath = `${destFile}.tmp`
+                if tapFilePrepared <> true
+                    finalPath = destFile
+                    if fs.Exists(tmpPath)
+                        if fs.Exists(destFile)
+                            fs.Delete(destFile)
+                        end if
+                        copyOk = false
+                        try
+                            copyOk = fs.CopyFile(tmpPath, destFile)
+                        catch copyErr
+                            copyOk = false
+                        end try
+                        if copyOk = true
+                            finalPath = destFile
+                        else
+                            finalPath = tmpPath
+                        end if
+                    else if fs.Exists(destFile)
+                        finalPath = destFile
+                    end if
+                    tapFilePrepared = true
+                end if
+
+                if fs <> invalid
+                    if fs.Exists(finalPath) <> true
+                        if fs.Exists(tmpPath)
+                            finalPath = tmpPath
+                        else if fs.Exists(destFile)
+                            finalPath = destFile
+                        end if
+                    end if
+                    fileStatSize = invalid
+                    existsNow = fs.Exists(finalPath)
+                    if existsNow = true
+                        statCheck = invalid
+                        try
+                            statCheck = fs.Stat(finalPath)
+                        catch statErr
+                            statCheck = invalid
+                        end try
+                        if IsAssociativeArray(statCheck)
+                            fileStatSize = statCheck.Lookup("size")
+                            if fileStatSize = invalid then fileStatSize = statCheck.Lookup("length")
+                        end if
+                        logs.printl(log_level_Type.DEBUG, `[HTTPRequest] Stream tap file ready path=${finalPath} size=${fileStatSize}`)
+                    else
+                        logs.printl(log_level_Type.DEBUG, `[HTTPRequest] Stream tap file missing path=${finalPath}`)
+                    end if
+                end if
+
+                if IsAssociativeArray(tapResult)
+                    segmentEntryTap = tapResult.Lookup("segmentEntry")
+                    if IsAssociativeArray(segmentEntryTap)
+                        tapResult["segmentEntry"] = segmentEntryTap
+                        tapResult.segmentEntry["path"] = finalPath
+                    end if
+                    tapResult["path"] = finalPath
+                end if
+
+                if timedOut and responseEvent = invalid
+                    output = { "error": "Request timed out" }
+                else if type(responseEvent) = "roUrlEvent"
+                    statusCode = responseEvent.GetResponseCode()
+                    if tapCancelIssued = true and IsAssociativeArray(tapResult) and tapResult.Lookup("done") = true
+                        ok = true
+                        if statusCode < 0 then statusCode = 206
+                    else
+                        ok = statusCode >= 200 and statusCode <= 206 ? true : false
+                    end if
+
+                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_WITH_DECODINGS" or method = "GET_TO_FILE"
+                        body = finalPath
+                        logs.printl(log_level_Type.TRACE, `[HTTPRequest] Proxying response to file: ${finalPath}`)
+                    else
+                        body = responseEvent.GetString()
+                    end if
+
+                    headers = GetHeadersWithSetCookies(responseEvent)
                     output = { "body": body, "ok": ok, "status": statusCode, "headers": headers }
                     if not ok
-                        logs.printl(log_level_Type.WARN, `[HTTPRequest] Request failed: ${FormatJson(output)}`) 
+                        logs.printl(log_level_Type.WARN, `[HTTPRequest] Request failed: ${FormatJson(output)}`)
                     end if
                 else
-                    output = { "error": `Unexpected roUrlEvent: ${type(msg)}` }
+                    output = { "error": `Unexpected roUrlEvent: ${type(responseEvent)}` }
+                end if
+
+                if IsAssociativeArray(tapResult)
+                    output["streamTapResult"] = tapResult
                 end if
             else
                 output = { "error": "Request not sent" }
