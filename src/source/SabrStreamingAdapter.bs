@@ -166,10 +166,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         else
             keyParts = keyParam.split(":")
             currentKeyItag = sabr_toInt(keyParts[0])
-            currentKeyXTag = keyParts.count() > 1 ? keyParts[1] : ""
+            currentKeyXTags = keyParts.count() > 1 ? keyParts[1] : ""
             currentFormat = invalid
             for each format in formats
-                if format.itag = currentKeyItag and (format?.xTag ?? "") = currentKeyXTag
+                if format.itag = currentKeyItag and (format?.xTags ?? "") = currentKeyXTags
                     currentFormat = format
                     exit for
                 end if
