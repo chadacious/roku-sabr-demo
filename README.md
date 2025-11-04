@@ -87,7 +87,7 @@ artifacts/                # Log and screenshot outputs from automation
 If the same byte range keeps arriving, the repeat guard nudges the computed value forward by a small, duration-aware bump so SABR can advance to the next segment. The resolved time, source label, and any nudge amount are persisted to `playbackContext` (`lastResolvedPlayerTimeMs`, `lastResolvedPlayerTimeSource`) for diagnostics.
 
 ## Spool Streaming & Cleanup
- UMP responses are written to a single spool file under `tmp:/<mediaIdHash>/…`. `SabrStreamingAdapter` now has two complementary paths:
+ UMP responses are written to a single spool file under `tmp:/sabr/<mediaIdHash>/…`. `SabrStreamingAdapter` now has two complementary paths:
    - A **stream tap** tails the active temp file, and as soon as the target `MEDIA_END` part lands it copies the temp (`*.tmp`) file to its `*-res` sibling before cancelling the transfer. The HTTP layer immediately serves the requested range from that copied file so we do not need to await the rest of the SABR response.
    - A **full scan** runs afterwards (or on cache misses) to build the aggregated part map (payload offsets, SIDX data, control directives) so subsequent requests can read ranges straight from disk without redownloading.
 

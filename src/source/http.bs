@@ -1,19 +1,11 @@
 import "pkg:/source/isItem.bs"
 
-function http_trace(functionName as string)
-    log = logger()
-    if isValid(log)
-        log.printl(log_level_Type.DEBUG, `[HTTP-Trace] ${functionName}`)
-    end if
-end function
-
 '------------------------------------------------------------------------------
 ' Function : create_new_request
 ' Purpose  : Initializes the HTTP request state machine with empty buffers
 '            ready to parse an incoming socket stream.
 '------------------------------------------------------------------------------
 function create_new_request()
-    http_trace("create_new_request")
     return { "state": 0
         "headers": {}
         "method": ""
@@ -32,7 +24,6 @@ end function
 '            and dispatching to method/path/header/body parsers.
 '------------------------------------------------------------------------------
 function read_http(request as object, connection as object)
-    http_trace("read_http")
     length = connection.getCountRcvBuf()
     'print "Processing message on socket: " ; connection.getID() ; " of length " ; length
     if request.state < 6 or request.body_handler <> invalid then
@@ -73,7 +64,6 @@ end function
 '            completion when the declared Content-Length is satisfied.
 '------------------------------------------------------------------------------
 function parse_http_body(connection as object, request as object)
-    http_trace("parse_http_body")
     if request.body_handler <> invalid then
         return request.body_handler(request, connection)
     end if
@@ -92,7 +82,6 @@ end function
 '            blank line that terminates the HTTP header section is reached.
 '------------------------------------------------------------------------------
 function parse_http_headers(connection as object, request as object)
-    http_trace("parse_http_headers")
     while request.buffer.Count() > 0 and request.state < 5
         if request.state = 4 then
             ' From 4, either go to 5 or 6
@@ -111,7 +100,6 @@ end function
 '            transitions to value parsing or body handling when needed.
 '------------------------------------------------------------------------------
 function parse_http_header_name(connection as object, request as object)
-    http_trace("parse_http_header_name")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 13 then
@@ -150,7 +138,6 @@ end function
 '            it on the request object.
 '------------------------------------------------------------------------------
 function parse_http_header_value(connection as object, request as object)
-    http_trace("parse_http_header_value")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 13 then
@@ -181,7 +168,6 @@ end function
 '            resumes header parsing.
 '------------------------------------------------------------------------------
 function parse_http_version(connection as object, request as object)
-    http_trace("parse_http_version")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 10 then
@@ -199,7 +185,6 @@ end function
 '            parser can branch into search parsing or version parsing.
 '------------------------------------------------------------------------------
 function parse_http_path(connection as object, request as object)
-    http_trace("parse_http_path")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 63 then
@@ -224,7 +209,6 @@ end function
 '            the separating space is encountered.
 '------------------------------------------------------------------------------
 function parse_http_method(connection as object, request as object)
-    http_trace("parse_http_method")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 32 then
@@ -242,7 +226,6 @@ end function
 '            the request search map when the space before HTTP version arrives.
 '------------------------------------------------------------------------------
 function parse_http_search(connection as object, request as object)
-    http_trace("parse_http_search")
     while request.buffer.Count() > 0
         code = request.buffer.Shift()
         if code = 32 then
@@ -261,7 +244,6 @@ end function
 '            on the request.
 '------------------------------------------------------------------------------
 sub munge_search(request as object)
-    http_trace("munge_search")
     name_bytes = createobject("roByteArray")
     name = invalid
     For each code in request.search_bytes
@@ -294,7 +276,6 @@ end sub
 '            for internal manifest rewriting utilities.
 '------------------------------------------------------------------------------
 function parse_url(s as string)
-    http_trace("parse_url")
     url = { "path": "/"
         "hostname": ""
         "port": 0
@@ -353,7 +334,6 @@ end function
 ' ***************************************************
 
 function pad_integer(source as integer)
-    http_trace("pad_integer")
     if source < 10 then
         return "0" + right(str(source), 1)
     else
@@ -367,7 +347,6 @@ end function
 '            RFC822 date formatting and optional base64-decoded body content.
 '------------------------------------------------------------------------------
 function send_http_reply(connection as object, response_code as string, content_type as string, textData = "" as string, b64Data = "" as string)
-    http_trace("send_http_reply")
     loggers = logger()
     reply = createobject("roByteArray")
     data = createobject("roByteArray")
@@ -413,7 +392,6 @@ end function
 '            logging range metadata and supporting partial responses.
 '------------------------------------------------------------------------------
 function http_sendHeaders(connection as object, response_code as integer, headers as object) as boolean
-    http_trace("http_sendHeaders")
     loggers = logger()
 
     resStatus = ""
@@ -471,7 +449,6 @@ end function
 '            sequentially when chunk metadata is absent, after sending headers.
 '------------------------------------------------------------------------------
 function send_http_reply_stream_chunks(connection as object, response_code as integer, headers as object, dataPath as string, chunks as object, totalBytes = invalid as dynamic) as integer
-    http_trace("send_http_reply_stream_chunks")
     loggers = logger()
 
     if not IsAssociativeArray(headers)

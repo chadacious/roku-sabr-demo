@@ -245,6 +245,79 @@ function sabr_sanitizeForFilename(value as string) as string
     return sanitized
 end function
 
+'------------------------------------------------------------------------------
+' Storage helpers for SABR artifacts
+'------------------------------------------------------------------------------
+function sabr_storageRoot() as string
+    return "tmp:/sabr"
+end function
+
+sub sabr_ensureStorageRoot()
+    rootPath = sabr_storageRoot()
+    fs = CreateObject("roFileSystem")
+    fs.CreateDirectory(rootPath)
+end sub
+
+function sabr_mediaDir(mediaIdHash as string) as string
+    baseDir = sabr_storageRoot()
+    safeHash = sabr_sanitizeForFilename(sabr_toSafeString(mediaIdHash))
+    if safeHash = "" then return baseDir
+    return `${baseDir}/${safeHash}`
+end function
+
+sub sabr_ensureMediaDir(mediaIdHash as string)
+    sabr_ensureStorageRoot()
+    safeHash = sabr_sanitizeForFilename(sabr_toSafeString(mediaIdHash))
+    if safeHash = "" then return
+    fs = CreateObject("roFileSystem")
+    fs.CreateDirectory(`${sabr_storageRoot()}/${safeHash}`)
+end sub
+
+sub sabr_deleteDirectoryRecursive(path as string)
+    if not IsString(path) or path = "" then return
+    fs = CreateObject("roFileSystem")
+    if fs.Exists(path) <> true then return
+    listing = fs.GetDirectoryListing(path)
+    if IsArray(listing)
+        for each entry in listing
+            childPath = `${path}/${entry}`
+            childListing = fs.GetDirectoryListing(childPath)
+            if IsArray(childListing)
+                sabr_deleteDirectoryRecursive(childPath)
+            else
+                fs.Delete(childPath)
+            end if
+        end for
+    end if
+    fs.Delete(path)
+end sub
+
+sub sabr_deleteMediaDir(mediaIdHash as string)
+    safeHash = sabr_sanitizeForFilename(sabr_toSafeString(mediaIdHash))
+    if safeHash = "" then return
+    sabr_deleteDirectoryRecursive(`${sabr_storageRoot()}/${safeHash}`)
+end sub
+
+sub sabr_pruneOtherMediaDirs(activeMediaId as string)
+    sabr_ensureStorageRoot()
+    rootPath = sabr_storageRoot()
+    fs = CreateObject("roFileSystem")
+    listing = fs.GetDirectoryListing(rootPath)
+    activeHash = sabr_sanitizeForFilename(sabr_toSafeString(activeMediaId))
+    if activeHash = "" then return
+    if IsArray(listing)
+        for each entry in listing
+            childPath = `${rootPath}/${entry}`
+            childListing = fs.GetDirectoryListing(childPath)
+            if IsArray(childListing)
+                if activeHash = "" or entry <> activeHash
+                    sabr_deleteDirectoryRecursive(childPath)
+                end if
+            end if
+        end for
+    end if
+end sub
+
 function sabr_joinPath(base as string, name as string) as string
     if not IsString(base) then base = ""
     if not IsString(name) then name = ""

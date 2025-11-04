@@ -175,12 +175,12 @@ function process_request(request as object, connection as object, port as object
 
         ' check if we already have this mediaIdHash sabrPayload.json file loaded
         if m.sabrPayloads[mediaIdHash] = invalid then
-            ' Load the sabrPayload.json file from tmp:/{mediaIdHash}/sabrPayload.json
-            filePath = `tmp:/${mediaIdHash}/sabrPayload.json`
+            ' Load the sabrPayload.json file from storage
+            filePath = `${sabr_mediaDir(mediaIdHash)}/sabrPayload.json`
             fileContent = getFile(filePath)
-            if fileContent = invalid or fileContent = "" then
+            if fileContent = invalid or fileContent = ""
                 sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayload.json file: ${filePath} on ${connection.getID()}`, false)
-                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - could not load sabrPayload.json")
+                status = send_http_reply(connection, "503", "text/plain", "Service Unavailable - SABR metadata not ready")
                 return true
             end if
             ' Parse the JSON content

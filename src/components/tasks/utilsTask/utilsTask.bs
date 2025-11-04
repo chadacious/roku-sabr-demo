@@ -65,22 +65,24 @@ sub cacheStringToFile(msg as object)
     fileSystem = CreateObject("roFileSystem")
 
     ' handle if the the path includes a directory that doesn't yet exist
-    dirPath = path
-    lastSlash = 0
+    volumeIndex = Instr(1, path, ":")
     searchPos = 1
     while true
-        slashPos = Instr(searchPos, dirPath, "/")
+        slashPos = Instr(searchPos, path, "/")
         if slashPos = 0 then exit while
-        lastSlash = slashPos
-        searchPos = slashPos + 1
-    end while
 
-    if lastSlash > 0
-        dirPath = Left(dirPath, lastSlash - 1)
-        if not fileSystem.Exists(dirPath)
+        if volumeIndex > 0 and slashPos <= volumeIndex + 1
+            searchPos = slashPos + 1
+            continue while
+        end if
+
+        dirPath = Left(path, slashPos - 1)
+        if dirPath <> "" and fileSystem.Exists(dirPath) <> true
             fileSystem.CreateDirectory(dirPath)
         end if
-    end if
+
+        searchPos = slashPos + 1
+    end while
 
     if writeFile(path, content)
         result["status"] = "ok"

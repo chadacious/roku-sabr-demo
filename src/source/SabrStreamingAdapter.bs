@@ -77,8 +77,11 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         timingInfo["queuedAtMs"] = queuedAtValue
     end if
 
-    ' Load playback context for media and validate cached metadata from tmp:/${mediaIdHash}/playbackContext.json
-    playbackContextPath = `tmp:/${mediaIdHash}/playbackContext.json`
+    sabr_pruneOtherMediaDirs(mediaIdHash)
+    sabr_ensureMediaDir(mediaIdHash)
+
+    ' Load playback context for media and validate cached metadata from storage
+    playbackContextPath = `${sabr_mediaDir(mediaIdHash)}/playbackContext.json`
     fileContent = getFile(playbackContextPath)
     if fileContent = invalid or fileContent = ""
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Util-${contentType}] No SABR playbackContext file found for mediaIdHash: ${mediaIdHash}`, false)
@@ -594,7 +597,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 if keyLabelForDump = "" then keyLabelForDump = "nokey"
                 rangeLabelForFile = sabr_sanitizeForFilename(sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange))
                 if rangeLabelForFile = "" then rangeLabelForFile = "range"
-                protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${keyLabelForDump}-${rangeLabelForFile}-${nextRequestId}.bin`
+                protoFilePath = `${sabr_mediaDir(mediaIdHash)}/sabrRequest-${contentType}-${keyLabelForDump}-${rangeLabelForFile}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
                 responseFilePath = `${protoFilePath}-res`
                 streamTap = invalid
@@ -888,7 +891,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 ' Cleanup temp files for proto/response
                                 ' sabr_deleteFileIfExists(responseFilePath)
                                 sabr_deleteFileIfExists(protoFilePath)
-                                writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
+                                writeFile(`${sabr_mediaDir(mediaIdHash)}/playbackContext.json`, FormatJson(playbackContext))
                                 return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtValue, redirectDepth + 1)
                             end if
                         end if
@@ -1112,7 +1115,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     if isValid(m?.logs)
         contextStoreTimer = m.logs.mark()
     end if
-    writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, FormatJson(playbackContext))
+    writeFile(`${sabr_mediaDir(mediaIdHash)}/playbackContext.json`, FormatJson(playbackContext))
     if contextStoreTimer <> invalid
         m.logs.printTime(log_level_Type.INFO, `${requestLogTag} Playback context persisted`, contextStoreTimer, -1)
     end if
@@ -1410,8 +1413,10 @@ sub sabr_cullOldSpoolFiles(playbackContext as object, currentSpoolPath as dynami
     mediaId = sabr_toSafeString(playbackContext?.mediaIdHash)
     if mediaId = "" then return
 
+    sabr_ensureMediaDir(mediaId)
+
     fs = CreateObject("roFileSystem")
-    dirPath = `tmp:/${mediaId}`
+    dirPath = sabr_mediaDir(mediaId)
     listing = fs.GetDirectoryListing(dirPath)
 
     keep = CreateObject("roAssociativeArray")
@@ -2532,7 +2537,7 @@ function sabr_guardRepeatedRequests(playbackContext as object, contentType as st
 
     serialized = FormatJson(playbackContext)
     if isValid(serialized) and serialized <> ""
-        writeFile(`tmp:/${mediaIdHash}/playbackContext.json`, serialized)
+        writeFile(`${sabr_mediaDir(mediaIdHash)}/playbackContext.json`, serialized)
     end if
 
     return sabr_buildErrorResponseForPlayer(502, fatalMessage)

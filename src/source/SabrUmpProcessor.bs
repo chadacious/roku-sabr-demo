@@ -1023,9 +1023,9 @@ function sabr_ump_materializeInitSegment(entry as object, spoolPath as string, m
     keyLabel = sabr_ump_sanitizeForFilename(keyLabel)
     itagLabel = sabr_ump_sanitizeForFilename(itagLabel)
 
-    baseDir = `tmp:/${mediaIdHash}`
+    sabr_ensureMediaDir(mediaIdHash)
+    baseDir = sabr_mediaDir(mediaIdHash)
     fs = CreateObject("roFileSystem")
-    fs.CreateDirectory(baseDir)
     fileName = sabr_ump_sanitizeForFilename(`init-${typeLabel}-${keyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
     if fileName = "" then fileName = "init.bin"
     targetPath = `${baseDir}/${fileName}`
@@ -1057,10 +1057,10 @@ function sabr_ump_extractControlParts(spoolMap as object, path as string, mediaI
             if safeKeyLabel = "" then safeKeyLabel = "nokey"
             safeTypeLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(contentType))
             if safeTypeLabel = "" then safeTypeLabel = "unknown"
-            baseDir = `tmp:/${mediaIdHash}`
+            sabr_ensureMediaDir(mediaIdHash)
+            baseDir = sabr_mediaDir(mediaIdHash)
             fs = CreateObject("roFileSystem")
             if fs <> invalid
-                fs.CreateDirectory(baseDir)
                 keys = segmentIndex.Keys()
                 if IsArray(keys)
                     for each segmentKey in keys
