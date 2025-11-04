@@ -614,9 +614,52 @@ end function
 ' Purpose  : Collects non-media UMP parts (policies, context updates, errors)
 '            so the streaming adapter can update its state machine quickly.
 '------------------------------------------------------------------------------
-function sabr_ump_extractControlParts(spoolMap as object, path as string) as object
+function sabr_ump_extractControlParts(spoolMap as object, path as string, mediaIdHash = "" as string, contentType = "" as string, keyParam = "" as string) as object
     results = {}
     if not IsAssociativeArray(spoolMap) then return results
+
+    if IsString(mediaIdHash) and mediaIdHash <> "" and IsString(path) and path <> ""
+        segmentIndex = spoolMap?.segmentIndex
+        if IsAssociativeArray(segmentIndex)
+            safeKeyLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(keyParam))
+            if safeKeyLabel = "" then safeKeyLabel = "nokey"
+            safeTypeLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(contentType))
+            if safeTypeLabel = "" then safeTypeLabel = "unknown"
+            baseDir = `tmp:/${mediaIdHash}`
+            fs = CreateObject("roFileSystem")
+            if fs <> invalid
+                fs.CreateDirectory(baseDir)
+                targetPath = `${baseDir}/init-${safeKeyLabel}-${safeTypeLabel}.bin`
+                targetExists = fs.Exists(targetPath)
+                keys = segmentIndex.Keys()
+                if IsArray(keys)
+                    for each segmentKey in keys
+                        segEntry = segmentIndex.Lookup(segmentKey)
+                        if not IsAssociativeArray(segEntry) then continue for
+                        if segEntry?.isInitSeg <> true then continue for
+                        if targetExists <> true
+                            chunkData = sabr_ump_readChunksFromSpool(path, segEntry?.chunks, sabr_ump_toInt(segEntry?.totalBytes))
+                            if GetInterface(chunkData, "ifByteArray") = invalid or chunkData.count() <= 0 then continue for
+                            if chunkData.WriteFile(targetPath) = true
+                                targetExists = true
+                            else
+                                continue for
+                            end if
+                        end if
+                        if targetExists = true
+                            segEntry["initPath"] = targetPath
+                            segmentIndex[segmentKey] = segEntry
+                            exit for
+                        end if
+                    end for
+                end if
+                if targetExists = true
+                    results["initSegmentPath"] = targetPath
+                end if
+            end if
+        end if
+    end if
+
     parts = spoolMap?.parts
     if not IsArray(parts) or parts.count() = 0 then return results
 

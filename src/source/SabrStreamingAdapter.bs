@@ -56,6 +56,14 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     sabrAbrUrl = ""
     playbackContext = invalid
     response = invalid
+    protoFilePath = ""
+    responseFilePath = ""
+    fatalReason = ""
+    segmentInfo = invalid
+    spoolResultForResponse = invalid
+    controlEffects = invalid
+    umpResult = invalid
+    servedFromInitCache = false
     requestTimer = invalid
     requestLogTag = `[YTSABR-${contentType}]`
     if isValid(m?.logs)
@@ -441,8 +449,36 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     playbackContext["lastDumpIndex"] = batchCounter
     requestMetadataEntry["batchIndex"] = batchCounter
 
+    requestMetadata = {
+        "isUMP": true
+        "isSABR": true
+        "isInit": isInitSegmentRequest
+        "requestNumber": nextRequestId
+        "format": currentFormat
+        "streamInfo": {}
+        "debugUploadUrl": debugUploadUrl
+        "mediaIdHash": mediaIdHash
+        "contentType": contentType
+        "umpMode": "target"
+    }
+    if IsAssociativeArray(requestMetadataEntry.byteRange)
+        requestMetadata["byteRange"] = requestMetadataEntry.byteRange
+    end if
+
+    if isValid(playbackContext?.lastPlaybackCookie)
+        requestMetadata["playbackCookie"] = playbackContext.lastPlaybackCookie
+    end if
+
+    cachedInitResult = sabr_tryServeCachedInitSegment(playbackContext, contentType, keyParam, requestByteRange, isInitSegmentRequest)
+    if IsAssociativeArray(cachedInitResult)
+        servedFromInitCache = true
+        umpResult = cachedInitResult
+        requestMetadata["servedFromInitCache"] = true
+        requestMetadataEntry["servedFromInitCache"] = true
+    end if
+
     ' Build and send SABR request when cache misses
-    if ok
+    if ok and not servedFromInitCache
         if not isInitSegmentRequest and isValid(currentFormat)
             sabrRequestJson.selectedFormatIds.push(currentFormat)
         end if
@@ -583,21 +619,6 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                     umpResult = invalid
                     segmentScanSummary = invalid
                     spoolResultForResponse = invalid
-                    requestMetadata = {
-                        "isUMP": true
-                        "isSABR": true
-                        "isInit": isInitSegmentRequest
-                        "requestNumber": nextRequestId
-                        "format": currentFormat
-                        "streamInfo": {}
-                        "debugUploadUrl": debugUploadUrl
-                        "mediaIdHash": mediaIdHash
-                        "contentType": contentType
-                        "umpMode": "target"
-                    }
-                    if IsAssociativeArray(requestMetadataEntry.byteRange)
-                        requestMetadata["byteRange"] = requestMetadataEntry.byteRange
-                    end if
 
                     if isValid(responseFilePath) and responseFilePath <> ""
                         spoolMap = sabr_ump_buildSpoolPartMap(responseFilePath, 16, keyParam)
@@ -633,25 +654,15 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 end for
                                 playbackContext.initSegments = initCache
                             end if
+
+                            sabr_cullOldSpoolFiles(playbackContext, responseFilePath, contentType)
                         end if
 
                         spoolFetch = sabr_findSpoolSegmentInCache(playbackContext, requestByteRange, keyParam)
                         if IsAssociativeArray(spoolFetch)
-                            initPath = sabr_toSafeString(spoolFetch?.initPath)
                             spoolSegment = spoolFetch.spooledSegment
                             spoolChunks = spoolSegment?.chunks
-                            if initPath <> ""
-                                totalBytesForResponse = http_getFileSize(initPath)
-                                if totalBytesForResponse = invalid then totalBytesForResponse = 0
-                                coverageInfo = sabr_byteRangeToCoverage(requestByteRange)
-                                spoolResultForResponse = {
-                                    "path": initPath
-                                    "chunks": []
-                                    "totalBytes": totalBytesForResponse
-                                    "coverage": coverageInfo
-                                    "isInitSeg": true
-                                }
-                            else if IsArray(spoolChunks) and spoolChunks.count() > 0
+                            if IsArray(spoolChunks) and spoolChunks.count() > 0
                                 totalBytesForResponse = sabr_toInt(spoolSegment?.totalBytes)
                                 if spoolSegment?.isInitSeg = true
                                     trimmed = sabr_trimSegmentChunksForRange(spoolChunks, spoolSegment?.startRange, requestByteRange)
@@ -695,11 +706,12 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                     if spoolSegment?.isInitSeg = true
                                         spoolResultForResponse["isInitSeg"] = true
                                     end if
+                                    sabr_trackLastDeliveredSpool(playbackContext, spoolSegment?.path, sabr_toSafeString(spoolFetch?.spoolKey), contentType)
                                 end if
                             end if
                         end if
 
-                        controlEffects = sabr_ump_extractControlParts(spoolMap, responseFilePath)
+                        controlEffects = sabr_ump_extractControlParts(spoolMap, responseFilePath, mediaIdHash, contentType, keyParam)
                         streamInfoSeed = {}
                         if IsAssociativeArray(controlEffects)
                             if isValid(controlEffects.nextRequestPolicy)
@@ -1271,6 +1283,147 @@ function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRang
     end for
 
     return invalid
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_trackLastDeliveredSpool
+' Purpose  : Records which spool file most recently supplied bytes to the
+'            player so culling logic can prefer keeping active files.
+'------------------------------------------------------------------------------
+sub sabr_trackLastDeliveredSpool(playbackContext as object, spoolPath as dynamic, spoolKey = "" as string, contentType = "" as string)
+    if not IsAssociativeArray(playbackContext) then return
+    safePath = sabr_toSafeString(spoolPath)
+    if safePath = "" then return
+
+    record = playbackContext.Lookup("lastDeliveredSpool")
+    if not IsAssociativeArray(record)
+        record = CreateObject("roAssociativeArray")
+    end if
+
+    record["path"] = safePath
+    record["updatedAt"] = sabr_currentTimestampMs()
+
+    keyLabel = sabr_toSafeString(spoolKey)
+    if keyLabel <> ""
+        record["spoolKey"] = keyLabel
+    else if record.DoesExist("spoolKey")
+        record.Delete("spoolKey")
+    end if
+
+    typeLabel = sabr_toSafeString(contentType)
+    if typeLabel <> ""
+        record["contentType"] = typeLabel
+    else if record.DoesExist("contentType")
+        record.Delete("contentType")
+    end if
+
+    playbackContext["lastDeliveredSpool"] = record
+end sub
+
+'------------------------------------------------------------------------------
+' Function : sabr_cullOldSpoolFiles
+' Purpose  : Deletes spool files that are no longer needed and prunes cached
+'            entries so only the active spool data is retained.
+'------------------------------------------------------------------------------
+sub sabr_cullOldSpoolFiles(playbackContext as object, currentSpoolPath as dynamic, contentType as string)
+    if not IsAssociativeArray(playbackContext) then return
+
+    mediaId = sabr_toSafeString(playbackContext?.mediaIdHash)
+    if mediaId = "" then return
+
+    fs = CreateObject("roFileSystem")
+    dirPath = `tmp:/${mediaId}`
+    listing = fs.GetDirectoryListing(dirPath)
+
+    keep = CreateObject("roAssociativeArray")
+    currentPath = sabr_toSafeString(currentSpoolPath)
+    if currentPath <> "" then keep[currentPath] = true
+
+    lastPath = sabr_toSafeString(playbackContext?.lastDeliveredSpool?.path)
+    if lastPath <> "" then keep[lastPath] = true
+
+    normalizedType = sabr_toSafeString(contentType)
+    if listing <> invalid
+        for each name in listing
+            if Right(name, 8) = ".bin-res"
+                if normalizedType = "" or Instr(LCase(name), LCase(normalizedType)) > 0
+                    filePath = `${dirPath}/${name}`
+                    if not keep.DoesExist(filePath)
+                        fs.Delete(filePath)
+                    end if
+                end if
+            end if
+        end for
+    end if
+
+    spoolMaps = playbackContext?.umpSpoolMaps
+    if IsAssociativeArray(spoolMaps)
+        keys = spoolMaps.Keys()
+        if IsArray(keys)
+            for each key in keys
+                entry = spoolMaps.Lookup(key)
+                entryPath = sabr_toSafeString(entry?.path)
+                if entryPath = "" or fs.Exists(entryPath) <> true
+                    spoolMaps.Delete(key)
+                end if
+            end for
+        end if
+        playbackContext["umpSpoolMaps"] = spoolMaps
+    end if
+end sub
+
+'------------------------------------------------------------------------------
+' Function : sabr_tryServeCachedInitSegment
+' Purpose  : Returns cached init segment bytes for a requested range when the
+'            init file has already been materialized on disk.
+'------------------------------------------------------------------------------
+function sabr_tryServeCachedInitSegment(playbackContext as object, contentType as string, keyParam as string, requestByteRange as object, isInitRequest as boolean) as dynamic
+    if not IsAssociativeArray(playbackContext?.initSegments) then return invalid
+
+    rangeStart = sabr_toInt(requestByteRange?.startRange)
+    rangeEnd = sabr_toInt(requestByteRange?.endRange)
+    initIntent = isInitRequest
+    if not initIntent
+        if requestByteRange.DoesExist("segmentIndexInfo") and isValid(requestByteRange.segmentIndexInfo)
+            initIntent = true
+        else if rangeStart = 0
+            initIntent = true
+        end if
+    end if
+    if not initIntent then return invalid
+
+    cacheKey = `${contentType}|${sabr_toSafeString(keyParam)}`
+    initPath = sabr_toSafeString(playbackContext.initSegments.Lookup(cacheKey))
+    if initPath = "" then return invalid
+
+    fs = CreateObject("roFileSystem")
+    if fs.Exists(initPath) <> true then return invalid
+
+    stat = fs.Stat(initPath)
+    totalSize = sabr_toInt(stat?.size)
+    if totalSize = invalid or totalSize <= 0 then return invalid
+
+    if rangeStart = invalid or rangeStart < 0 then rangeStart = 0
+    if rangeEnd = invalid or rangeEnd >= totalSize then rangeEnd = totalSize - 1
+    if rangeEnd < rangeStart then return invalid
+
+    length = (rangeEnd - rangeStart) + 1
+    if length <= 0 then return invalid
+
+    bytes = CreateObject("roByteArray")
+    if bytes.ReadFile(initPath, rangeStart, length) <> true then return invalid
+    if bytes.count() <= 0 then return invalid
+
+    return {
+        "data": bytes
+        "totalBytes": length
+        "coverage": {
+            "rangeStart": rangeStart
+            "rangeEnd": rangeEnd
+        }
+        "isInitSeg": true
+        "path": initPath
+    }
 end function
 
 '------------------------------------------------------------------------------
