@@ -591,11 +591,32 @@ function sabr_ump_materializeInitSegment(entry as object, spoolPath as string, m
     itagLabel = sabr_ump_toSafeString(entry?.itag)
     if itagLabel = "" then itagLabel = "noitag"
 
+    startRangeVal = sabr_ump_toInt(entry?.startRange)
+    endRangeVal = sabr_ump_toInt(entry?.endRange)
+    mediaHeader = entry?.mediaHeader
+    if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+        startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+        if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+    end if
+    if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+        contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+        if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+            endRangeVal = startRangeVal + contentLengthVal - 1
+        end if
+    end if
+
+    startLabelValue = startRangeVal <> invalid ? `${startRangeVal}` : "start"
+    endLabelValue = endRangeVal <> invalid ? `${endRangeVal}` : "end"
+    startLabel = sabr_ump_sanitizeForFilename(startLabelValue)
+    endLabel = sabr_ump_sanitizeForFilename(endLabelValue)
+    keyLabel = sabr_ump_sanitizeForFilename(keyLabel)
+    itagLabel = sabr_ump_sanitizeForFilename(itagLabel)
+
     baseDir = `tmp:/${mediaIdHash}`
     fs = CreateObject("roFileSystem")
     fs.CreateDirectory(baseDir)
-    fileName = sabr_ump_sanitizeForFilename(`init-${typeLabel}-${keyLabel}-${itagLabel}.mp4`)
-    if fileName = "" then fileName = "init.mp4"
+    fileName = sabr_ump_sanitizeForFilename(`init-${typeLabel}-${keyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
+    if fileName = "" then fileName = "init.bin"
     targetPath = `${baseDir}/${fileName}`
 
     if fs.Exists(targetPath) then return targetPath
@@ -629,32 +650,43 @@ function sabr_ump_extractControlParts(spoolMap as object, path as string, mediaI
             fs = CreateObject("roFileSystem")
             if fs <> invalid
                 fs.CreateDirectory(baseDir)
-                targetPath = `${baseDir}/init-${safeKeyLabel}-${safeTypeLabel}.bin`
-                targetExists = fs.Exists(targetPath)
                 keys = segmentIndex.Keys()
                 if IsArray(keys)
                     for each segmentKey in keys
                         segEntry = segmentIndex.Lookup(segmentKey)
                         if not IsAssociativeArray(segEntry) then continue for
                         if segEntry?.isInitSeg <> true then continue for
-                        if targetExists <> true
-                            chunkData = sabr_ump_readChunksFromSpool(path, segEntry?.chunks, sabr_ump_toInt(segEntry?.totalBytes))
-                            if GetInterface(chunkData, "ifByteArray") = invalid or chunkData.count() <= 0 then continue for
-                            if chunkData.WriteFile(targetPath) = true
-                                targetExists = true
-                            else
-                                continue for
+                        startRangeVal = sabr_ump_toInt(segEntry?.startRange)
+                        endRangeVal = sabr_ump_toInt(segEntry?.endRange)
+                        mediaHeader = segEntry?.mediaHeader
+                        if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+                            if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+                        end if
+                        if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+                            if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+                                endRangeVal = startRangeVal + contentLengthVal - 1
                             end if
                         end if
-                        if targetExists = true
-                            segEntry["initPath"] = targetPath
-                            segmentIndex[segmentKey] = segEntry
-                            exit for
+
+                        startLabel = startRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${startRangeVal}`) : "start"
+                        endLabel = endRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${endRangeVal}`) : "end"
+                        itagLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(segEntry?.itag))
+                        if itagLabel = "" then itagLabel = "noitag"
+
+                        fileName = sabr_ump_sanitizeForFilename(`init-${safeTypeLabel}-${safeKeyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
+                        if fileName = "" then fileName = "init.bin"
+                        targetPath = `${baseDir}/${fileName}`
+                        if fs.Exists(targetPath) <> true
+                            chunkData = sabr_ump_readChunksFromSpool(path, segEntry?.chunks, sabr_ump_toInt(segEntry?.totalBytes))
+                            if GetInterface(chunkData, "ifByteArray") = invalid or chunkData.count() <= 0 then continue for
+                            if chunkData.WriteFile(targetPath) <> true then continue for
                         end if
+                        segEntry["initPath"] = targetPath
+                        segmentIndex[segmentKey] = segEntry
+                        results["initSegmentPath"] = targetPath
                     end for
-                end if
-                if targetExists = true
-                    results["initSegmentPath"] = targetPath
                 end if
             end if
         end if

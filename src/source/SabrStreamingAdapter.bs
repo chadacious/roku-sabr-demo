@@ -475,6 +475,11 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         umpResult = cachedInitResult
         requestMetadata["servedFromInitCache"] = true
         requestMetadataEntry["servedFromInitCache"] = true
+        if isValid(m?.logs)
+            initCachePath = sabr_toSafeString(cachedInitResult?.path)
+            rangeLabel = sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange)
+            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Serving init segment from materialized cache path=${initCachePath} range=${rangeLabel}`)
+        end if
     end if
 
     ' Build and send SABR request when cache misses
@@ -587,7 +592,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                 ' write the protoBytes to a file and send that file to the SABR URL
                 keyLabelForDump = sabr_sanitizeForFilename(sabr_toSafeString(keyParam))
                 if keyLabelForDump = "" then keyLabelForDump = "nokey"
-                protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${keyLabelForDump}-${nextRequestId}.bin`
+                rangeLabelForFile = sabr_sanitizeForFilename(sabr_formatRequestedRangeForPath(requestMetadataEntry.byteRange))
+                if rangeLabelForFile = "" then rangeLabelForFile = "range"
+                protoFilePath = `tmp:/${mediaIdHash}/sabrRequest-${contentType}-${keyLabelForDump}-${rangeLabelForFile}-${nextRequestId}.bin`
                 protoBytes.writeFile(protoFilePath)
                 sabrRequest = {
                     "url": sabrAbrUrl,
