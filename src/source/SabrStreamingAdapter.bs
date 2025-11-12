@@ -112,6 +112,17 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         playbackContext["mediaIdHash"] = mediaIdHash
     end if
 
+    if IsAssociativeArray(playbackContext) and isValid(sabr)
+        persistedUstreamer = playbackContext?.ustreamerConfig
+        if isValid(persistedUstreamer)
+            sabr.ustreamerConfig = persistedUstreamer
+        end if
+        persistedAbrUrl = sabr_toSafeString(playbackContext?.serverAbrStreamingUrl)
+        if persistedAbrUrl <> ""
+            sabr.serverAbrStreamingUrl = persistedAbrUrl
+        end if
+    end if
+
     fatalInfo = playbackContext?.sabrFatalError
     if isValid(fatalInfo)
         fatalReason = fatalInfo?.reason ?? "SABR fatal error"
@@ -814,6 +825,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             end if
                             if isValid(controlEffects.reloadPlaybackContext)
                                 streamInfoSeed["reloadPlaybackContext"] = controlEffects.reloadPlaybackContext
+                                reloadUpdates = sabr_handleReloadPlaybackContext(playbackContext, sabr, controlEffects.reloadPlaybackContext, contentType, requestLogTag)
+                                if IsAssociativeArray(reloadUpdates) and reloadUpdates.Count() > 0
+                                    streamInfoSeed["reloadPlaybackContextResult"] = reloadUpdates
+                                end if
                             end if
                             if isValid(controlEffects.sabrError)
                                 requestMetadata["error"] = { "sabrError": controlEffects.sabrError }
@@ -1107,9 +1122,10 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     ' Persist playback context to tmp so next request sees fresh state to preserve state
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Storing SABR playbackContext to file for mediaIdHash: ${mediaIdHash}`)
-    if isValid(playbackContext?.sidxIndexByFormat)
-        sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} SIDX map snapshot ${FormatJson(playbackContext.sidxIndexByFormat)}`)
-    end if
+    indexSnapshot = sabr_globalSidxIndexMap()
+    ' if IsAssociativeArray(indexSnapshot) and indexSnapshot.Count() > 0
+    '     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} SIDX map snapshot ${FormatJson(indexSnapshot)}`)
+    ' end if
     ' sabr_log(m.logs, log_level_Type.VERBOSE, FormatJson(playbackContext))
     contextStoreTimer = invalid
     if isValid(m?.logs)
@@ -1757,6 +1773,43 @@ function sabr_globalSidxIndexMap() as object
     return m.sidxIndexCache
 end function
 
+function sabr_handleReloadPlaybackContext(playbackContext as object, sabr as object, reloadContext as object, contentType as string, logTag as string) as dynamic
+    
+    '' Here you need to call whatever api you have to retrieve updated config values
+    '' For demonstration, we will just set some dummy values
+
+    if not IsAssociativeArray(reloadContext) then return invalid
+
+    if IsAssociativeArray(playbackContext)
+        playbackContext["lastReloadPlaybackContext"] = reloadContext
+    end if
+
+    updates = {
+        "ustreamerConfig": ""
+        "serverAbrStreamingUrl": ""
+    }
+
+    if isValid(sabr)
+        sabr.ustreamerConfig = updates["ustreamerConfig"]
+    end if
+    if IsAssociativeArray(playbackContext)
+        playbackContext["ustreamerConfig"] = updates["ustreamerConfig"]
+    end if
+
+    if isValid(sabr)
+        sabr.serverAbrStreamingUrl = updates["serverAbrStreamingUrl"]
+    end if
+    if IsAssociativeArray(playbackContext)
+        playbackContext["serverAbrStreamingUrl"] = updates["serverAbrStreamingUrl"]
+    end if
+
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.INFO, `${logTag} Applied reload playback updates ${FormatJson(updates)}`)
+    end if
+
+    return updates
+end function
+
 '------------------------------------------------------------------------------
 ' Function : sabr_requestedByteStart
 ' Purpose  : Extracts a numeric start byte from a SABR byte range structure,
@@ -1848,28 +1901,17 @@ function sabr_getSidxEntrySet(playbackContext as object, contentType as string, 
         "source": ""
         "indexEntry": invalid
     }
-    if not IsAssociativeArray(playbackContext) then return result
     key = sabr_buildPlayerTimeIndexKey(contentType, currentFormat)
     if key = "" then return result
 
     indexMap = sabr_globalSidxIndexMap()
-    entrySource = "global"
     indexEntry = invalid
     if IsAssociativeArray(indexMap) and indexMap.DoesExist(key)
         indexEntry = indexMap.Lookup(key)
     end if
-
-    if not IsAssociativeArray(indexEntry)
-        playbackMap = playbackContext?.sidxIndexByFormat
-        if IsAssociativeArray(playbackMap) and playbackMap.DoesExist(key)
-            indexEntry = playbackMap.Lookup(key)
-            entrySource = "context"
-        end if
-    end if
-
     if IsAssociativeArray(indexEntry)
         result.entries = indexEntry.Lookup("entries")
-        result.source = entrySource
+        result.source = "memory"
         result.indexEntry = indexEntry
     end if
     return result
@@ -2197,8 +2239,12 @@ end function
 ' Purpose  : Normalizes SIDX updates extracted from spool metadata and merges
 '            them into the playback context/global caches for future lookups.
 '------------------------------------------------------------------------------
-sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)    if not IsAssociativeArray(playbackContext) then return
+sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, update as object)
     if not IsAssociativeArray(update) then return
+
+    ' if IsAssociativeArray(playbackContext) and playbackContext.DoesExist("sidxIndexByFormat")
+    '     playbackContext.Delete("sidxIndexByFormat")
+    ' end if
 
     formatKey = `${update?.formatKey ?? ""}`
     if formatKey = "" and update.DoesExist("format_id")
@@ -2265,13 +2311,6 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
         end for
         sanitized["entries"] = cleaned
     end if
-
-    map = playbackContext?.sidxIndexByFormat
-    if not IsAssociativeArray(map)
-        map = {}
-    end if
-    map[indexKey] = sanitized
-    playbackContext["sidxIndexByFormat"] = map
 
     globalMap = sabr_globalSidxIndexMap()
     globalMap[indexKey] = sanitized

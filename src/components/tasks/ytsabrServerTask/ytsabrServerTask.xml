@@ -4,6 +4,6 @@
         <field id="videoNode" type="node" />
         <field id="utilsTask" type="node" />
         <field id="contentType" type="string" value="" />
-        <field id="debugUploadUrl" type="string" value="" /> <!-- http://192.168.119.94:9000/ -->
+        <field id="debugUploadUrl" type="string" value="http://192.168.119.94:9000/" /> <!-- http://192.168.119.94:9000/ -->
     </interface>
 </component>
