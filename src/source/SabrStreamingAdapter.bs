@@ -316,7 +316,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             playerTimeOverride = candidateOverride
         end if
     end if
-    defaultBumpMs = SABR_PLAYER_TIME_DEFAULT_BUMP_MS
+    defaultBumpMs = 0 ' SABR_PLAYER_TIME_DEFAULT_BUMP_MS
     if segmentDurationMs <> invalid and segmentDurationMs > 0
         computedBump = Int(segmentDurationMs / 2)
         if computedBump <= 0 then computedBump = SABR_PLAYER_TIME_DEFAULT_BUMP_MS
@@ -671,7 +671,20 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             if IsAssociativeArray(segmentIndex)
                                 for each segmentKey in segmentIndex.Keys()
                                     entry = segmentIndex.Lookup(segmentKey)
+                                    if not IsAssociativeArray(entry) then continue for
+
+                                    spoolSuffix = sabr_extractSpoolKeySuffix(segmentKey)
+                                    if spoolSuffix <> ""
+                                        entry["spoolKeySuffix"] = sabr_trimTrailingColons(spoolSuffix)
+                                    end if
+
                                     playbackContext["umpSpoolMaps"][segmentKey] = entry
+
+                                    normalizedKey = sabr_trimTrailingColons(segmentKey)
+                                    if normalizedKey <> "" and normalizedKey <> segmentKey
+                                        playbackContext["umpSpoolMaps"][normalizedKey] = entry
+                                    end if
+
                                     sidxUpdate = entry?.sidxIndex
                                     if IsAssociativeArray(sidxUpdate)
                                         sabr_storeSidxIndexUpdate(playbackContext, contentType, sidxUpdate)
@@ -707,6 +720,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                             if IsAssociativeArray(segmentEntryTap)
                                 if not IsAssociativeArray(playbackContext?.umpSpoolMaps)
                                     playbackContext["umpSpoolMaps"] = {}
+                                end if
+                                if spoolKeyTap <> ""
+                                    segmentEntryTap["spoolKeySuffix"] = sabr_extractSpoolKeySuffix(spoolKeyTap)
                                 end if
                                 if spoolKeyTap <> ""
                                     playbackContext["umpSpoolMaps"][spoolKeyTap] = segmentEntryTap
@@ -842,7 +858,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                         sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} ${fatalReason}`, false)
                     end if
 
-                    if not isValid(umpResult) and IsAssociativeArray(spoolResultForResponse)
+                    if IsAssociativeArray(spoolResultForResponse)
                         umpResult = spoolResultForResponse
                     end if
 
@@ -928,9 +944,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
                                 "processedParts": processedParts
                                 "streamInfoKeys": streamInfoKeys
                             }
-                            if not isValid(umpResult)
-                                logDetails["result"] = "missing"
-                            end if
+                            logDetails["result"] = "missing"
                             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} No segment data returned from UMP response: ${FormatJson(logDetails)}`, false)
                         else
                             requestMetadataEntry["streamInfo"] = requestMetadata.streamInfo
@@ -1362,25 +1376,131 @@ end function
 function sabr_findSpoolSegmentInCache(playbackContext as object, requestByteRange as object, keyParam as string) as dynamic
     spoolMaps = playbackContext?.umpSpoolMaps
     if not IsAssociativeArray(spoolMaps) then return invalid
+
     startRange = sabr_toInt(requestByteRange?.startRange)
+    if startRange = invalid then startRange = 0
     endRange = sabr_toInt(requestByteRange?.endRange)
-    spoolKey = `${startRange}:${keyParam}`
-    spoolEntry = spoolMaps.Lookup(spoolKey)
-    if IsAssociativeArray(spoolEntry) and IsArray(spoolEntry?.chunks)
-        return { spooledSegment: spoolEntry, spoolKey: spoolKey }
+    startLabel = sabr_toSafeString(startRange)
+    if startLabel = "" then startLabel = "0"
+    keyLabel = sabr_toSafeString(keyParam)
+    normalizedKeyLabel = sabr_trimTrailingColons(keyLabel)
+    if normalizedKeyLabel = "" then normalizedKeyLabel = keyLabel
+
+    keysToTry = []
+    keysToTry.push(`${startLabel}:${keyLabel}`)
+
+    if keyLabel <> ""
+        lastChar = Mid(keyLabel, Len(keyLabel), 1)
+        if lastChar <> ":"
+            keysToTry.push(`${startLabel}:${keyLabel}:`)
+        else
+            trimmedKeyLabel = sabr_trimTrailingColons(keyLabel)
+            if trimmedKeyLabel <> "" and trimmedKeyLabel <> keyLabel
+                keysToTry.push(`${startLabel}:${trimmedKeyLabel}`)
+            end if
+        end if
     end if
-    ' if we get a miss, it could be an init segment request;
+
+    for each candidateKey in keysToTry
+        if candidateKey = invalid or candidateKey = "" then continue for
+        spoolEntry = spoolMaps.Lookup(candidateKey)
+        if IsAssociativeArray(spoolEntry) and IsArray(spoolEntry?.chunks)
+            return { spooledSegment: spoolEntry, spoolKey: candidateKey }
+        end if
+    end for
+
+    ' Attempt to find a cached entry whose coverage spans the requested range
+    targetSuffix = sabr_trimTrailingColons(normalizedKeyLabel)
+    if targetSuffix = "" then targetSuffix = normalizedKeyLabel
+    lowerTargetSuffix = LCase(targetSuffix)
+    if lowerTargetSuffix = "" then lowerTargetSuffix = LCase(sabr_toSafeString(keyLabel))
+
     for each key in spoolMaps
-        if Instr(key, `0:${keyParam}`) = 1
+        entry = spoolMaps.Lookup(key)
+        if not IsAssociativeArray(entry) or not IsArray(entry?.chunks) then continue for
+
+        suffixCandidate = sabr_toSafeString(entry?.spoolKeySuffix)
+        if suffixCandidate = ""
+            suffixCandidate = sabr_extractSpoolKeySuffix(key)
+        end if
+        if suffixCandidate <> ""
+            suffixCandidate = sabr_trimTrailingColons(suffixCandidate)
+        end if
+        if lowerTargetSuffix <> "" and LCase(suffixCandidate) <> lowerTargetSuffix then continue for
+
+        entryStart = sabr_toInt(entry?.startRange)
+        entryEnd = sabr_toInt(entry?.endRange)
+        if entryEnd = invalid and entryStart <> invalid
+            coverageInfo = entry?.coverage
+            if IsAssociativeArray(coverageInfo)
+                entryEnd = sabr_toInt(coverageInfo?.rangeEnd)
+            end if
+        end if
+        if entryEnd = invalid and entryStart <> invalid
+            totalBytesCandidate = sabr_toInt(entry?.totalBytes)
+            if totalBytesCandidate = invalid or totalBytesCandidate <= 0
+                totalBytesCandidate = 0
+                chunksCandidate = entry?.chunks
+                if IsArray(chunksCandidate)
+                    for each chunk in chunksCandidate
+                        lenVal = sabr_toInt(chunk?.length)
+                        if lenVal <> invalid then totalBytesCandidate = totalBytesCandidate + lenVal
+                    end for
+                end if
+            end if
+            if totalBytesCandidate > 0
+                entryEnd = entryStart + totalBytesCandidate - 1
+            end if
+        end if
+
+        if entryStart <> invalid and entryEnd <> invalid and startRange >= entryStart and (endRange = invalid or endRange <= entryEnd)
+            return { spooledSegment: entry, spoolKey: key }
+        end if
+    end for
+
+    ' if we still miss, it could be an init segment request (start range 0 only);
+    if startRange > 0 then return invalid
+    initNeedle = `0:${normalizedKeyLabel}`
+    altInitNeedle = initNeedle
+    if Right(initNeedle, 1) <> ":"
+        altInitNeedle = `${initNeedle}:`
+    end if
+    for each key in spoolMaps
+        if Instr(key, initNeedle) = 1 or Instr(key, altInitNeedle) = 1
             entry = spoolMaps.Lookup(key)
             entryEnd = sabr_toInt(entry?.endRange)
-            if IsAssociativeArray(entry) and IsArray(entry?.chunks) and entryEnd = endRange
+            if IsAssociativeArray(entry) and IsArray(entry?.chunks) and entry?.isInitSeg = true
                 return { spooledSegment: entry, spoolKey: key }
             end if
         end if
     end for
 
     return invalid
+end function
+
+'------------------------------------------------------------------------------
+' Helper : sabr_trimTrailingColons
+' Purpose: Normalizes spool map keys that may have one or more trailing ':'.
+'------------------------------------------------------------------------------
+function sabr_trimTrailingColons(label as string) as string
+    safeLabel = sabr_toSafeString(label)
+    while Len(safeLabel) > 0
+        lastChar = Mid(safeLabel, Len(safeLabel), 1)
+        if lastChar <> ":"
+            exit while
+        end if
+        safeLabel = Left(safeLabel, Len(safeLabel) - 1)
+    end while
+    return safeLabel
+end function
+
+function sabr_extractSpoolKeySuffix(label as string) as string
+    safeLabel = sabr_toSafeString(label)
+    if safeLabel = "" then return ""
+    delim = Instr(1, safeLabel, ":")
+    if delim <= 0 then return ""
+    suffix = Mid(safeLabel, delim + 1)
+    return suffix
 end function
 
 '------------------------------------------------------------------------------

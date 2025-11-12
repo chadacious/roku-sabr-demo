@@ -42,7 +42,7 @@ sub HttpServer()
                 if msg.getSocketID() = tcp.getID()
                     client = tcp.accept()
                     if client = invalid
-                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Accept failed`)
+                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Accept failed on socket ${tcp.getID()}`)
                     else
                         client.notifyReadable(true)
                         client.setMessagePort(port)
