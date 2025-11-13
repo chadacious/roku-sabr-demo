@@ -1041,6 +1041,113 @@ function sabr_ump_materializeInitSegment(entry as object, spoolPath as string, m
 end function
 
 ' Pulls non-media UMP parts (policies, errors, redirects, etc.) out of the spool.
+'------------------------------------------------------------------------------
+' Function : sabr_ump_extractControlParts
+' Purpose  : Collects non-media UMP parts (policies, context updates, errors)
+'            so the streaming adapter can update its state machine quickly.
+'------------------------------------------------------------------------------
+function sabr_ump_extractControlParts(spoolMap as object, path as string, mediaIdHash = "" as string, contentType = "" as string, keyParam = "" as string) as object
+    results = {}
+    if not IsAssociativeArray(spoolMap) then return results
+
+    if IsString(mediaIdHash) and mediaIdHash <> "" and IsString(path) and path <> ""
+        segmentIndex = spoolMap?.segmentIndex
+        if IsAssociativeArray(segmentIndex)
+            safeKeyLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(keyParam))
+            if safeKeyLabel = "" then safeKeyLabel = "nokey"
+            safeTypeLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(contentType))
+            if safeTypeLabel = "" then safeTypeLabel = "unknown"
+            sabr_ensureMediaDir(mediaIdHash)
+            baseDir = sabr_mediaDir(mediaIdHash)
+            fs = CreateObject("roFileSystem")
+            if fs <> invalid
+                keys = segmentIndex.Keys()
+                if IsArray(keys)
+                    for each segmentKey in keys
+                        segEntry = segmentIndex.Lookup(segmentKey)
+                        if not IsAssociativeArray(segEntry) then continue for
+                        if segEntry?.isInitSeg <> true then continue for
+                        startRangeVal = sabr_ump_toInt(segEntry?.startRange)
+                        endRangeVal = sabr_ump_toInt(segEntry?.endRange)
+                        mediaHeader = segEntry?.mediaHeader
+                        if startRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            startRangeVal = sabr_ump_toInt(mediaHeader?.startRange)
+                            if startRangeVal = invalid then startRangeVal = sabr_ump_toInt(mediaHeader?.start)
+                        end if
+                        if endRangeVal = invalid and IsAssociativeArray(mediaHeader)
+                            contentLengthVal = sabr_ump_toInt(mediaHeader?.contentLength)
+                            if contentLengthVal <> invalid and contentLengthVal > 0 and startRangeVal <> invalid
+                                endRangeVal = startRangeVal + contentLengthVal - 1
+                            end if
+                        end if
+
+                        startLabel = startRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${startRangeVal}`) : "start"
+                        endLabel = endRangeVal <> invalid ? sabr_ump_sanitizeForFilename(`${endRangeVal}`) : "end"
+                        itagLabel = sabr_ump_sanitizeForFilename(sabr_ump_toSafeString(segEntry?.itag))
+                        if itagLabel = "" then itagLabel = "noitag"
+
+                        fileName = sabr_ump_sanitizeForFilename(`init-${safeTypeLabel}-${safeKeyLabel}-${startLabel}-${endLabel}-${itagLabel}.bin`)
+                        if fileName = "" then fileName = "init.bin"
+                        targetPath = `${baseDir}/${fileName}`
+                        if fs.Exists(targetPath) <> true
+                            chunkData = sabr_ump_readChunksFromSpool(path, segEntry?.chunks, sabr_ump_toInt(segEntry?.totalBytes))
+                            if GetInterface(chunkData, "ifByteArray") = invalid or chunkData.count() <= 0 then continue for
+                            if chunkData.WriteFile(targetPath) <> true then continue for
+                        end if
+                        segEntry["initPath"] = targetPath
+                        segmentIndex[segmentKey] = segEntry
+                        results["initSegmentPath"] = targetPath
+                    end for
+                end if
+            end if
+        end if
+    end if
+
+    parts = spoolMap?.parts
+    if not IsArray(parts) or parts.count() = 0 then return results
+
+    for each part in parts
+        partType = sabr_ump_toInt(part?.type)
+        if partType = invalid then partType = sabr_ump_toInt(part?.typeId)
+        if partType = UMP_PART_ID_NEXT_REQUEST_POLICY or partType = UMP_PART_ID_SABR_CONTEXT_UPDATE or partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY or partType = UMP_PART_ID_SABR_REDIRECT or partType = UMP_PART_ID_SABR_ERROR or partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+            payload = sabr_ump_readSpoolPayload(path, part?.payloadOffset, part?.payloadSize)
+            if GetInterface(payload, "ifByteArray") = invalid or payload.count() = 0 then continue for
+            if partType = UMP_PART_ID_NEXT_REQUEST_POLICY
+                decoded = sabr_ump_decodePart(NextRequestPolicyDecode, payload, invalid, "spool_next_request_policy")
+                if isValid(decoded)
+                    results["nextRequestPolicy"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE
+                decoded = sabr_ump_decodePart(SabrContextUpdateDecode, payload, invalid, "spool_context_update")
+                if isValid(decoded)
+                    results["sabrContextUpdate"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY
+                decoded = sabr_ump_decodePart(SabrContextSendingPolicyDecode, payload, invalid, "spool_context_sending_policy")
+                if isValid(decoded)
+                    results["sabrContextSendingPolicy"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_REDIRECT
+                decoded = sabr_ump_decodePart(SabrRedirectDecode, payload, invalid, "spool_redirect")
+                if isValid(decoded)
+                    results["redirect"] = decoded
+                end if
+            else if partType = UMP_PART_ID_SABR_ERROR
+                decoded = sabr_ump_decodePart(SabrErrorDecode, payload, invalid, "spool_sabr_error")
+                if isValid(decoded)
+                    results["sabrError"] = decoded
+                end if
+            else if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+                decoded = sabr_ump_decodePart(ReloadPlaybackContextDecode, payload, invalid, "spool_reload_playback_response")
+                if isValid(decoded)
+                    results["reloadPlaybackContext"] = decoded
+                end if
+            end if
+        end if
+    end for
+
+    return results
+end function
 
 '------------------------------------------------------------------------------
 ' Function : sabr_ump_extractSidxFromSpool

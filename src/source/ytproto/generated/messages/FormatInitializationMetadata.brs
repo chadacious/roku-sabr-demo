@@ -1,4 +1,7 @@
 ' Auto-generated encoder/decoder for video_streaming.FormatInitializationMetadata
+import "pkg:/source/ytproto/generated/messages/FormatId.brs"
+import "pkg:/source/ytproto/generated/messages/Range.brs"
+import "pkg:/source/ytproto/generated/messages/TimeRange.brs"
 
 function FormatInitializationMetadataEncode(message as Object) as String
     fieldMap = {}
