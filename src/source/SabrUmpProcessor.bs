@@ -482,31 +482,45 @@ sub sabr_ump_streamHandleControlPart(tap as object, partType as integer, path as
     payload = CreateObject("roByteArray")
     if payload.ReadFile(path, payloadOffset, partSize) <> true then return
 
-    decoded = invalid
-    if partType = UMP_PART_ID_NEXT_REQUEST_POLICY then
-        decoded = sabr_ump_decodePart(NextRequestPolicyDecode, payload, invalid, "stream_next_request_policy")
-        if decoded <> invalid then tap.controlEffects["nextRequestPolicy"] = decoded
-    else if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE then
-        decoded = sabr_ump_decodePart(SabrContextUpdateDecode, payload, invalid, "stream_context_update")
-        if decoded <> invalid then tap.controlEffects["sabrContextUpdate"] = decoded
-    else if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY then
-        decoded = sabr_ump_decodePart(SabrContextSendingPolicyDecode, payload, invalid, "stream_context_sending_policy")
-        if decoded <> invalid then tap.controlEffects["sabrContextSendingPolicy"] = decoded
-    else if partType = UMP_PART_ID_SABR_REDIRECT then
-        decoded = sabr_ump_decodePart(SabrRedirectDecode, payload, invalid, "stream_redirect")
-        if decoded <> invalid then tap.controlEffects["redirect"] = decoded
-    else if partType = UMP_PART_ID_SABR_ERROR then
-        decoded = sabr_ump_decodePart(SabrErrorDecode, payload, invalid, "stream_sabr_error")
-        if decoded <> invalid then tap.controlEffects["sabrError"] = decoded
-    else if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE then
-        decoded = sabr_ump_decodePart(ReloadPlaybackContextDecode, payload, invalid, "stream_reload_playback")
-        if decoded <> invalid then tap.controlEffects["reloadPlaybackContext"] = decoded
-    else if partType = UMP_PART_ID_STREAM_PROTECTION_STATUS then
-        decoded = sabr_ump_decodePart(StreamProtectionStatusDecode, payload, invalid, "stream_protection_status")
-        if decoded <> invalid then tap.controlEffects["streamProtectionStatus"] = decoded
-    else if partType = UMP_PART_ID_SNACKBAR_MESSAGE then
-        decoded = sabr_ump_decodePart(SnackbarMessageDecode, payload, invalid, "stream_snackbar")
-        if decoded <> invalid then tap.controlEffects["snackbarMessage"] = decoded
+    sabr_ump_storeControlEffect(tap.controlEffects, partType, payload, "stream")
+end sub
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_storeControlEffect
+' Purpose: Shared logic for decoding control parts and recording them against
+'          either the streaming tap state or the offline spool scan.
+'------------------------------------------------------------------------------
+sub sabr_ump_storeControlEffect(target as dynamic, partType as integer, payload as object, labelPrefix as string)
+    if not IsAssociativeArray(target) then return
+    if GetInterface(payload, "ifByteArray") = invalid then return
+
+    prefix = labelPrefix
+    if prefix = "" then prefix = "sabr"
+
+    if partType = UMP_PART_ID_NEXT_REQUEST_POLICY
+        decoded = sabr_ump_decodePart(NextRequestPolicyDecode, payload, invalid, `${prefix}_next_request_policy`)
+        if decoded <> invalid then target["nextRequestPolicy"] = decoded
+    else if partType = UMP_PART_ID_SABR_CONTEXT_UPDATE
+        decoded = sabr_ump_decodePart(SabrContextUpdateDecode, payload, invalid, `${prefix}_context_update`)
+        if decoded <> invalid then target["sabrContextUpdate"] = decoded
+    else if partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY
+        decoded = sabr_ump_decodePart(SabrContextSendingPolicyDecode, payload, invalid, `${prefix}_context_sending_policy`)
+        if decoded <> invalid then target["sabrContextSendingPolicy"] = decoded
+    else if partType = UMP_PART_ID_SABR_REDIRECT
+        decoded = sabr_ump_decodePart(SabrRedirectDecode, payload, invalid, `${prefix}_redirect`)
+        if decoded <> invalid then target["redirect"] = decoded
+    else if partType = UMP_PART_ID_SABR_ERROR
+        decoded = sabr_ump_decodePart(SabrErrorDecode, payload, invalid, `${prefix}_sabr_error`)
+        if decoded <> invalid then target["sabrError"] = decoded
+    else if partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE
+        decoded = sabr_ump_decodePart(ReloadPlaybackContextDecode, payload, invalid, `${prefix}_reload_playback`)
+        if decoded <> invalid then target["reloadPlaybackContext"] = decoded
+    else if partType = UMP_PART_ID_STREAM_PROTECTION_STATUS
+        decoded = sabr_ump_decodePart(StreamProtectionStatusDecode, payload, invalid, `${prefix}_stream_protection_status`)
+        if decoded <> invalid then target["streamProtectionStatus"] = decoded
+    else if partType = UMP_PART_ID_SNACKBAR_MESSAGE
+        decoded = sabr_ump_decodePart(SnackbarMessageDecode, payload, invalid, `${prefix}_snackbar`)
+        if decoded <> invalid then target["snackbarMessage"] = decoded
     end if
 end sub
 
@@ -533,7 +547,8 @@ end function
 '------------------------------------------------------------------------------
 ' Function : sabr_ump_buildSpoolPartMap
 ' Purpose  : Scans a SABR spool file, interprets each part header, and returns
-'            structured metadata including segment linkage and summary stats.
+'            structured metadata including segment linkage, control effects, and
+'            summary stats.
 '------------------------------------------------------------------------------
 function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integer, keyParam = "" as string) as dynamic
     result = {
@@ -570,6 +585,7 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
     headerIndex = createObject("roAssociativeArray")
     segmentIndex = createObject("roAssociativeArray")
     headerToSegmentKey = createObject("roAssociativeArray")
+    controlEffects = createObject("roAssociativeArray")
     suffixBase = sabr_ump_toSafeString(keyParam)
     currentHeaderId = invalid
     offset = 0
@@ -623,6 +639,8 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
             "payloadEnd": (offset + headerLength + partSize) - 1
             "totalLength": headerLength + partSize
         }
+
+        handlesControl = partType = UMP_PART_ID_NEXT_REQUEST_POLICY or partType = UMP_PART_ID_SABR_CONTEXT_UPDATE or partType = UMP_PART_ID_SABR_CONTEXT_SENDING_POLICY or partType = UMP_PART_ID_SABR_REDIRECT or partType = UMP_PART_ID_SABR_ERROR or partType = UMP_PART_ID_RELOAD_PLAYER_RESPONSE or partType = UMP_PART_ID_STREAM_PROTECTION_STATUS or partType = UMP_PART_ID_SNACKBAR_MESSAGE
 
         if partType = UMP_PART_ID_MEDIA_HEADER
             headerData = CreateObject("roByteArray")
@@ -735,6 +753,13 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
 
             if partType = UMP_PART_ID_MEDIA_END
                 currentHeaderId = invalid
+            end if
+        else if handlesControl
+            controlPayload = CreateObject("roByteArray")
+            if partSize > 0 and controlPayload.ReadFile(path, partEntry.payloadOffset, partSize) = true
+                result.reads = result.reads + 1
+                actualBytesRead = actualBytesRead + partSize
+                sabr_ump_storeControlEffect(controlEffects, partType, controlPayload, "spool")
             end if
         end if
 
@@ -871,6 +896,7 @@ function sabr_ump_buildSpoolPartMap(path as string, maxHeaderBytes = 16 as integ
     result["totalBytes"] = totalSize
     result["actualBytesRead"] = actualBytesRead
     result["partCount"] = parts.count()
+    result["controlEffects"] = controlEffects
     containsInit = false
     for each partSummary in parts
         if IsAssociativeArray(partSummary)

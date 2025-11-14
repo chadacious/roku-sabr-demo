@@ -179,16 +179,23 @@ function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, content
     if spoolPath = "" then return invalid
 
     streamTapResult = res?.streamTapResult
-    controlEffects = invalid
+    ' Always parse the spool to capture control parts even if no media chunk was matched.
+    spoolMap = sabr_ump_buildSpoolPartMap(spoolPath, 16, keyParam)
+    tapControlEffects = invalid
     if IsAssociativeArray(streamTapResult)
-        controlEffects = streamTapResult.Lookup("controlEffects")
+        tapControlEffects = streamTapResult.Lookup("controlEffects")
     end if
+    spoolControlEffects = invalid
+    if IsAssociativeArray(spoolMap)
+        spoolControlEffects = spoolMap.Lookup("controlEffects")
+    end if
+    controlEffects = sabr_mergeControlEffects(spoolControlEffects, tapControlEffects)
     effectInfo = sabr_applyControlEffects(playbackContext, sabr, controlEffects, contentType, logTag)
     redirectUrl = sabr_toSafeString(effectInfo?.redirectUrl)
 
     tapEntry = sabr_extractSegmentEntryFromTap(streamTapResult, spoolPath)
     if not IsAssociativeArray(tapEntry)
-        tapEntry = sabr_loadSegmentEntryFromSpool(playbackContext, spoolPath, requestByteRange, keyParam, logTag, contentType, currentFormat, requestNumber)
+        tapEntry = sabr_loadSegmentEntryFromSpool(playbackContext, spoolPath, requestByteRange, keyParam, logTag, contentType, currentFormat, requestNumber, spoolMap)
     end if
     if not IsAssociativeArray(tapEntry)
         sabr_log(m.logs, log_level_Type.WARN, `${logTag} No segment entry available for ${spoolPath}`)
@@ -257,8 +264,11 @@ end function
 ' Purpose  : Parse the spool map emitted by SABR and locate the segment that
 '            satisfies the caller's requested byte range.
 '------------------------------------------------------------------------------
-function sabr_loadSegmentEntryFromSpool(playbackContext as object, spoolPath as string, requestByteRange as object, keyParam as string, logTag as string, contentType as string, currentFormat as object, requestNumber as string) as dynamic
-    spoolMap = sabr_ump_buildSpoolPartMap(spoolPath, 16, keyParam)
+function sabr_loadSegmentEntryFromSpool(playbackContext as object, spoolPath as string, requestByteRange as object, keyParam as string, logTag as string, contentType as string, currentFormat as object, requestNumber as string, existingSpoolMap = invalid as dynamic) as dynamic
+    spoolMap = existingSpoolMap
+    if not IsAssociativeArray(spoolMap)
+        spoolMap = sabr_ump_buildSpoolPartMap(spoolPath, 16, keyParam)
+    end if
     if not IsAssociativeArray(spoolMap) then return invalid
     segment = sabr_selectSpoolSegmentFromMap(spoolMap, requestByteRange, keyParam)
     sabr_debugUploadSpool(playbackContext, requestNumber, contentType, currentFormat, requestByteRange, spoolMap)
@@ -1249,6 +1259,31 @@ function sabr_applyControlEffects(playbackContext as object, sabr as object, con
     end if
 
     return info
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_mergeControlEffects
+' Purpose  : Combine control effects discovered via stream tap and spool scan,
+'            preferring later overlays when keys collide.
+'------------------------------------------------------------------------------
+function sabr_mergeControlEffects(spoolEffects as dynamic, tapEffects as dynamic) as dynamic
+    hasSpool = IsAssociativeArray(spoolEffects)
+    hasTap = IsAssociativeArray(tapEffects)
+    if not hasSpool and not hasTap then return invalid
+
+    merged = createObject("roAssociativeArray")
+    if hasSpool
+        for each key in spoolEffects.Keys()
+            merged[key] = spoolEffects.Lookup(key)
+        end for
+    end if
+    if hasTap
+        for each key in tapEffects.Keys()
+            merged[key] = tapEffects.Lookup(key)
+        end for
+    end if
+    if merged.Count() = 0 then return invalid
+    return merged
 end function
 
 '------------------------------------------------------------------------------
