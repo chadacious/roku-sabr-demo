@@ -1,7 +1,9 @@
 ' Tracks SABR request metadata keyed by request number (rn).
 
-import "pkg:/source/isItem.bs"
-
+'------------------------------------------------------------------------------
+' Function : sabr_createRequestMetadataManager
+' Purpose  : Build a lightweight in-memory cache keyed by SABR request number.
+'------------------------------------------------------------------------------
 function sabr_createRequestMetadataManager() as object
     manager = {
         "entries": createObject("roAssociativeArray")
@@ -23,7 +25,13 @@ function sabr_createRequestMetadataManager() as object
     return manager
 end function
 
-sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as object)    if not isValid(requestNumber) or requestNumber = "" then return
+'------------------------------------------------------------------------------
+' Function : sabr_metadata_store
+' Purpose  : Insert/refresh metadata for a specific request number, evicting
+'            stale entries on a fixed cadence.
+'------------------------------------------------------------------------------
+sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as object)
+    if not isValid(requestNumber) or requestNumber = "" then return
     if not isValid(metadata) then return
 
     ctx.entries[requestNumber] = {
@@ -33,11 +41,17 @@ sub sabr_metadata_store(ctx as object, requestNumber as string, metadata as obje
 
     now = sabr_metadata_timestamp()
     if now - ctx.lastCleanup > ctx.cleanupIntervalMs
+        ' Opportunistically trim the map only when enough time elapsed.
         sabr_metadata_cleanup(ctx)
         ctx["lastCleanup"] = now
     end if
 end sub
 
+'------------------------------------------------------------------------------
+' Function : sabr_metadata_fetch
+' Purpose  : Retrieve metadata for a request, optionally removing it to ensure
+'            single-use semantics (e.g. once-per-response data).
+'------------------------------------------------------------------------------
 function sabr_metadata_fetch(ctx as object, requestNumber as string, remove as boolean) as dynamic
     if not isValid(requestNumber) or requestNumber = "" then return invalid
 
@@ -53,7 +67,12 @@ function sabr_metadata_fetch(ctx as object, requestNumber as string, remove as b
     return entry.data
 end function
 
-sub sabr_metadata_cleanup(ctx as object)    now = sabr_metadata_timestamp()
+'------------------------------------------------------------------------------
+' Function : sabr_metadata_cleanup
+' Purpose  : Drop expired metadata entries; safe to call frequently.
+'------------------------------------------------------------------------------
+sub sabr_metadata_cleanup(ctx as object)
+    now = sabr_metadata_timestamp()
     for each key in ctx.entries.keys()
         entry = ctx.entries.Lookup(key)
         if isValid(entry) and now - entry.storedAt > ctx.entryMaxAgeMs
@@ -62,6 +81,10 @@ sub sabr_metadata_cleanup(ctx as object)    now = sabr_metadata_timestamp()
     end for
 end sub
 
+'------------------------------------------------------------------------------
+' Function : sabr_metadata_timestamp
+' Purpose  : Millisecond clock wrapper so tests can stub or override later.
+'------------------------------------------------------------------------------
 function sabr_metadata_timestamp() as integer
     dt = CreateObject("roDateTime")
     if not IsDateTime(dt) then return 0

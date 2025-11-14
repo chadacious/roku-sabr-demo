@@ -1,3 +1,5 @@
+' Legacy SABR adapter retained for reference during the BrightScript rewrite.
+
 import "pkg:/source/ytproto/generated/runtime.brs"
 import "pkg:/source/ytproto/generated/messages/VideoPlaybackAbrRequest.brs"
 import "pkg:/source/ytproto/generated/messages/ClientAbrState.brs"

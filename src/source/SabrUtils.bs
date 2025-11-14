@@ -9,6 +9,11 @@ function sabr_extractMediaIdHash(url as string) as dynamic
     return invalid
 end function
 
+'------------------------------------------------------------------------------
+' Function: sabr_toInt
+' Purpose : Normalize any primitive into the signed 32-bit integer range we use
+'           across SABR files. Returns invalid for non-numeric inputs.
+'------------------------------------------------------------------------------
 function sabr_toInt(value as dynamic) as dynamic
     if not isValid(value) then return invalid
     if IsInteger(value) then return value
@@ -27,12 +32,17 @@ function sabr_safeToInt(value as dynamic) as integer
     return result
 end function
 
+'------------------------------------------------------------------------------
+' Function: sabr_toSafeString
+' Purpose : Convert diverse primitive types into deterministic ascii strings.
+'------------------------------------------------------------------------------
 function sabr_toSafeString(value as dynamic) as string
     if not isValid(value) then return ""
     if IsString(value) then return value.trim()
     if IsBoolean(value) then return value = true ? "true" : "false"
     if IsInteger(value) then return value.toStr()
     if IsFloat(value) or IsDouble(value)
+        ' FormatJson keeps full precision when the runtime would otherwise fall back to scientific notation.
         precise = FormatJson(value)
         if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0 then return precise
         intVal = int(value)
@@ -197,6 +207,7 @@ function sabr_cloneObject(value as dynamic) as dynamic
     catch e
         clone = invalid
     end try
+    ' Deep copies can fail for unserializable types; fall back to returning the original reference.
     if not isValid(clone) then clone = value
     return clone
 end function
@@ -283,6 +294,7 @@ sub sabr_deleteDirectoryRecursive(path as string)
             childPath = `${path}/${entry}`
             childListing = fs.GetDirectoryListing(childPath)
             if IsArray(childListing)
+                ' Recurse into nested directories before deleting the parent.
                 sabr_deleteDirectoryRecursive(childPath)
             else
                 fs.Delete(childPath)

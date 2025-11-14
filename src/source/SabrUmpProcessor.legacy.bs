@@ -1,6 +1,7 @@
 ' Lightweight BrightScript port of the TypeScript SabrUmpProcessor
 ' Handles decoding of SABR/UMP multipart responses so Roku clients can cache init data
 ' and react to server directives.
+' This legacy copy mirrors the active processor but stays untouched for older builds.
 
 import "pkg:/source/ytproto/generated/runtime.brs"
 import "pkg:/source/ytproto/generated/messages/FormatInitializationMetadata.brs"

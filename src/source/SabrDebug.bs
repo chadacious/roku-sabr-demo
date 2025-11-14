@@ -3,6 +3,11 @@ import "pkg:/source/SabrUtils.bs"
 
 const SABR_DEBUG_ENABLED = true
 
+'------------------------------------------------------------------------------
+' Function : sabr_log
+' Purpose  : Guarded logging helper so we can silence noisy debug prints at run
+'            time while still allowing forced messages (debugOnly = false).
+'------------------------------------------------------------------------------
 sub sabr_log(logs as dynamic, level as integer, message as string, debugOnly = true as boolean)
     if debugOnly = false or SABR_DEBUG_ENABLED
         if IsAssociativeArray(logs) and logs.DoesExist("printl")
@@ -101,6 +106,7 @@ sub sabr_debugUploadContent(debugUploadUrl as string, relativePath as string, co
             bytesRef = content
             wrote = false
             if GetInterface(bytesRef, "ifByteArray") <> invalid
+                ' Byte arrays can be flushed straight to disk without extra copying.
                 wrote = bytesRef.WriteFile(tmpFilePath)
             else
                 byteCopy = CreateObject("roByteArray")

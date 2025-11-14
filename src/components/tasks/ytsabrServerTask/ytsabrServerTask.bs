@@ -99,6 +99,11 @@ sub YtsabrServer()
     end while
 end sub
 
+'------------------------------------------------------------------------------
+' Function : sabr_streamUMPPayload
+' Purpose  : Stream a SABR spool response back to the Roku player, supporting
+'            both cached byte arrays and on-disk chunk lists.
+'------------------------------------------------------------------------------
 function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
     path = sabrResponse.path
     chunks = sabrResponse?.chunks
