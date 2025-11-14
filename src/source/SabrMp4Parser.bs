@@ -40,6 +40,7 @@ function sabr_mp4_extractSidxIndex(bytes as object) as dynamic
     ' base64 log of bytes can be passed in to extract SIDX box info
     ' sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-MP4] Extracting SIDX index from bytes: ${bytes.ToHexString()}`)
     if not isValid(bytes) then return invalid
+    ' We only need a shallow inspection of an init segment, so cap at a small box count.
     boxes = sabr_mp4_parseBoxes(bytes, 40)
     for each boxInfo in boxes
         if boxInfo?.type = "sidx"
@@ -76,8 +77,8 @@ function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
     referenceId = sabr_mp4_readUint32(bytes, cursor) : cursor = cursor + 4
     timescale = sabr_mp4_readUint32(bytes, cursor) : cursor = cursor + 4
 
-    earliestPresentationTime = 0.0
-    firstOffset = 0.0
+    earliestPresentationTime = 0
+    firstOffset = 0
     if version = 0
         if cursor + 8 > totalLength then return invalid
         earliestPresentationTime = sabr_mp4_readUint32(bytes, cursor)
@@ -98,9 +99,10 @@ function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
     cursor = cursor + 2
 
     references = []
-    runningOffset = 0.0
-    baseRangeStart = (offset + size) * 1.0 + firstOffset
-    totalDuration = 0.0
+    ' All range math stays in integer space; floats lose precision beyond ~16 MB.
+    runningOffset = 0
+    baseRangeStart = (offset + size) + firstOffset
+    totalDuration = 0
 
     for i = 0 to referenceCount - 1
         if cursor + 12 > offset + size then exit for
@@ -112,7 +114,7 @@ function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
             referenceType = 1
             rawSize = rawSize - 2147483648
         end if
-        referenceSize = rawSize * 1.0
+        referenceSize = rawSize
 
         subsegmentDuration = sabr_mp4_readUint32(bytes, cursor)
         cursor = cursor + 4
@@ -127,6 +129,7 @@ function sabr_mp4_parseSidxBox(bytes as object, boxInfo as dynamic) as dynamic
         sapValue = sapValue - (sapType * 268435456)
         sapDelta = sapValue
 
+        ' Integer accumulation avoids the rounding we previously saw with float math.
         rangeStart = baseRangeStart + runningOffset
         rangeEnd = rangeStart + referenceSize - 1
         runningOffset = runningOffset + referenceSize

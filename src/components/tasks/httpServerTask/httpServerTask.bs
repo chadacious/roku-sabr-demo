@@ -36,13 +36,14 @@ sub HttpServer()
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
-        if msgType <> "Invalid" then m.logs.printl(log_level_Type.INFO, `[${TAG}] got something ${msgType}`)
+        if msgType <> "Invalid" then m.logs.printl(log_level_Type.INFO, `[${TAG}] got event ${msgType}`)
         if msgType = "roSocketEvent"
             try
-                if msg.getSocketID() = tcp.getID()
+                socketId = msg.getSocketID()
+                if socketId = tcp.getID()
                     client = tcp.accept()
                     if client = invalid
-                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Accept failed on socket ${tcp.getID()}`)
+                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Accept failed on listen socket ${tcp.getID()}`)
                     else
                         client.notifyReadable(true)
                         client.setMessagePort(port)
@@ -50,7 +51,7 @@ sub HttpServer()
                     end if
                 else
                     ' Must be a client connection!
-                    connection = m.sockets[Stri(msg.getSocketID())]
+                    connection = m.sockets[Stri(socketId)]
                     ' If connection is invalid, what does that mean?
                     if connection <> invalid
                         ' FIXME: Do we actually correctly close sockets?
@@ -59,13 +60,14 @@ sub HttpServer()
                             ' What a terrible way to indicate it
                             m.logs.printl(log_level_Type.INFO, `[${TAG}] Connection ${connection.getID()} is closed`)
                             connection.close()
-                            m.sockets[Stri(msg.getSocketID())] = invalid
+                            m.sockets[Stri(socketId)] = invalid
                         else
+                            logSocketStatus(connection, msg)
                             'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handleTcp(connection, port)
                         end if
                     else
-                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Invalid connection: ${msg.getSocketID()}`)
+                        m.logs.printl(log_level_Type.WARN, `[${TAG}] Socket event for unknown connection id=${socketId}`)
                         ' stop
                     end if
                 end if
@@ -129,3 +131,21 @@ function processRequest(request as object, connection as object, port as object)
     m.logs.printl(log_level_Type.INFO, `[${TAG}] Status: ${status}`)
     return true ' false = Keep-alive
 end function
+
+sub logSocketStatus(connection as object, msg as object)
+    if connection = invalid then return
+    if msg = invalid then return
+    info = {
+        "socketId": connection.getID()
+        "readable": connection.isReadable()
+        "connected": connection.isConnected()
+        "recvBufBytes": connection.getCountRcvBuf()
+        "status": connection.status()
+        "eConnAborted": connection.eConnAborted()
+        "eConnRefused": connection.eConnRefused()
+        "eConnReset": connection.eConnReset()
+        "eIsConn": connection.eIsConn()
+        "eNotConn": connection.eNotConn()
+    }
+    m.logs.printl(log_level_Type.VERBOSE, `[${TAG}] roSocketEvent detail: ${FormatJson(info)}`)
+end sub

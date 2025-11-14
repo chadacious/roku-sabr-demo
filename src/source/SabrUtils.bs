@@ -9,6 +9,11 @@ function sabr_extractMediaIdHash(url as string) as dynamic
     return invalid
 end function
 
+'------------------------------------------------------------------------------
+' Function: sabr_toInt
+' Purpose : Normalize any primitive into the signed 32-bit integer range we use
+'           across SABR files. Returns invalid for non-numeric inputs.
+'------------------------------------------------------------------------------
 function sabr_toInt(value as dynamic) as dynamic
     if not isValid(value) then return invalid
     if IsInteger(value) then return value
@@ -21,18 +26,17 @@ function sabr_toInt(value as dynamic) as dynamic
     return invalid
 end function
 
-function sabr_safeToInt(value as dynamic) as integer
-    result = sabr_toInt(value)
-    if result = invalid then return 0
-    return result
-end function
-
+'------------------------------------------------------------------------------
+' Function: sabr_toSafeString
+' Purpose : Convert diverse primitive types into deterministic ascii strings.
+'------------------------------------------------------------------------------
 function sabr_toSafeString(value as dynamic) as string
     if not isValid(value) then return ""
     if IsString(value) then return value.trim()
     if IsBoolean(value) then return value = true ? "true" : "false"
     if IsInteger(value) then return value.toStr()
     if IsFloat(value) or IsDouble(value)
+        ' FormatJson keeps full precision when the runtime would otherwise fall back to scientific notation.
         precise = FormatJson(value)
         if precise <> "" and Instr(1, precise, "e") = 0 and Instr(1, precise, "E") = 0 then return precise
         intVal = int(value)
@@ -41,12 +45,6 @@ function sabr_toSafeString(value as dynamic) as string
         return Str(value).trim()
     end if
     return Str(value).trim()
-end function
-
-function sabr_currentTimestampMs() as integer
-    dt = CreateObject("roDateTime")
-    if not IsDateTime(dt) then return 0
-    return (dt.AsSeconds() * 1000) + dt.GetMilliseconds()
 end function
 
 function sabr_formatExceptionDetail(err as dynamic) as string
@@ -172,35 +170,6 @@ function sabr_extractRequestNumber(value as dynamic) as string
     return sabr_valueToLabel(value)
 end function
 
-function sabr_formatToKey(format as dynamic) as string
-    if not isValid(format) then return ""
-    itagPart = ""
-    if isValid(format.itag)
-        itagPart = `${format.itag}`
-    end if
-    xtagsPart = ""
-    if isValid(format.xtags)
-        xtagsPart = `${format.xtags}`
-    end if
-    return `${itagPart}:${xtagsPart}`
-end function
-
-function sabr_cloneObject(value as dynamic) as dynamic
-    if not isValid(value) then return invalid
-    json = ""
-    clone = invalid
-    try
-        json = FormatJson(value)
-        if isValid(json) and json <> ""
-            clone = ParseJson(json)
-        end if
-    catch e
-        clone = invalid
-    end try
-    if not isValid(clone) then clone = value
-    return clone
-end function
-
 function sabr_formatToFormatId(format as object) as object
     if not isValid(format) then return {}
     return {
@@ -283,6 +252,7 @@ sub sabr_deleteDirectoryRecursive(path as string)
             childPath = `${path}/${entry}`
             childListing = fs.GetDirectoryListing(childPath)
             if IsArray(childListing)
+                ' Recurse into nested directories before deleting the parent.
                 sabr_deleteDirectoryRecursive(childPath)
             else
                 fs.Delete(childPath)
@@ -367,22 +337,6 @@ function sabr_ump_valueToLabel(value as dynamic) as string
     return sabr_valueToLabel(value)
 end function
 
-function sabr_ump_findInArray(arr as object, value as string) as boolean
-    return sabr_findInArray(arr, value)
-end function
-
-function sabr_ump_urlEncode(value as string) as string
-    return sabr_urlEncode(value)
-end function
-
 function sabr_ump_sanitizeForFilename(value as string) as string
     return sabr_sanitizeForFilename(value)
-end function
-
-function sabr_ump_joinPath(base as string, name as string) as string
-    return sabr_joinPath(base, name)
-end function
-
-function sabr_ump_pathIsDir(path as string) as boolean
-    return sabr_pathIsDir(path)
 end function
