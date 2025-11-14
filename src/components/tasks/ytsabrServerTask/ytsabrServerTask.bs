@@ -3,6 +3,7 @@ import "pkg:/source/http.bs"
 import "pkg:/source/SabrStreamingAdapter.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
+import "pkg:/source/taskUtils.bs"
 
 sub init()
     m.logs = logger()
@@ -43,12 +44,16 @@ sub YtsabrServer()
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
+        if msgType <> "Invalid"
+            sabr_log(m.logs, log_level_Type.VERBOSE, `[YTSABR-Server] Event received type=${msgType}`)
+        end if
         if msgType = "roSocketEvent"
             try
-                if msg.getSocketID() = tcp.getID()
+                socketId = msg.getSocketID()
+                if socketId = tcp.getID()
                     client = tcp.accept()
                     if client = invalid
-                        sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] Accept failed", false)
+                        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Accept failed on listen socket ${tcp.getID()}`, false)
                     else
                         client.notifyReadable(true)
                         client.setMessagePort(port)
@@ -56,7 +61,7 @@ sub YtsabrServer()
                     end if
                 else
                     ' Must be a client connection!
-                    connection = m.sockets[Stri(msg.getSocketID())]
+                    connection = m.sockets[Stri(socketId)]
                     ' If connection is invalid, what does that mean?
                     if isValid(connection)
                         ' FIXME: Do we actually correctly close sockets?
@@ -78,9 +83,13 @@ sub YtsabrServer()
                             connection.close()
                             m.sockets[Stri(msg.getSocketID())] = invalid
                         else
-                            'print "tcp " ; msg.getSocketID() ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
+                            logSocketStatus(connection)
+                            ' print "tcp " ; socketId ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handle_tcp(connection, port)
                         end if
+                    else
+                        ' Stale event for a connection we already closed; ignore instead of spamming WARNs.
+                        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Ignoring socket event for closed id=${socketId}`)
                     end if
                 end if
             catch e
@@ -91,6 +100,11 @@ sub YtsabrServer()
     end while
 end sub
 
+'------------------------------------------------------------------------------
+' Function : sabr_streamUMPPayload
+' Purpose  : Stream a SABR spool response back to the Roku player, supporting
+'            both cached byte arrays and on-disk chunk lists.
+'------------------------------------------------------------------------------
 function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, requestLogTag as string) as integer
     path = sabrResponse.path
     chunks = sabrResponse?.chunks
@@ -106,22 +120,115 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     if not isValid(statusCode)
         statusCode = 206
     end if
+
+    dataBlob = invalid
+    if not IsArray(chunks) or chunks.count() = 0
+        dataBlob = sabrResponse?.data
+        if GetInterface(dataBlob, "ifByteArray") = invalid and path <> ""
+            dataBlob = invalid
+        end if
+        if GetInterface(dataBlob, "ifByteArray") <> invalid
+            totalBytes = dataBlob.count()
+            responseHeaders["Content-Length"] = totalBytes.toStr()
+            coverage = sabrResponse?.coverage
+            coverageStart = sabr_toInt(coverage?.rangeStart)
+            coverageEnd = sabr_toInt(coverage?.rangeEnd)
+            if coverageStart = invalid then coverageStart = 0
+            if coverageEnd = invalid and totalBytes > 0
+                coverageEnd = coverageStart + totalBytes - 1
+            end if
+            coverageLabel = "bytes ?-?"
+            if coverageStart <> invalid and coverageEnd <> invalid
+                coverageLabel = `bytes ${coverageStart}-${coverageEnd}`
+                responseHeaders["Content-Range"] = `${coverageLabel}/${coverageEnd + 1}`
+            end if
+            sourceLabel = "init_cache"
+            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} blob range=${coverageLabel} bytes=${totalBytes}`)
+            if http_sendHeaders(connection, statusCode, responseHeaders) = false
+                return -1
+            end if
+            sent = connection.send(dataBlob, 0, dataBlob.count())
+            if sent <= 0
+                sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Client closed socket mid-body (blob) status=${sent}`, false)
+                streamStatus = sent
+            else
+                streamStatus = sent
+            end if
+            cleanupPath = sabr_toSafeString(sabrResponse?.cleanupPath)
+            if cleanupPath <> ""
+                sabr_deleteFileIfExists(cleanupPath)
+            end if
+            return streamStatus
+        end if
+    end if
+
     if totalBytes = invalid
         totalBytes = 0
-        for each chunk in chunks
-            chunkLen = sabr_toInt(chunk?.length)
-            if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
-        end for
+        if IsArray(chunks)
+            for each chunk in chunks
+                chunkLen = sabr_toInt(chunk?.length)
+                if chunkLen <> invalid then totalBytes = totalBytes + chunkLen
+            end for
+        end if
     end if
     if totalBytes = invalid then totalBytes = 0
     responseHeaders["Content-Length"] = totalBytes.toStr()
-    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming UMP chunks count=${chunks.count()} totalBytes=${totalBytes}`)
+    coverageLabel = ""
+    coverage = sabrResponse?.coverage
+    if IsAssociativeArray(coverage)
+        startLabel = sabr_valueToLabel(coverage.Lookup("rangeStart"))
+        endLabel = sabr_valueToLabel(coverage.Lookup("rangeEnd"))
+        if startLabel <> "" and endLabel <> ""
+            coverageLabel = `bytes ${startLabel}-${endLabel}`
+        end if
+    end if
+    if coverageLabel = "" then coverageLabel = "bytes ?-?"
+    sourceLabel = sabrResponse?.servedFromInitCache = true ? "init_cache" : "sabr_stream"
+    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} path=${path} range=${coverageLabel} chunks=${chunks.count()} totalBytes=${totalBytes}`)
     streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
     if streamStatus <= 0
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
     end if
+    cleanupPath = sabr_toSafeString(sabrResponse?.cleanupPath)
+    if cleanupPath = "" and sabrResponse?.isInitSeg <> true
+        cleanupPath = sabr_toSafeString(path)
+    end if
+    if cleanupPath <> ""
+        sabr_deleteFileIfExists(cleanupPath)
+    end if
     return streamStatus
 end function
+
+function sabr_hasBlobData(response as object) as boolean
+    if not IsAssociativeArray(response) then return false
+    dataBlob = response.Lookup("data")
+    if GetInterface(dataBlob, "ifByteArray") = invalid then return false
+    return dataBlob.count() > 0
+end function
+
+sub logSocketStatus(connection as object)
+    if connection = invalid then return
+    info = {
+        "socketId": connection.getID()
+        "readable": connection.isReadable()
+        "connected": connection.isConnected()
+        "recvBufBytes": -1
+        "status": connection.status()
+        "eConnAborted": connection.eConnAborted()
+        "eConnRefused": connection.eConnRefused()
+        "eConnReset": connection.eConnReset()
+        "eIsConn": connection.eIsConn()
+        "eNotConn": connection.eNotConn()
+    }
+    if connection.isReadable()
+        try
+            info["recvBufBytes"] = connection.getCountRcvBuf()
+        catch e
+            info["recvBufBytes"] = -2
+        end try
+    end if
+    sabr_log(m.logs, log_level_Type.VERBOSE, `[YTSABR-Server] roSocketEvent detail: ${FormatJson(info)}`)
+end sub
 
 ' Reads data from a client socket until an HTTP request is complete, then
 ' dispatches it to `process_request`. Manages connection lifetime bookkeeping.
@@ -225,7 +332,7 @@ function process_request(request as object, connection as object, port as object
 
         if fatalReason <> ""
             status = send_http_reply(connection, "500", "text/plain", fatalReason)
-        else if sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart")
+        else if IsAssociativeArray(sabrResponse) and (sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart") or sabr_hasBlobData(sabrResponse))
             status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
         end if
         m.sockets[Stri(connection.getID())] = invalid

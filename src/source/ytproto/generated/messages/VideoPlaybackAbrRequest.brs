@@ -1,4 +1,10 @@
 ' Auto-generated encoder/decoder for video_streaming.VideoPlaybackAbrRequest
+import "pkg:/source/ytproto/generated/messages/ClientAbrState.brs"
+import "pkg:/source/ytproto/generated/messages/BufferedRange.brs"
+import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage1.brs"
+import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage2.brs"
+import "pkg:/source/ytproto/generated/messages/StreamerContext.brs"
+import "pkg:/source/ytproto/generated/messages/UnknownMessage3.brs"
 
 function VideoPlaybackAbrRequestEncode(message as Object) as String
     fieldMap = {}

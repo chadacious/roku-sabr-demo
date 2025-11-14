@@ -1,4 +1,6 @@
 ' Auto-generated encoder/decoder for video_streaming.MediaHeader
+import "pkg:/source/ytproto/generated/messages/FormatId.brs"
+import "pkg:/source/ytproto/generated/messages/TimeRange.brs"
 
 function MediaHeaderEncode(message as Object) as String
     fieldMap = {}
