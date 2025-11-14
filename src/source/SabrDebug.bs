@@ -198,8 +198,38 @@ function sabr_debugBuildDumpLabel(playbackContext as object, prefix as string, r
     if isValid(dumpCounter)
         counterLabel = `${dumpCounter}`
     end if
-    if counterLabel = "" then counterLabel = batchDisplay
 
     rnLabel = sabr_debugZeroPadDigits(rn, 4)
-    return `roku-player/${rnLabel}-${prefix}-${contentLabel}-itag${itagLabel}-${batchDisplay}-${counterLabel}-${rn}-${rangePart}`
+    startIndexLabel = sabr_debugExtractStartSegmentIndex(format, playbackContext)
+    playerTimeLabel = sabr_debugExtractPlayerTime(playbackContext)
+    infoSegment = `-seg${startIndexLabel}-pt${playerTimeLabel}`
+    if counterLabel <> ""
+        counterSuffix = `-${counterLabel}`
+    else
+        counterSuffix = ""
+    end if
+    return `roku-player/${rnLabel}-${prefix}-${contentLabel}-itag${itagLabel}${infoSegment}-${rangePart}${counterSuffix}`
+end function
+
+function sabr_debugExtractStartSegmentIndex(format as dynamic, playbackContext as object) as string
+    if IsAssociativeArray(format)
+        idx = sabr_toInt(format.Lookup("startSegmentIndex"))
+        if idx = invalid and IsAssociativeArray(format?.mediaHeader)
+            idx = sabr_toInt(format.mediaHeader.Lookup("startSegmentIndex"))
+        end if
+        if idx = invalid and IsAssociativeArray(format?.mediaHeader)
+            idx = sabr_toInt(format.mediaHeader.Lookup("sequenceNumber"))
+        end if
+        if idx <> invalid then return idx.toStr()
+    end if
+    lastIdx = sabr_toInt(playbackContext?.lastStartSegmentIndex)
+    if lastIdx <> invalid then return lastIdx.toStr()
+    return "?"
+end function
+
+function sabr_debugExtractPlayerTime(playbackContext as object) as string
+    pt = sabr_toInt(playbackContext?.lastRequestedPlayerTimeMs)
+    if pt = invalid then pt = sabr_toInt(playbackContext?.lastPlayerTimeMs)
+    if pt = invalid then return "?"
+    return pt.toStr()
 end function

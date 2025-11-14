@@ -178,7 +178,7 @@ function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, content
 
     tapEntry = sabr_extractSegmentEntryFromTap(streamTapResult, spoolPath)
     if not IsAssociativeArray(tapEntry)
-        tapEntry = sabr_loadSegmentEntryFromSpool(spoolPath, requestByteRange, keyParam, logTag, contentType, currentFormat, requestNumber)
+        tapEntry = sabr_loadSegmentEntryFromSpool(playbackContext, spoolPath, requestByteRange, keyParam, logTag, contentType, currentFormat, requestNumber)
     end if
     if not IsAssociativeArray(tapEntry)
         sabr_log(m.logs, log_level_Type.WARN, `${logTag} No segment entry available for ${spoolPath}`)
@@ -213,6 +213,10 @@ function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, content
         end if
     end if
 
+    if IsAssociativeArray(playbackContext)
+        playbackContext["lastStartSegmentIndex"] = sabr_toInt(response.Lookup("sequenceIndex"))
+    end if
+
     return response
 end function
 
@@ -229,14 +233,17 @@ function sabr_extractSegmentEntryFromTap(tapResult as dynamic, spoolPath as stri
     return entry
 end function
 
-function sabr_loadSegmentEntryFromSpool(spoolPath as string, requestByteRange as object, keyParam as string, logTag as string, contentType as string, currentFormat as object, requestNumber as string) as dynamic
+function sabr_loadSegmentEntryFromSpool(playbackContext as object, spoolPath as string, requestByteRange as object, keyParam as string, logTag as string, contentType as string, currentFormat as object, requestNumber as string) as dynamic
     spoolMap = sabr_ump_buildSpoolPartMap(spoolPath, 16, keyParam)
     if not IsAssociativeArray(spoolMap) then return invalid
-    sabr_debugUploadSpool(requestNumber, contentType, currentFormat, requestByteRange, spoolMap)
     segment = sabr_selectSpoolSegmentFromMap(spoolMap, requestByteRange, keyParam)
+    sabr_debugUploadSpool(playbackContext, requestNumber, contentType, currentFormat, requestByteRange, spoolMap)
     if not IsAssociativeArray(segment) then return invalid
     entry = segment.spooledSegment
     if not IsAssociativeArray(entry) then return invalid
+    if IsAssociativeArray(playbackContext)
+        playbackContext["lastStartSegmentIndex"] = sabr_toInt(entry?.mediaHeader?.sequenceNumber)
+    end if
     entry["path"] = spoolPath
     return entry
 end function
@@ -653,6 +660,9 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
     previousPlayerTimeMs = sabr_toInt(playbackContext.Lookup("lastRequestedPlayerTimeMs"))
     seekBackActive = sabr_detectSeekBack(previousPlayerTimeMs, desiredPlayerTimeMs)
     playbackContext["lastRequestedPlayerTimeMs"] = desiredPlayerTimeMs
+    seqIdxDebug = sabr_toInt(rangePlayerInfo?.sequenceIndex)
+    if seqIdxDebug <> invalid then playbackContext["lastStartSegmentIndex"] = seqIdxDebug
+    playbackContext["lastPlayerTimeMs"] = desiredPlayerTimeMs
 
     AUDIO_ONLY = 1
     VIDEO_ONLY = 2
@@ -682,14 +692,20 @@ function sabr_createVideoPlaybackAbrRequest(request as object, contentType as st
         req.bufferedRanges.push(br)
     end for
 
-    sabr_pushFormatIfMissing(req.selectedFormatIds, currentFormat)
+    if isInitRequest <> true
+        sabr_pushFormatIfMissing(req.selectedFormatIds, currentFormat)
+    end if
     if IsAssociativeArray(activeFormats?.audioFormat)
         req.preferredAudioFormatIds.push(activeFormats.audioFormat)
-        sabr_pushFormatIfMissing(req.selectedFormatIds, activeFormats.audioFormat)
+        if isInitRequest <> true or not sabr_formatsEqual(activeFormats.audioFormat, currentFormat)
+            sabr_pushFormatIfMissing(req.selectedFormatIds, activeFormats.audioFormat)
+        end if
     end if
     if IsAssociativeArray(activeFormats?.videoFormat)
         req.preferredVideoFormatIds.push(activeFormats.videoFormat)
-        sabr_pushFormatIfMissing(req.selectedFormatIds, activeFormats.videoFormat)
+        if isInitRequest <> true or not sabr_formatsEqual(activeFormats.videoFormat, currentFormat)
+            sabr_pushFormatIfMissing(req.selectedFormatIds, activeFormats.videoFormat)
+        end if
     end if
     return req
 end function
@@ -809,6 +825,10 @@ function sabr_formatKey(format as dynamic) as string
     if itagLabel = "" then return xtagLabel
     if xtagLabel = "" then return `${itagLabel}:`
     return `${itagLabel}:${xtagLabel}`
+end function
+
+function sabr_formatsEqual(left as dynamic, right as dynamic) as boolean
+    return sabr_formatKey(left) = sabr_formatKey(right)
 end function
 
 sub sabr_pushFormatIfMissing(targetList as object, format as object)
@@ -1229,11 +1249,11 @@ function sabr_buildErrorResponseForPlayer(status as integer, message as string) 
     }
 end function
 
-sub sabr_debugUploadSpool(requestNumber as string, contentType as string, currentFormat as object, requestByteRange as object, spoolMap as object)
+sub sabr_debugUploadSpool(playbackContext as object, requestNumber as string, contentType as string, currentFormat as object, requestByteRange as object, spoolMap as object)
     debugUploadUrl = m.top?.debugUploadUrl
     if debugUploadUrl = "" then return
     try
-        label = sabr_debugBuildDumpLabel({}, "sabr-request", requestNumber, sabr_formatRequestedRangeForPath(requestByteRange), contentType, currentFormat, invalid)
+        label = sabr_debugBuildDumpLabel(playbackContext, "sabr-request", requestNumber, sabr_formatRequestedRangeForPath(requestByteRange), contentType, currentFormat, invalid)
         sabr_debugUploadText(debugUploadUrl, `${LCase(contentType)}/${label}-spool.json`, FormatJson(spoolMap), m.logs)
     catch e
         ' swallow debug upload failures
@@ -1341,12 +1361,13 @@ function sabr_utilLogTag(contentType as string, requestRef = invalid as dynamic)
 end function
 
 function sabr_nextRequestId(playbackContext as object) as string
-    if not IsAssociativeArray(playbackContext)
-        return "1"
-    end if
-    seq = sabr_toInt(playbackContext.Lookup("requestSequence"))
+    globalAA = GetGlobalAA()
+    seq = sabr_toInt(globalAA.Lookup("sabrGlobalRequestSequence"))
     if seq = invalid or seq < 0 then seq = 0
     seq = seq + 1
-    playbackContext["requestSequence"] = seq
+    globalAA["sabrGlobalRequestSequence"] = seq
+    if IsAssociativeArray(playbackContext)
+        playbackContext["requestSequence"] = seq
+    end if
     return seq.toStr()
 end function
