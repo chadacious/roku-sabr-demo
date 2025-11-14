@@ -88,7 +88,8 @@ sub YtsabrServer()
                             handle_tcp(connection, port)
                         end if
                     else
-                        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Socket event for unknown id=${socketId}`, false)
+                        ' Stale event for a connection we already closed; ignore instead of spamming WARNs.
+                        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Ignoring socket event for closed id=${socketId}`)
                     end if
                 end if
             catch e

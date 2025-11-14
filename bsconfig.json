@@ -11,8 +11,6 @@
     "manifest",
     "source/**/*.*",
     "components/**/*.*",
-    "assets/**/*.*",
-    "!source/**/*.legacy.bs",
-    "!components/**/*.legacy.bs"
+    "assets/**/*.*"
   ]
 }
