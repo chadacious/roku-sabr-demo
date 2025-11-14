@@ -14,18 +14,16 @@ function SabrRedirectEncode(message as Object) as String
     end if
 
     if field_url <> invalid then
-        if not __pb_scalarEqualsDefault(field_url, "string", "") then
-            strValue = field_url
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_url
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -62,9 +60,5 @@ function SabrRedirectDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("url") = false then
-        urlDefaultValue = ""
-        message["url"] = urlDefaultValue
-    end if
     return message
 end function

@@ -41,13 +41,6 @@ function SabrContextSendingPolicyEncode(message as Object) as String
             __pb_writeVarint(bytes, 8)
             __pb_writeVarint(bytes, normalized)
         end for
-        if start_policyItems.Count() = 0 then
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, 0)
-        end if
-    else
-        __pb_writeVarint(bytes, 10)
-        __pb_writeVarint(bytes, 0)
     end if
 
     field_stop_policy = invalid
@@ -83,13 +76,6 @@ function SabrContextSendingPolicyEncode(message as Object) as String
             __pb_writeVarint(bytes, 16)
             __pb_writeVarint(bytes, normalized)
         end for
-        if stop_policyItems.Count() = 0 then
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, 0)
-        end if
-    else
-        __pb_writeVarint(bytes, 18)
-        __pb_writeVarint(bytes, 0)
     end if
 
     field_discard_policy = invalid
@@ -125,13 +111,6 @@ function SabrContextSendingPolicyEncode(message as Object) as String
             __pb_writeVarint(bytes, 24)
             __pb_writeVarint(bytes, normalized)
         end for
-        if discard_policyItems.Count() = 0 then
-            __pb_writeVarint(bytes, 26)
-            __pb_writeVarint(bytes, 0)
-        end if
-    else
-        __pb_writeVarint(bytes, 26)
-        __pb_writeVarint(bytes, 0)
     end if
 
     __pb_appendUnknownFields(bytes, message)

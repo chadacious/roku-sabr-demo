@@ -14,11 +14,9 @@ function SnackbarMessageEncode(message as Object) as String
     end if
 
     if field_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_id, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_id)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_id)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -53,9 +51,5 @@ function SnackbarMessageDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("id") = false then
-        idDefaultValue = 0
-        message["id"] = idDefaultValue
-    end if
     return message
 end function

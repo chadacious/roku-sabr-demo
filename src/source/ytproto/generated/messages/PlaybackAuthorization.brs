@@ -63,20 +63,18 @@ function PlaybackAuthorizationEncode(message as Object) as String
     end if
 
     if field_sabr_license_constraint <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_license_constraint, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_sabr_license_constraint <> invalid then
-                valueType = Type(field_sabr_license_constraint)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_sabr_license_constraint)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_sabr_license_constraint)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_sabr_license_constraint <> invalid then
+            valueType = Type(field_sabr_license_constraint)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_sabr_license_constraint)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_sabr_license_constraint)
             end if
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -138,9 +136,5 @@ function PlaybackAuthorizationDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("sabrLicenseConstraint") = false then
-        sabr_license_constraintDefaultValue = ""
-        message["sabrLicenseConstraint"] = sabr_license_constraintDefaultValue
-    end if
     return message
 end function

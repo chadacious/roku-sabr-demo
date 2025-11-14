@@ -14,11 +14,9 @@ function UnknownInnerMessage1Encode(message as Object) as String
     end if
 
     if field_code <> invalid then
-        if not __pb_scalarEqualsDefault(field_code, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_code)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_code)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_message = invalid
@@ -33,18 +31,16 @@ function UnknownInnerMessage1Encode(message as Object) as String
     end if
 
     if field_message <> invalid then
-        if not __pb_scalarEqualsDefault(field_message, "string", "") then
-            strValue = field_message
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_message
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -92,13 +88,5 @@ function UnknownInnerMessage1Decode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("code") = false then
-        codeDefaultValue = 0
-        message["code"] = codeDefaultValue
-    end if
-    if message.DoesExist("message") = false then
-        messageDefaultValue = ""
-        message["message"] = messageDefaultValue
-    end if
     return message
 end function

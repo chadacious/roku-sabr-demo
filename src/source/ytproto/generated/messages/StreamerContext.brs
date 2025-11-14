@@ -51,20 +51,18 @@ function StreamerContextEncode(message as Object) as String
     end if
 
     if field_po_token <> invalid then
-        if not __pb_scalarEqualsDefault(field_po_token, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_po_token <> invalid then
-                valueType = Type(field_po_token)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_po_token)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_po_token)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_po_token <> invalid then
+            valueType = Type(field_po_token)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_po_token)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_po_token)
             end if
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_playback_cookie = invalid
@@ -84,20 +82,18 @@ function StreamerContextEncode(message as Object) as String
     end if
 
     if field_playback_cookie <> invalid then
-        if not __pb_scalarEqualsDefault(field_playback_cookie, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_playback_cookie <> invalid then
-                valueType = Type(field_playback_cookie)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_playback_cookie)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_playback_cookie)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_playback_cookie <> invalid then
+            valueType = Type(field_playback_cookie)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_playback_cookie)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_playback_cookie)
             end if
-            __pb_writeVarint(bytes, 26)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 26)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_field4 = invalid
@@ -112,20 +108,18 @@ function StreamerContextEncode(message as Object) as String
     end if
 
     if field_field4 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field4, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_field4 <> invalid then
-                valueType = Type(field_field4)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_field4)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_field4)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_field4 <> invalid then
+            valueType = Type(field_field4)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_field4)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_field4)
             end if
-            __pb_writeVarint(bytes, 34)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 34)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_sabr_contexts = invalid
@@ -200,13 +194,6 @@ function StreamerContextEncode(message as Object) as String
             __pb_writeVarint(bytes, 48)
             __pb_writeVarint(bytes, normalized)
         end for
-        if unsent_sabr_contextsItems.Count() = 0 then
-            __pb_writeVarint(bytes, 50)
-            __pb_writeVarint(bytes, 0)
-        end if
-    else
-        __pb_writeVarint(bytes, 50)
-        __pb_writeVarint(bytes, 0)
     end if
 
     field_field7 = invalid
@@ -221,18 +208,16 @@ function StreamerContextEncode(message as Object) as String
     end if
 
     if field_field7 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field7, "string", "") then
-            strValue = field_field7
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 58)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_field7
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 58)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_field8 = invalid
@@ -413,21 +398,5 @@ function StreamerContextDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("poToken") = false then
-        po_tokenDefaultValue = ""
-        message["poToken"] = po_tokenDefaultValue
-    end if
-    if message.DoesExist("playbackCookie") = false then
-        playback_cookieDefaultValue = ""
-        message["playbackCookie"] = playback_cookieDefaultValue
-    end if
-    if message.DoesExist("field4") = false then
-        field4DefaultValue = ""
-        message["field4"] = field4DefaultValue
-    end if
-    if message.DoesExist("field7") = false then
-        field7DefaultValue = ""
-        message["field7"] = field7DefaultValue
-    end if
     return message
 end function

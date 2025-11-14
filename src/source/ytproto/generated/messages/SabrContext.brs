@@ -14,11 +14,9 @@ function SabrContextEncode(message as Object) as String
     end if
 
     if field_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_type, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_type)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_type)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_value = invalid
@@ -33,20 +31,18 @@ function SabrContextEncode(message as Object) as String
     end if
 
     if field_value <> invalid then
-        if not __pb_scalarEqualsDefault(field_value, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_value <> invalid then
-                valueType = Type(field_value)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_value)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_value)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_value <> invalid then
+            valueType = Type(field_value)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_value)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_value)
             end if
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -95,13 +91,5 @@ function SabrContextDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("type") = false then
-        typeDefaultValue = 0
-        message["type"] = typeDefaultValue
-    end if
-    if message.DoesExist("value") = false then
-        valueDefaultValue = ""
-        message["value"] = valueDefaultValue
-    end if
     return message
 end function

@@ -24,11 +24,9 @@ function AuthorizedFormatEncode(message as Object) as String
     end if
 
     if field_track_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_track_type, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_track_type)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_track_type)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_is_hdr = invalid
@@ -48,22 +46,20 @@ function AuthorizedFormatEncode(message as Object) as String
     end if
 
     if field_is_hdr <> invalid then
-        if not __pb_scalarEqualsDefault(field_is_hdr, "bool", false) then
-            boolValue = field_is_hdr
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_is_hdr
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -109,13 +105,5 @@ function AuthorizedFormatDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("trackType") = false then
-        track_typeDefaultValue = 0
-        message["trackType"] = track_typeDefaultValue
-    end if
-    if message.DoesExist("isHdr") = false then
-        is_hdrDefaultValue = false
-        message["isHdr"] = is_hdrDefaultValue
-    end if
     return message
 end function

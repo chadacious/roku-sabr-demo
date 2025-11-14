@@ -14,11 +14,9 @@ function VideoStreamingBufferedRangeUnknownMessage2Encode(message as Object) as 
     end if
 
     if field_field1 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field1, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field1)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field1)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field2 = invalid
@@ -33,11 +31,9 @@ function VideoStreamingBufferedRangeUnknownMessage2Encode(message as Object) as 
     end if
 
     if field_field2 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field2, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field2)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field2)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field3 = invalid
@@ -52,11 +48,9 @@ function VideoStreamingBufferedRangeUnknownMessage2Encode(message as Object) as 
     end if
 
     if field_field3 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field3, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field3)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field3)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -113,17 +107,5 @@ function VideoStreamingBufferedRangeUnknownMessage2Decode(encoded as String) as 
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("field1") = false then
-        field1DefaultValue = 0
-        message["field1"] = field1DefaultValue
-    end if
-    if message.DoesExist("field2") = false then
-        field2DefaultValue = 0
-        message["field2"] = field2DefaultValue
-    end if
-    if message.DoesExist("field3") = false then
-        field3DefaultValue = 0
-        message["field3"] = field3DefaultValue
-    end if
     return message
 end function

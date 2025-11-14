@@ -26,11 +26,9 @@ function AudioFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_audio_codec <> invalid then
-        if not __pb_scalarEqualsDefault(field_audio_codec, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_audio_codec)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_audio_codec)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_num_channels = invalid
@@ -50,11 +48,9 @@ function AudioFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_num_channels <> invalid then
-        if not __pb_scalarEqualsDefault(field_num_channels, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_num_channels)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_num_channels)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_bitrate_bps = invalid
@@ -74,11 +70,9 @@ function AudioFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_max_bitrate_bps <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_bitrate_bps, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_bitrate_bps)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_bitrate_bps)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_spatial_capability_bitmask = invalid
@@ -98,11 +92,9 @@ function AudioFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_spatial_capability_bitmask <> invalid then
-        if not __pb_scalarEqualsDefault(field_spatial_capability_bitmask, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_spatial_capability_bitmask)
-            __pb_writeVarint(bytes, 48)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_spatial_capability_bitmask)
+        __pb_writeVarint(bytes, 48)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -170,21 +162,5 @@ function AudioFormatCapabilityDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("audioCodec") = false then
-        audio_codecDefaultValue = 0
-        message["audioCodec"] = audio_codecDefaultValue
-    end if
-    if message.DoesExist("numChannels") = false then
-        num_channelsDefaultValue = 0
-        message["numChannels"] = num_channelsDefaultValue
-    end if
-    if message.DoesExist("maxBitrateBps") = false then
-        max_bitrate_bpsDefaultValue = 0
-        message["maxBitrateBps"] = max_bitrate_bpsDefaultValue
-    end if
-    if message.DoesExist("spatialCapabilityBitmask") = false then
-        spatial_capability_bitmaskDefaultValue = 0
-        message["spatialCapabilityBitmask"] = spatial_capability_bitmaskDefaultValue
-    end if
     return message
 end function

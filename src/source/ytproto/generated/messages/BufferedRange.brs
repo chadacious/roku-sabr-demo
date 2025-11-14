@@ -52,10 +52,8 @@ function BufferedRangeEncode(message as Object) as String
     end if
 
     if field_start_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_start_time_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint64(bytes, field_start_time_ms)
-        end if
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint64(bytes, field_start_time_ms)
     end if
 
     field_duration_ms = invalid
@@ -75,10 +73,8 @@ function BufferedRangeEncode(message as Object) as String
     end if
 
     if field_duration_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint64(bytes, field_duration_ms)
-        end if
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint64(bytes, field_duration_ms)
     end if
 
     field_start_segment_index = invalid
@@ -98,11 +94,9 @@ function BufferedRangeEncode(message as Object) as String
     end if
 
     if field_start_segment_index <> invalid then
-        if not __pb_scalarEqualsDefault(field_start_segment_index, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_start_segment_index)
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_start_segment_index)
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_end_segment_index = invalid
@@ -122,11 +116,9 @@ function BufferedRangeEncode(message as Object) as String
     end if
 
     if field_end_segment_index <> invalid then
-        if not __pb_scalarEqualsDefault(field_end_segment_index, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_end_segment_index)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_end_segment_index)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_time_range = invalid
@@ -350,21 +342,5 @@ function BufferedRangeDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("startTimeMs") = false then
-        start_time_msDefaultValue = __pb_toSignedInt64String("0")
-        message["startTimeMs"] = start_time_msDefaultValue
-    end if
-    if message.DoesExist("durationMs") = false then
-        duration_msDefaultValue = __pb_toSignedInt64String("0")
-        message["durationMs"] = duration_msDefaultValue
-    end if
-    if message.DoesExist("startSegmentIndex") = false then
-        start_segment_indexDefaultValue = 0
-        message["startSegmentIndex"] = start_segment_indexDefaultValue
-    end if
-    if message.DoesExist("endSegmentIndex") = false then
-        end_segment_indexDefaultValue = 0
-        message["endSegmentIndex"] = end_segment_indexDefaultValue
-    end if
     return message
 end function

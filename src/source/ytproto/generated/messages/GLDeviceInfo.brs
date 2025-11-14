@@ -25,18 +25,16 @@ function GLDeviceInfoEncode(message as Object) as String
     end if
 
     if field_gl_renderer <> invalid then
-        if not __pb_scalarEqualsDefault(field_gl_renderer, "string", "") then
-            strValue = field_gl_renderer
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_gl_renderer
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_gl_es_version_major = invalid
@@ -56,11 +54,9 @@ function GLDeviceInfoEncode(message as Object) as String
     end if
 
     if field_gl_es_version_major <> invalid then
-        if not __pb_scalarEqualsDefault(field_gl_es_version_major, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_gl_es_version_major)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_gl_es_version_major)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_gl_es_version_minor = invalid
@@ -80,11 +76,9 @@ function GLDeviceInfoEncode(message as Object) as String
     end if
 
     if field_gl_es_version_minor <> invalid then
-        if not __pb_scalarEqualsDefault(field_gl_es_version_minor, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_gl_es_version_minor)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_gl_es_version_minor)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -143,17 +137,5 @@ function GLDeviceInfoDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("glRenderer") = false then
-        gl_rendererDefaultValue = ""
-        message["glRenderer"] = gl_rendererDefaultValue
-    end if
-    if message.DoesExist("glEsVersionMajor") = false then
-        gl_es_version_majorDefaultValue = 0
-        message["glEsVersionMajor"] = gl_es_version_majorDefaultValue
-    end if
-    if message.DoesExist("glEsVersionMinor") = false then
-        gl_es_version_minorDefaultValue = 0
-        message["glEsVersionMinor"] = gl_es_version_minorDefaultValue
-    end if
     return message
 end function

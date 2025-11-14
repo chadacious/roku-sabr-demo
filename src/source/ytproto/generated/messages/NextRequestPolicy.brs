@@ -30,11 +30,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_target_audio_readahead_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_target_audio_readahead_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_target_audio_readahead_ms)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_target_audio_readahead_ms)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_target_video_readahead_ms = invalid
@@ -54,11 +52,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_target_video_readahead_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_target_video_readahead_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_target_video_readahead_ms)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_target_video_readahead_ms)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_time_since_last_request_ms = invalid
@@ -78,11 +74,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_max_time_since_last_request_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_time_since_last_request_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_time_since_last_request_ms)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_time_since_last_request_ms)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_backoff_time_ms = invalid
@@ -102,11 +96,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_backoff_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_backoff_time_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_backoff_time_ms)
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_backoff_time_ms)
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_min_audio_readahead_ms = invalid
@@ -126,11 +118,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_min_audio_readahead_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_min_audio_readahead_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_min_audio_readahead_ms)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_min_audio_readahead_ms)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_min_video_readahead_ms = invalid
@@ -150,11 +140,9 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_min_video_readahead_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_min_video_readahead_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_min_video_readahead_ms)
-            __pb_writeVarint(bytes, 48)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_min_video_readahead_ms)
+        __pb_writeVarint(bytes, 48)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_playback_cookie = invalid
@@ -198,18 +186,16 @@ function NextRequestPolicyEncode(message as Object) as String
     end if
 
     if field_video_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_id, "string", "") then
-            strValue = field_video_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 66)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_video_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 66)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -327,33 +313,5 @@ function NextRequestPolicyDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("targetAudioReadaheadMs") = false then
-        target_audio_readahead_msDefaultValue = 0
-        message["targetAudioReadaheadMs"] = target_audio_readahead_msDefaultValue
-    end if
-    if message.DoesExist("targetVideoReadaheadMs") = false then
-        target_video_readahead_msDefaultValue = 0
-        message["targetVideoReadaheadMs"] = target_video_readahead_msDefaultValue
-    end if
-    if message.DoesExist("maxTimeSinceLastRequestMs") = false then
-        max_time_since_last_request_msDefaultValue = 0
-        message["maxTimeSinceLastRequestMs"] = max_time_since_last_request_msDefaultValue
-    end if
-    if message.DoesExist("backoffTimeMs") = false then
-        backoff_time_msDefaultValue = 0
-        message["backoffTimeMs"] = backoff_time_msDefaultValue
-    end if
-    if message.DoesExist("minAudioReadaheadMs") = false then
-        min_audio_readahead_msDefaultValue = 0
-        message["minAudioReadaheadMs"] = min_audio_readahead_msDefaultValue
-    end if
-    if message.DoesExist("minVideoReadaheadMs") = false then
-        min_video_readahead_msDefaultValue = 0
-        message["minVideoReadaheadMs"] = min_video_readahead_msDefaultValue
-    end if
-    if message.DoesExist("videoId") = false then
-        video_idDefaultValue = ""
-        message["videoId"] = video_idDefaultValue
-    end if
     return message
 end function

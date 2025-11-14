@@ -1,10 +1,4 @@
 ' Auto-generated encoder/decoder for video_streaming.VideoPlaybackAbrRequest
-import "pkg:/source/ytproto/generated/messages/ClientAbrState.brs"
-import "pkg:/source/ytproto/generated/messages/BufferedRange.brs"
-import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage1.brs"
-import "pkg:/source/ytproto/generated/messages/VideoStreamingUnknownMessage2.brs"
-import "pkg:/source/ytproto/generated/messages/StreamerContext.brs"
-import "pkg:/source/ytproto/generated/messages/UnknownMessage3.brs"
 
 function VideoPlaybackAbrRequestEncode(message as Object) as String
     fieldMap = {}
@@ -139,10 +133,8 @@ function VideoPlaybackAbrRequestEncode(message as Object) as String
     end if
 
     if field_player_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_player_time_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint64(bytes, field_player_time_ms)
-        end if
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint64(bytes, field_player_time_ms)
     end if
 
     field_video_playback_ustreamer_config = invalid
@@ -162,20 +154,18 @@ function VideoPlaybackAbrRequestEncode(message as Object) as String
     end if
 
     if field_video_playback_ustreamer_config <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_playback_ustreamer_config, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_video_playback_ustreamer_config <> invalid then
-                valueType = Type(field_video_playback_ustreamer_config)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_video_playback_ustreamer_config)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_video_playback_ustreamer_config)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_video_playback_ustreamer_config <> invalid then
+            valueType = Type(field_video_playback_ustreamer_config)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_video_playback_ustreamer_config)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_video_playback_ustreamer_config)
             end if
-            __pb_writeVarint(bytes, 42)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 42)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_field6 = invalid
@@ -369,11 +359,9 @@ function VideoPlaybackAbrRequestEncode(message as Object) as String
     end if
 
     if field_field22 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field22, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field22)
-            __pb_writeVarint(bytes, 176)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field22)
+        __pb_writeVarint(bytes, 176)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field23 = invalid
@@ -388,11 +376,9 @@ function VideoPlaybackAbrRequestEncode(message as Object) as String
     end if
 
     if field_field23 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field23, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field23)
-            __pb_writeVarint(bytes, 184)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field23)
+        __pb_writeVarint(bytes, 184)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field1000 = invalid
@@ -701,21 +687,5 @@ function VideoPlaybackAbrRequestDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("playerTimeMs") = false then
-        player_time_msDefaultValue = __pb_toSignedInt64String("0")
-        message["playerTimeMs"] = player_time_msDefaultValue
-    end if
-    if message.DoesExist("videoPlaybackUstreamerConfig") = false then
-        video_playback_ustreamer_configDefaultValue = ""
-        message["videoPlaybackUstreamerConfig"] = video_playback_ustreamer_configDefaultValue
-    end if
-    if message.DoesExist("field22") = false then
-        field22DefaultValue = 0
-        message["field22"] = field22DefaultValue
-    end if
-    if message.DoesExist("field23") = false then
-        field23DefaultValue = 0
-        message["field23"] = field23DefaultValue
-    end if
     return message
 end function

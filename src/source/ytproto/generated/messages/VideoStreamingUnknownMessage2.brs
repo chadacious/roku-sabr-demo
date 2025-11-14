@@ -51,20 +51,18 @@ function VideoStreamingUnknownMessage2Encode(message as Object) as String
     end if
 
     if field_field2 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field2, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_field2 <> invalid then
-                valueType = Type(field_field2)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_field2)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_field2)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_field2 <> invalid then
+            valueType = Type(field_field2)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_field2)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_field2)
             end if
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_field3 = invalid
@@ -79,18 +77,16 @@ function VideoStreamingUnknownMessage2Encode(message as Object) as String
     end if
 
     if field_field3 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field3, "string", "") then
-            strValue = field_field3
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 26)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_field3
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 26)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_field4 = invalid
@@ -105,11 +101,9 @@ function VideoStreamingUnknownMessage2Encode(message as Object) as String
     end if
 
     if field_field4 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field4, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field4)
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field4)
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field5 = invalid
@@ -124,11 +118,9 @@ function VideoStreamingUnknownMessage2Encode(message as Object) as String
     end if
 
     if field_field5 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field5, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field5)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field5)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field6 = invalid
@@ -143,18 +135,16 @@ function VideoStreamingUnknownMessage2Encode(message as Object) as String
     end if
 
     if field_field6 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field6, "string", "") then
-            strValue = field_field6
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 50)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_field6
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 50)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -275,25 +265,5 @@ function VideoStreamingUnknownMessage2Decode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("field2") = false then
-        field2DefaultValue = ""
-        message["field2"] = field2DefaultValue
-    end if
-    if message.DoesExist("field3") = false then
-        field3DefaultValue = ""
-        message["field3"] = field3DefaultValue
-    end if
-    if message.DoesExist("field4") = false then
-        field4DefaultValue = 0
-        message["field4"] = field4DefaultValue
-    end if
-    if message.DoesExist("field5") = false then
-        field5DefaultValue = 0
-        message["field5"] = field5DefaultValue
-    end if
-    if message.DoesExist("field6") = false then
-        field6DefaultValue = ""
-        message["field6"] = field6DefaultValue
-    end if
     return message
 end function

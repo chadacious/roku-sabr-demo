@@ -61,10 +61,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_time_since_last_manual_format_selection_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_time_since_last_manual_format_selection_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 104)
-            __pb_writeVarint64(bytes, field_time_since_last_manual_format_selection_ms)
-        end if
+        __pb_writeVarint(bytes, 104)
+        __pb_writeVarint64(bytes, field_time_since_last_manual_format_selection_ms)
     end if
 
     field_last_manual_direction = invalid
@@ -84,12 +82,10 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_last_manual_direction <> invalid then
-        if not __pb_scalarEqualsDefault(field_last_manual_direction, "sint32", "0") then
-            normalized = __pb_normalizeSigned32(field_last_manual_direction)
-            encoded = __pb_encodeZigZag32FromString(normalized)
-            __pb_writeVarint(bytes, 112)
-            __pb_writeVarint64(bytes, encoded)
-        end if
+        normalized = __pb_normalizeSigned32(field_last_manual_direction)
+        encoded = __pb_encodeZigZag32FromString(normalized)
+        __pb_writeVarint(bytes, 112)
+        __pb_writeVarint64(bytes, encoded)
     end if
 
     field_last_manual_selected_resolution = invalid
@@ -109,11 +105,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_last_manual_selected_resolution <> invalid then
-        if not __pb_scalarEqualsDefault(field_last_manual_selected_resolution, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_last_manual_selected_resolution)
-            __pb_writeVarint(bytes, 128)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_last_manual_selected_resolution)
+        __pb_writeVarint(bytes, 128)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_detailed_network_type = invalid
@@ -133,11 +127,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_detailed_network_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_detailed_network_type, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_detailed_network_type)
-            __pb_writeVarint(bytes, 136)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_detailed_network_type)
+        __pb_writeVarint(bytes, 136)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_viewport_width = invalid
@@ -157,11 +149,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_client_viewport_width <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_viewport_width, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_client_viewport_width)
-            __pb_writeVarint(bytes, 144)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_client_viewport_width)
+        __pb_writeVarint(bytes, 144)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_viewport_height = invalid
@@ -181,11 +171,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_client_viewport_height <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_viewport_height, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_client_viewport_height)
-            __pb_writeVarint(bytes, 152)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_client_viewport_height)
+        __pb_writeVarint(bytes, 152)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_bitrate_cap_bytes_per_sec = invalid
@@ -205,10 +193,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_client_bitrate_cap_bytes_per_sec <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_bitrate_cap_bytes_per_sec, "int64", "0") then
-            __pb_writeVarint(bytes, 160)
-            __pb_writeVarint64(bytes, field_client_bitrate_cap_bytes_per_sec)
-        end if
+        __pb_writeVarint(bytes, 160)
+        __pb_writeVarint64(bytes, field_client_bitrate_cap_bytes_per_sec)
     end if
 
     field_sticky_resolution = invalid
@@ -228,11 +214,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sticky_resolution <> invalid then
-        if not __pb_scalarEqualsDefault(field_sticky_resolution, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_sticky_resolution)
-            __pb_writeVarint(bytes, 168)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_sticky_resolution)
+        __pb_writeVarint(bytes, 168)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_viewport_is_flexible = invalid
@@ -252,22 +236,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_client_viewport_is_flexible <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_viewport_is_flexible, "bool", false) then
-            boolValue = field_client_viewport_is_flexible
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 176)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_client_viewport_is_flexible
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 176)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_bandwidth_estimate = invalid
@@ -287,10 +269,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_bandwidth_estimate <> invalid then
-        if not __pb_scalarEqualsDefault(field_bandwidth_estimate, "int64", "0") then
-            __pb_writeVarint(bytes, 184)
-            __pb_writeVarint64(bytes, field_bandwidth_estimate)
-        end if
+        __pb_writeVarint(bytes, 184)
+        __pb_writeVarint64(bytes, field_bandwidth_estimate)
     end if
 
     field_min_audio_quality = invalid
@@ -311,10 +291,8 @@ function ClientAbrStateEncode(message as Object) as String
 
     if field_min_audio_quality <> invalid then
         numericValue = ClientAbrState_min_audio_quality_normalizeEnum(field_min_audio_quality)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 192)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 192)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_max_audio_quality = invalid
@@ -335,10 +313,8 @@ function ClientAbrStateEncode(message as Object) as String
 
     if field_max_audio_quality <> invalid then
         numericValue = ClientAbrState_max_audio_quality_normalizeEnum(field_max_audio_quality)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 200)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 200)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_video_quality_setting = invalid
@@ -359,10 +335,8 @@ function ClientAbrStateEncode(message as Object) as String
 
     if field_video_quality_setting <> invalid then
         numericValue = ClientAbrState_video_quality_setting_normalizeEnum(field_video_quality_setting)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 208)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 208)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_audio_route = invalid
@@ -383,10 +357,8 @@ function ClientAbrStateEncode(message as Object) as String
 
     if field_audio_route <> invalid then
         numericValue = ClientAbrState_audio_route_normalizeEnum(field_audio_route)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 216)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 216)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_player_time_ms = invalid
@@ -406,10 +378,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_player_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_player_time_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 224)
-            __pb_writeVarint64(bytes, field_player_time_ms)
-        end if
+        __pb_writeVarint(bytes, 224)
+        __pb_writeVarint64(bytes, field_player_time_ms)
     end if
 
     field_time_since_last_seek = invalid
@@ -429,10 +399,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_time_since_last_seek <> invalid then
-        if not __pb_scalarEqualsDefault(field_time_since_last_seek, "int64", "0") then
-            __pb_writeVarint(bytes, 232)
-            __pb_writeVarint64(bytes, field_time_since_last_seek)
-        end if
+        __pb_writeVarint(bytes, 232)
+        __pb_writeVarint64(bytes, field_time_since_last_seek)
     end if
 
     field_data_saver_mode = invalid
@@ -452,22 +420,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_data_saver_mode <> invalid then
-        if not __pb_scalarEqualsDefault(field_data_saver_mode, "bool", false) then
-            boolValue = field_data_saver_mode
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 240)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_data_saver_mode
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 240)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_network_metered_state = invalid
@@ -488,10 +454,8 @@ function ClientAbrStateEncode(message as Object) as String
 
     if field_network_metered_state <> invalid then
         numericValue = ClientAbrState_network_metered_state_normalizeEnum(field_network_metered_state)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 256)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 256)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_visibility = invalid
@@ -506,11 +470,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_visibility <> invalid then
-        if not __pb_scalarEqualsDefault(field_visibility, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_visibility)
-            __pb_writeVarint(bytes, 272)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_visibility)
+        __pb_writeVarint(bytes, 272)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_playback_rate = invalid
@@ -530,11 +492,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_playback_rate <> invalid then
-        if not __pb_scalarEqualsDefault(field_playback_rate, "float", "0") then
-            normalized = __pb_toLong(field_playback_rate)
-            __pb_writeVarint(bytes, 285)
-            __pb_writeFloat32(bytes, normalized)
-        end if
+        normalized = __pb_toLong(field_playback_rate)
+        __pb_writeVarint(bytes, 285)
+        __pb_writeFloat32(bytes, normalized)
     end if
 
     field_elapsed_wall_time_ms = invalid
@@ -554,10 +514,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_elapsed_wall_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_elapsed_wall_time_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 288)
-            __pb_writeVarint64(bytes, field_elapsed_wall_time_ms)
-        end if
+        __pb_writeVarint(bytes, 288)
+        __pb_writeVarint64(bytes, field_elapsed_wall_time_ms)
     end if
 
     field_media_capabilities = invalid
@@ -601,10 +559,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_time_since_last_action_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_time_since_last_action_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 312)
-            __pb_writeVarint64(bytes, field_time_since_last_action_ms)
-        end if
+        __pb_writeVarint(bytes, 312)
+        __pb_writeVarint64(bytes, field_time_since_last_action_ms)
     end if
 
     field_enabled_track_types_bitfield = invalid
@@ -624,11 +580,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_enabled_track_types_bitfield <> invalid then
-        if not __pb_scalarEqualsDefault(field_enabled_track_types_bitfield, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_enabled_track_types_bitfield)
-            __pb_writeVarint(bytes, 320)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_enabled_track_types_bitfield)
+        __pb_writeVarint(bytes, 320)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_pacing_rate = invalid
@@ -648,11 +602,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_max_pacing_rate <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_pacing_rate, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_pacing_rate)
-            __pb_writeVarint(bytes, 344)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_pacing_rate)
+        __pb_writeVarint(bytes, 344)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_player_state = invalid
@@ -672,10 +624,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_player_state <> invalid then
-        if not __pb_scalarEqualsDefault(field_player_state, "int64", "0") then
-            __pb_writeVarint(bytes, 352)
-            __pb_writeVarint64(bytes, field_player_state)
-        end if
+        __pb_writeVarint(bytes, 352)
+        __pb_writeVarint64(bytes, field_player_state)
     end if
 
     field_drc_enabled = invalid
@@ -695,22 +645,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_drc_enabled <> invalid then
-        if not __pb_scalarEqualsDefault(field_drc_enabled, "bool", false) then
-            boolValue = field_drc_enabled
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 368)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_drc_enabled
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 368)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_field48 = invalid
@@ -725,11 +673,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field48 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field48, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field48)
-            __pb_writeVarint(bytes, 384)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field48)
+        __pb_writeVarint(bytes, 384)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field50 = invalid
@@ -744,11 +690,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field50 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field50, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field50)
-            __pb_writeVarint(bytes, 400)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field50)
+        __pb_writeVarint(bytes, 400)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field51 = invalid
@@ -763,11 +707,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field51 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field51, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field51)
-            __pb_writeVarint(bytes, 408)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field51)
+        __pb_writeVarint(bytes, 408)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_sabr_report_request_cancellation_info = invalid
@@ -787,11 +729,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sabr_report_request_cancellation_info <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_report_request_cancellation_info, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_sabr_report_request_cancellation_info)
-            __pb_writeVarint(bytes, 432)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_sabr_report_request_cancellation_info)
+        __pb_writeVarint(bytes, 432)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_disable_streaming_xhr = invalid
@@ -811,22 +751,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_disable_streaming_xhr <> invalid then
-        if not __pb_scalarEqualsDefault(field_disable_streaming_xhr, "bool", false) then
-            boolValue = field_disable_streaming_xhr
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 448)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_disable_streaming_xhr
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 448)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_field57 = invalid
@@ -841,10 +779,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field57 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field57, "int64", "0") then
-            __pb_writeVarint(bytes, 456)
-            __pb_writeVarint64(bytes, field_field57)
-        end if
+        __pb_writeVarint(bytes, 456)
+        __pb_writeVarint64(bytes, field_field57)
     end if
 
     field_prefer_vp9 = invalid
@@ -864,22 +800,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_prefer_vp9 <> invalid then
-        if not __pb_scalarEqualsDefault(field_prefer_vp9, "bool", false) then
-            boolValue = field_prefer_vp9
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 464)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_prefer_vp9
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 464)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_av1_quality_threshold = invalid
@@ -899,11 +833,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_av1_quality_threshold <> invalid then
-        if not __pb_scalarEqualsDefault(field_av1_quality_threshold, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_av1_quality_threshold)
-            __pb_writeVarint(bytes, 472)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_av1_quality_threshold)
+        __pb_writeVarint(bytes, 472)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field60 = invalid
@@ -918,11 +850,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field60 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field60, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field60)
-            __pb_writeVarint(bytes, 480)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field60)
+        __pb_writeVarint(bytes, 480)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_is_prefetch = invalid
@@ -942,22 +872,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_is_prefetch <> invalid then
-        if not __pb_scalarEqualsDefault(field_is_prefetch, "bool", false) then
-            boolValue = field_is_prefetch
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 488)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_is_prefetch
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 488)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_sabr_support_quality_constraints = invalid
@@ -977,22 +905,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sabr_support_quality_constraints <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_support_quality_constraints, "bool", false) then
-            boolValue = field_sabr_support_quality_constraints
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 496)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_sabr_support_quality_constraints
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 496)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_sabr_license_constraint = invalid
@@ -1012,20 +938,18 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sabr_license_constraint <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_license_constraint, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_sabr_license_constraint <> invalid then
-                valueType = Type(field_sabr_license_constraint)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_sabr_license_constraint)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_sabr_license_constraint)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_sabr_license_constraint <> invalid then
+            valueType = Type(field_sabr_license_constraint)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_sabr_license_constraint)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_sabr_license_constraint)
             end if
-            __pb_writeVarint(bytes, 506)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 506)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_allow_proxima_live_latency = invalid
@@ -1045,11 +969,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_allow_proxima_live_latency <> invalid then
-        if not __pb_scalarEqualsDefault(field_allow_proxima_live_latency, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_allow_proxima_live_latency)
-            __pb_writeVarint(bytes, 512)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_allow_proxima_live_latency)
+        __pb_writeVarint(bytes, 512)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_sabr_force_proxima = invalid
@@ -1069,11 +991,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sabr_force_proxima <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_force_proxima, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_sabr_force_proxima)
-            __pb_writeVarint(bytes, 528)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_sabr_force_proxima)
+        __pb_writeVarint(bytes, 528)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field67 = invalid
@@ -1088,11 +1008,9 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_field67 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field67, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field67)
-            __pb_writeVarint(bytes, 536)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field67)
+        __pb_writeVarint(bytes, 536)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_sabr_force_max_network_interruption_duration_ms = invalid
@@ -1112,10 +1030,8 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_sabr_force_max_network_interruption_duration_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_sabr_force_max_network_interruption_duration_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 544)
-            __pb_writeVarint64(bytes, field_sabr_force_max_network_interruption_duration_ms)
-        end if
+        __pb_writeVarint(bytes, 544)
+        __pb_writeVarint64(bytes, field_sabr_force_max_network_interruption_duration_ms)
     end if
 
     field_audio_track_id = invalid
@@ -1135,18 +1051,16 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_audio_track_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_audio_track_id, "string", "") then
-            strValue = field_audio_track_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 554)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_audio_track_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 554)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_enable_voice_boost = invalid
@@ -1166,22 +1080,20 @@ function ClientAbrStateEncode(message as Object) as String
     end if
 
     if field_enable_voice_boost <> invalid then
-        if not __pb_scalarEqualsDefault(field_enable_voice_boost, "bool", false) then
-            boolValue = field_enable_voice_boost
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 608)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_enable_voice_boost
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 608)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_playback_authorization = invalid
@@ -2038,181 +1950,5 @@ function ClientAbrStateDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("timeSinceLastManualFormatSelectionMs") = false then
-        time_since_last_manual_format_selection_msDefaultValue = __pb_toSignedInt64String("0")
-        message["timeSinceLastManualFormatSelectionMs"] = time_since_last_manual_format_selection_msDefaultValue
-    end if
-    if message.DoesExist("lastManualDirection") = false then
-        last_manual_directionDefaultValue = 0
-        message["lastManualDirection"] = last_manual_directionDefaultValue
-    end if
-    if message.DoesExist("lastManualSelectedResolution") = false then
-        last_manual_selected_resolutionDefaultValue = 0
-        message["lastManualSelectedResolution"] = last_manual_selected_resolutionDefaultValue
-    end if
-    if message.DoesExist("detailedNetworkType") = false then
-        detailed_network_typeDefaultValue = 0
-        message["detailedNetworkType"] = detailed_network_typeDefaultValue
-    end if
-    if message.DoesExist("clientViewportWidth") = false then
-        client_viewport_widthDefaultValue = 0
-        message["clientViewportWidth"] = client_viewport_widthDefaultValue
-    end if
-    if message.DoesExist("clientViewportHeight") = false then
-        client_viewport_heightDefaultValue = 0
-        message["clientViewportHeight"] = client_viewport_heightDefaultValue
-    end if
-    if message.DoesExist("clientBitrateCapBytesPerSec") = false then
-        client_bitrate_cap_bytes_per_secDefaultValue = __pb_toSignedInt64String("0")
-        message["clientBitrateCapBytesPerSec"] = client_bitrate_cap_bytes_per_secDefaultValue
-    end if
-    if message.DoesExist("stickyResolution") = false then
-        sticky_resolutionDefaultValue = 0
-        message["stickyResolution"] = sticky_resolutionDefaultValue
-    end if
-    if message.DoesExist("clientViewportIsFlexible") = false then
-        client_viewport_is_flexibleDefaultValue = false
-        message["clientViewportIsFlexible"] = client_viewport_is_flexibleDefaultValue
-    end if
-    if message.DoesExist("bandwidthEstimate") = false then
-        bandwidth_estimateDefaultValue = __pb_toSignedInt64String("0")
-        message["bandwidthEstimate"] = bandwidth_estimateDefaultValue
-    end if
-    if message.DoesExist("minAudioQuality") = false then
-        min_audio_qualityDefaultValue = ClientAbrState_min_audio_quality_enumName(0)
-        message["minAudioQuality"] = min_audio_qualityDefaultValue
-    end if
-    if message.DoesExist("maxAudioQuality") = false then
-        max_audio_qualityDefaultValue = ClientAbrState_max_audio_quality_enumName(0)
-        message["maxAudioQuality"] = max_audio_qualityDefaultValue
-    end if
-    if message.DoesExist("videoQualitySetting") = false then
-        video_quality_settingDefaultValue = ClientAbrState_video_quality_setting_enumName(0)
-        message["videoQualitySetting"] = video_quality_settingDefaultValue
-    end if
-    if message.DoesExist("audioRoute") = false then
-        audio_routeDefaultValue = ClientAbrState_audio_route_enumName(0)
-        message["audioRoute"] = audio_routeDefaultValue
-    end if
-    if message.DoesExist("playerTimeMs") = false then
-        player_time_msDefaultValue = __pb_toSignedInt64String("0")
-        message["playerTimeMs"] = player_time_msDefaultValue
-    end if
-    if message.DoesExist("timeSinceLastSeek") = false then
-        time_since_last_seekDefaultValue = __pb_toSignedInt64String("0")
-        message["timeSinceLastSeek"] = time_since_last_seekDefaultValue
-    end if
-    if message.DoesExist("dataSaverMode") = false then
-        data_saver_modeDefaultValue = false
-        message["dataSaverMode"] = data_saver_modeDefaultValue
-    end if
-    if message.DoesExist("networkMeteredState") = false then
-        network_metered_stateDefaultValue = ClientAbrState_network_metered_state_enumName(0)
-        message["networkMeteredState"] = network_metered_stateDefaultValue
-    end if
-    if message.DoesExist("visibility") = false then
-        visibilityDefaultValue = 0
-        message["visibility"] = visibilityDefaultValue
-    end if
-    if message.DoesExist("playbackRate") = false then
-        playback_rateDefaultValue = 0
-        message["playbackRate"] = playback_rateDefaultValue
-    end if
-    if message.DoesExist("elapsedWallTimeMs") = false then
-        elapsed_wall_time_msDefaultValue = __pb_toSignedInt64String("0")
-        message["elapsedWallTimeMs"] = elapsed_wall_time_msDefaultValue
-    end if
-    if message.DoesExist("timeSinceLastActionMs") = false then
-        time_since_last_action_msDefaultValue = __pb_toSignedInt64String("0")
-        message["timeSinceLastActionMs"] = time_since_last_action_msDefaultValue
-    end if
-    if message.DoesExist("enabledTrackTypesBitfield") = false then
-        enabled_track_types_bitfieldDefaultValue = 0
-        message["enabledTrackTypesBitfield"] = enabled_track_types_bitfieldDefaultValue
-    end if
-    if message.DoesExist("maxPacingRate") = false then
-        max_pacing_rateDefaultValue = 0
-        message["maxPacingRate"] = max_pacing_rateDefaultValue
-    end if
-    if message.DoesExist("playerState") = false then
-        player_stateDefaultValue = __pb_toSignedInt64String("0")
-        message["playerState"] = player_stateDefaultValue
-    end if
-    if message.DoesExist("drcEnabled") = false then
-        drc_enabledDefaultValue = false
-        message["drcEnabled"] = drc_enabledDefaultValue
-    end if
-    if message.DoesExist("field48") = false then
-        field48DefaultValue = 0
-        message["field48"] = field48DefaultValue
-    end if
-    if message.DoesExist("field50") = false then
-        field50DefaultValue = 0
-        message["field50"] = field50DefaultValue
-    end if
-    if message.DoesExist("field51") = false then
-        field51DefaultValue = 0
-        message["field51"] = field51DefaultValue
-    end if
-    if message.DoesExist("sabrReportRequestCancellationInfo") = false then
-        sabr_report_request_cancellation_infoDefaultValue = 0
-        message["sabrReportRequestCancellationInfo"] = sabr_report_request_cancellation_infoDefaultValue
-    end if
-    if message.DoesExist("disableStreamingXhr") = false then
-        disable_streaming_xhrDefaultValue = false
-        message["disableStreamingXhr"] = disable_streaming_xhrDefaultValue
-    end if
-    if message.DoesExist("field57") = false then
-        field57DefaultValue = __pb_toSignedInt64String("0")
-        message["field57"] = field57DefaultValue
-    end if
-    if message.DoesExist("preferVp9") = false then
-        prefer_vp9DefaultValue = false
-        message["preferVp9"] = prefer_vp9DefaultValue
-    end if
-    if message.DoesExist("av1QualityThreshold") = false then
-        av1_quality_thresholdDefaultValue = 0
-        message["av1QualityThreshold"] = av1_quality_thresholdDefaultValue
-    end if
-    if message.DoesExist("field60") = false then
-        field60DefaultValue = 0
-        message["field60"] = field60DefaultValue
-    end if
-    if message.DoesExist("isPrefetch") = false then
-        is_prefetchDefaultValue = false
-        message["isPrefetch"] = is_prefetchDefaultValue
-    end if
-    if message.DoesExist("sabrSupportQualityConstraints") = false then
-        sabr_support_quality_constraintsDefaultValue = false
-        message["sabrSupportQualityConstraints"] = sabr_support_quality_constraintsDefaultValue
-    end if
-    if message.DoesExist("sabrLicenseConstraint") = false then
-        sabr_license_constraintDefaultValue = ""
-        message["sabrLicenseConstraint"] = sabr_license_constraintDefaultValue
-    end if
-    if message.DoesExist("allowProximaLiveLatency") = false then
-        allow_proxima_live_latencyDefaultValue = 0
-        message["allowProximaLiveLatency"] = allow_proxima_live_latencyDefaultValue
-    end if
-    if message.DoesExist("sabrForceProxima") = false then
-        sabr_force_proximaDefaultValue = 0
-        message["sabrForceProxima"] = sabr_force_proximaDefaultValue
-    end if
-    if message.DoesExist("field67") = false then
-        field67DefaultValue = 0
-        message["field67"] = field67DefaultValue
-    end if
-    if message.DoesExist("sabrForceMaxNetworkInterruptionDurationMs") = false then
-        sabr_force_max_network_interruption_duration_msDefaultValue = __pb_toSignedInt64String("0")
-        message["sabrForceMaxNetworkInterruptionDurationMs"] = sabr_force_max_network_interruption_duration_msDefaultValue
-    end if
-    if message.DoesExist("audioTrackId") = false then
-        audio_track_idDefaultValue = ""
-        message["audioTrackId"] = audio_track_idDefaultValue
-    end if
-    if message.DoesExist("enableVoiceBoost") = false then
-        enable_voice_boostDefaultValue = false
-        message["enableVoiceBoost"] = enable_voice_boostDefaultValue
-    end if
     return message
 end function

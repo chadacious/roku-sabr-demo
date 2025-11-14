@@ -1,7 +1,4 @@
 ' Auto-generated encoder/decoder for video_streaming.FormatInitializationMetadata
-import "pkg:/source/ytproto/generated/messages/FormatId.brs"
-import "pkg:/source/ytproto/generated/messages/Range.brs"
-import "pkg:/source/ytproto/generated/messages/TimeRange.brs"
 
 function FormatInitializationMetadataEncode(message as Object) as String
     fieldMap = {}
@@ -34,18 +31,16 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_video_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_id, "string", "") then
-            strValue = field_video_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_video_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_format_id = invalid
@@ -89,10 +84,8 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_end_time_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_end_time_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint64(bytes, field_end_time_ms)
-        end if
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint64(bytes, field_end_time_ms)
     end if
 
     field_end_segment_number = invalid
@@ -112,10 +105,8 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_end_segment_number <> invalid then
-        if not __pb_scalarEqualsDefault(field_end_segment_number, "int64", "0") then
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint64(bytes, field_end_segment_number)
-        end if
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint64(bytes, field_end_segment_number)
     end if
 
     field_mime_type = invalid
@@ -135,18 +126,16 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_mime_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_mime_type, "string", "") then
-            strValue = field_mime_type
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 42)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_mime_type
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 42)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_init_range = invalid
@@ -209,10 +198,8 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_field8 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field8, "int64", "0") then
-            __pb_writeVarint(bytes, 64)
-            __pb_writeVarint64(bytes, field_field8)
-        end if
+        __pb_writeVarint(bytes, 64)
+        __pb_writeVarint64(bytes, field_field8)
     end if
 
     field_duration_units = invalid
@@ -232,10 +219,8 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_duration_units <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_units, "int64", "0") then
-            __pb_writeVarint(bytes, 72)
-            __pb_writeVarint64(bytes, field_duration_units)
-        end if
+        __pb_writeVarint(bytes, 72)
+        __pb_writeVarint64(bytes, field_duration_units)
     end if
 
     field_duration_timescale = invalid
@@ -255,10 +240,8 @@ function FormatInitializationMetadataEncode(message as Object) as String
     end if
 
     if field_duration_timescale <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_timescale, "int64", "0") then
-            __pb_writeVarint(bytes, 80)
-            __pb_writeVarint64(bytes, field_duration_timescale)
-        end if
+        __pb_writeVarint(bytes, 80)
+        __pb_writeVarint64(bytes, field_duration_timescale)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -408,33 +391,5 @@ function FormatInitializationMetadataDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("videoId") = false then
-        video_idDefaultValue = ""
-        message["videoId"] = video_idDefaultValue
-    end if
-    if message.DoesExist("endTimeMs") = false then
-        end_time_msDefaultValue = __pb_toSignedInt64String("0")
-        message["endTimeMs"] = end_time_msDefaultValue
-    end if
-    if message.DoesExist("endSegmentNumber") = false then
-        end_segment_numberDefaultValue = __pb_toSignedInt64String("0")
-        message["endSegmentNumber"] = end_segment_numberDefaultValue
-    end if
-    if message.DoesExist("mimeType") = false then
-        mime_typeDefaultValue = ""
-        message["mimeType"] = mime_typeDefaultValue
-    end if
-    if message.DoesExist("field8") = false then
-        field8DefaultValue = __pb_toSignedInt64String("0")
-        message["field8"] = field8DefaultValue
-    end if
-    if message.DoesExist("durationUnits") = false then
-        duration_unitsDefaultValue = __pb_toSignedInt64String("0")
-        message["durationUnits"] = duration_unitsDefaultValue
-    end if
-    if message.DoesExist("durationTimescale") = false then
-        duration_timescaleDefaultValue = __pb_toSignedInt64String("0")
-        message["durationTimescale"] = duration_timescaleDefaultValue
-    end if
     return message
 end function

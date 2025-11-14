@@ -44,11 +44,9 @@ function VideoStreamingUnknownMessage1Encode(message as Object) as String
     end if
 
     if field_lmt <> invalid then
-        if not __pb_scalarEqualsDefault(field_lmt, "sint64", "0") then
-            encoded = __pb_encodeZigZag64(field_lmt)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint64(bytes, encoded)
-        end if
+        encoded = __pb_encodeZigZag64(field_lmt)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint64(bytes, encoded)
     end if
 
     field_sequence_number = invalid
@@ -68,11 +66,9 @@ function VideoStreamingUnknownMessage1Encode(message as Object) as String
     end if
 
     if field_sequence_number <> invalid then
-        if not __pb_scalarEqualsDefault(field_sequence_number, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_sequence_number)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_sequence_number)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_time_range = invalid
@@ -111,11 +107,9 @@ function VideoStreamingUnknownMessage1Encode(message as Object) as String
     end if
 
     if field_field5 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field5, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field5)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field5)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -202,17 +196,5 @@ function VideoStreamingUnknownMessage1Decode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("lmt") = false then
-        lmtDefaultValue = __pb_decodeZigZag64("0")
-        message["lmt"] = lmtDefaultValue
-    end if
-    if message.DoesExist("sequenceNumber") = false then
-        sequence_numberDefaultValue = 0
-        message["sequenceNumber"] = sequence_numberDefaultValue
-    end if
-    if message.DoesExist("field5") = false then
-        field5DefaultValue = 0
-        message["field5"] = field5DefaultValue
-    end if
     return message
 end function

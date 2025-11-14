@@ -18,11 +18,9 @@ function StreamProtectionStatusEncode(message as Object) as String
     end if
 
     if field_status <> invalid then
-        if not __pb_scalarEqualsDefault(field_status, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_status)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_status)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_retries = invalid
@@ -42,11 +40,9 @@ function StreamProtectionStatusEncode(message as Object) as String
     end if
 
     if field_max_retries <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_retries, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_retries)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_retries)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -92,13 +88,5 @@ function StreamProtectionStatusDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("status") = false then
-        statusDefaultValue = 0
-        message["status"] = statusDefaultValue
-    end if
-    if message.DoesExist("maxRetries") = false then
-        max_retriesDefaultValue = 0
-        message["maxRetries"] = max_retriesDefaultValue
-    end if
     return message
 end function

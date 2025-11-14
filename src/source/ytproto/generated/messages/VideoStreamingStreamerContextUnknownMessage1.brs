@@ -14,20 +14,18 @@ function VideoStreamingStreamerContextUnknownMessage1Encode(message as Object) a
     end if
 
     if field_field1 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field1, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_field1 <> invalid then
-                valueType = Type(field_field1)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_field1)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_field1)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_field1 <> invalid then
+            valueType = Type(field_field1)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_field1)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_field1)
             end if
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_field2 = invalid
@@ -99,9 +97,5 @@ function VideoStreamingStreamerContextUnknownMessage1Decode(encoded as String) a
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("field1") = false then
-        field1DefaultValue = ""
-        message["field1"] = field1DefaultValue
-    end if
     return message
 end function

@@ -28,11 +28,9 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_video_codec <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_codec, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_video_codec)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_video_codec)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_height = invalid
@@ -52,11 +50,9 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_max_height <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_height, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_height)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_height)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_width = invalid
@@ -76,11 +72,9 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_max_width <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_width, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_width)
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_width)
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_framerate = invalid
@@ -100,11 +94,9 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_max_framerate <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_framerate, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_framerate)
-            __pb_writeVarint(bytes, 88)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_framerate)
+        __pb_writeVarint(bytes, 88)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_max_bitrate_bps = invalid
@@ -124,11 +116,9 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_max_bitrate_bps <> invalid then
-        if not __pb_scalarEqualsDefault(field_max_bitrate_bps, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_max_bitrate_bps)
-            __pb_writeVarint(bytes, 96)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_max_bitrate_bps)
+        __pb_writeVarint(bytes, 96)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_is_10_bit_supported = invalid
@@ -148,22 +138,20 @@ function VideoFormatCapabilityEncode(message as Object) as String
     end if
 
     if field_is_10_bit_supported <> invalid then
-        if not __pb_scalarEqualsDefault(field_is_10_bit_supported, "bool", false) then
-            boolValue = field_is_10_bit_supported
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 120)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_is_10_bit_supported
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 120)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -253,29 +241,5 @@ function VideoFormatCapabilityDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("videoCodec") = false then
-        video_codecDefaultValue = 0
-        message["videoCodec"] = video_codecDefaultValue
-    end if
-    if message.DoesExist("maxHeight") = false then
-        max_heightDefaultValue = 0
-        message["maxHeight"] = max_heightDefaultValue
-    end if
-    if message.DoesExist("maxWidth") = false then
-        max_widthDefaultValue = 0
-        message["maxWidth"] = max_widthDefaultValue
-    end if
-    if message.DoesExist("maxFramerate") = false then
-        max_framerateDefaultValue = 0
-        message["maxFramerate"] = max_framerateDefaultValue
-    end if
-    if message.DoesExist("maxBitrateBps") = false then
-        max_bitrate_bpsDefaultValue = 0
-        message["maxBitrateBps"] = max_bitrate_bpsDefaultValue
-    end if
-    if message.DoesExist("is10BitSupported") = false then
-        is_10_bit_supportedDefaultValue = false
-        message["is10BitSupported"] = is_10_bit_supportedDefaultValue
-    end if
     return message
 end function

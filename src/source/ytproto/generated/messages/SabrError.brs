@@ -14,18 +14,16 @@ function SabrErrorEncode(message as Object) as String
     end if
 
     if field_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_type, "string", "") then
-            strValue = field_type
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_type
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_code = invalid
@@ -40,11 +38,9 @@ function SabrErrorEncode(message as Object) as String
     end if
 
     if field_code <> invalid then
-        if not __pb_scalarEqualsDefault(field_code, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_code)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_code)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -92,13 +88,5 @@ function SabrErrorDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("type") = false then
-        typeDefaultValue = ""
-        message["type"] = typeDefaultValue
-    end if
-    if message.DoesExist("code") = false then
-        codeDefaultValue = 0
-        message["code"] = codeDefaultValue
-    end if
     return message
 end function

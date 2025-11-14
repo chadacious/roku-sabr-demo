@@ -18,11 +18,9 @@ function FormatIdEncode(message as Object) as String
     end if
 
     if field_itag <> invalid then
-        if not __pb_scalarEqualsDefault(field_itag, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_itag)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_itag)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_last_modified = invalid
@@ -42,10 +40,8 @@ function FormatIdEncode(message as Object) as String
     end if
 
     if field_last_modified <> invalid then
-        if not __pb_scalarEqualsDefault(field_last_modified, "uint64", "0") then
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint64(bytes, field_last_modified)
-        end if
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint64(bytes, field_last_modified)
     end if
 
     field_xtags = invalid
@@ -60,18 +56,16 @@ function FormatIdEncode(message as Object) as String
     end if
 
     if field_xtags <> invalid then
-        if not __pb_scalarEqualsDefault(field_xtags, "string", "") then
-            strValue = field_xtags
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 26)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_xtags
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 26)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -130,17 +124,5 @@ function FormatIdDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("itag") = false then
-        itagDefaultValue = 0
-        message["itag"] = itagDefaultValue
-    end if
-    if message.DoesExist("lastModified") = false then
-        last_modifiedDefaultValue = "0"
-        message["lastModified"] = last_modifiedDefaultValue
-    end if
-    if message.DoesExist("xtags") = false then
-        xtagsDefaultValue = ""
-        message["xtags"] = xtagsDefaultValue
-    end if
     return message
 end function

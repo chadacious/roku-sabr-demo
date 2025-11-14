@@ -14,18 +14,16 @@ function HttpHeaderEncode(message as Object) as String
     end if
 
     if field_name <> invalid then
-        if not __pb_scalarEqualsDefault(field_name, "string", "") then
-            strValue = field_name
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_name
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_value = invalid
@@ -40,18 +38,16 @@ function HttpHeaderEncode(message as Object) as String
     end if
 
     if field_value <> invalid then
-        if not __pb_scalarEqualsDefault(field_value, "string", "") then
-            strValue = field_value
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_value
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -101,13 +97,5 @@ function HttpHeaderDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("name") = false then
-        nameDefaultValue = ""
-        message["name"] = nameDefaultValue
-    end if
-    if message.DoesExist("value") = false then
-        valueDefaultValue = ""
-        message["value"] = valueDefaultValue
-    end if
     return message
 end function

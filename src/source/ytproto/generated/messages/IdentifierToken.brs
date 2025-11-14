@@ -23,11 +23,9 @@ function IdentifierTokenEncode(message as Object) as String
     end if
 
     if field_request_number <> invalid then
-        if not __pb_scalarEqualsDefault(field_request_number, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_request_number)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_request_number)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field5 = invalid
@@ -42,11 +40,9 @@ function IdentifierTokenEncode(message as Object) as String
     end if
 
     if field_field5 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field5, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field5)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field5)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -92,13 +88,5 @@ function IdentifierTokenDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("requestNumber") = false then
-        request_numberDefaultValue = 0
-        message["requestNumber"] = request_numberDefaultValue
-    end if
-    if message.DoesExist("field5") = false then
-        field5DefaultValue = 0
-        message["field5"] = field5DefaultValue
-    end if
     return message
 end function

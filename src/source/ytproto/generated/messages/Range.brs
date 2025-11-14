@@ -24,11 +24,9 @@ function RangeEncode(message as Object) as String
     end if
 
     if field_legacy_start <> invalid then
-        if not __pb_scalarEqualsDefault(field_legacy_start, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_legacy_start)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_legacy_start)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_legacy_end = invalid
@@ -48,11 +46,9 @@ function RangeEncode(message as Object) as String
     end if
 
     if field_legacy_end <> invalid then
-        if not __pb_scalarEqualsDefault(field_legacy_end, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_legacy_end)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_legacy_end)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_start = invalid
@@ -67,11 +63,9 @@ function RangeEncode(message as Object) as String
     end if
 
     if field_start <> invalid then
-        if not __pb_scalarEqualsDefault(field_start, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_start)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_start)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_end = invalid
@@ -86,11 +80,9 @@ function RangeEncode(message as Object) as String
     end if
 
     if field_end <> invalid then
-        if not __pb_scalarEqualsDefault(field_end, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_end)
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_end)
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -158,21 +150,5 @@ function RangeDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("legacyStart") = false then
-        legacy_startDefaultValue = 0
-        message["legacyStart"] = legacy_startDefaultValue
-    end if
-    if message.DoesExist("legacyEnd") = false then
-        legacy_endDefaultValue = 0
-        message["legacyEnd"] = legacy_endDefaultValue
-    end if
-    if message.DoesExist("start") = false then
-        startDefaultValue = 0
-        message["start"] = startDefaultValue
-    end if
-    if message.DoesExist("end") = false then
-        endDefaultValue = 0
-        message["end"] = endDefaultValue
-    end if
     return message
 end function

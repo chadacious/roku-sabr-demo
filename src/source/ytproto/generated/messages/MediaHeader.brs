@@ -1,6 +1,4 @@
 ' Auto-generated encoder/decoder for video_streaming.MediaHeader
-import "pkg:/source/ytproto/generated/messages/FormatId.brs"
-import "pkg:/source/ytproto/generated/messages/TimeRange.brs"
 
 function MediaHeaderEncode(message as Object) as String
     fieldMap = {}
@@ -37,11 +35,9 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_header_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_header_id, "uint32", "0") then
-            normalized = __pb_normalizeUnsigned32(field_header_id)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint64(bytes, normalized)
-        end if
+        normalized = __pb_normalizeUnsigned32(field_header_id)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint64(bytes, normalized)
     end if
 
     field_video_id = invalid
@@ -61,18 +57,16 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_video_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_id, "string", "") then
-            strValue = field_video_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_video_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_itag = invalid
@@ -87,11 +81,9 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_itag <> invalid then
-        if not __pb_scalarEqualsDefault(field_itag, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_itag)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_itag)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_lmt = invalid
@@ -106,10 +98,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_lmt <> invalid then
-        if not __pb_scalarEqualsDefault(field_lmt, "uint64", "0") then
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint64(bytes, field_lmt)
-        end if
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint64(bytes, field_lmt)
     end if
 
     field_xtags = invalid
@@ -124,18 +114,16 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_xtags <> invalid then
-        if not __pb_scalarEqualsDefault(field_xtags, "string", "") then
-            strValue = field_xtags
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 42)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_xtags
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 42)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_start_range = invalid
@@ -155,10 +143,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_start_range <> invalid then
-        if not __pb_scalarEqualsDefault(field_start_range, "int64", "0") then
-            __pb_writeVarint(bytes, 48)
-            __pb_writeVarint64(bytes, field_start_range)
-        end if
+        __pb_writeVarint(bytes, 48)
+        __pb_writeVarint64(bytes, field_start_range)
     end if
 
     field_compression_algorithm = invalid
@@ -179,10 +165,8 @@ function MediaHeaderEncode(message as Object) as String
 
     if field_compression_algorithm <> invalid then
         numericValue = MediaHeader_compression_algorithm_normalizeEnum(field_compression_algorithm)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 56)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 56)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_is_init_seg = invalid
@@ -202,22 +186,20 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_is_init_seg <> invalid then
-        if not __pb_scalarEqualsDefault(field_is_init_seg, "bool", false) then
-            boolValue = field_is_init_seg
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 64)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_is_init_seg
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 64)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_sequence_number = invalid
@@ -237,11 +219,9 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_sequence_number <> invalid then
-        if not __pb_scalarEqualsDefault(field_sequence_number, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_sequence_number)
-            __pb_writeVarint(bytes, 72)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_sequence_number)
+        __pb_writeVarint(bytes, 72)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_bitrate_bps = invalid
@@ -261,10 +241,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_bitrate_bps <> invalid then
-        if not __pb_scalarEqualsDefault(field_bitrate_bps, "int64", "0") then
-            __pb_writeVarint(bytes, 80)
-            __pb_writeVarint64(bytes, field_bitrate_bps)
-        end if
+        __pb_writeVarint(bytes, 80)
+        __pb_writeVarint64(bytes, field_bitrate_bps)
     end if
 
     field_start_ms = invalid
@@ -284,10 +262,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_start_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_start_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 88)
-            __pb_writeVarint64(bytes, field_start_ms)
-        end if
+        __pb_writeVarint(bytes, 88)
+        __pb_writeVarint64(bytes, field_start_ms)
     end if
 
     field_duration_ms = invalid
@@ -307,10 +283,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_duration_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 96)
-            __pb_writeVarint64(bytes, field_duration_ms)
-        end if
+        __pb_writeVarint(bytes, 96)
+        __pb_writeVarint64(bytes, field_duration_ms)
     end if
 
     field_format_id = invalid
@@ -354,10 +328,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_content_length <> invalid then
-        if not __pb_scalarEqualsDefault(field_content_length, "int64", "0") then
-            __pb_writeVarint(bytes, 112)
-            __pb_writeVarint64(bytes, field_content_length)
-        end if
+        __pb_writeVarint(bytes, 112)
+        __pb_writeVarint64(bytes, field_content_length)
     end if
 
     field_time_range = invalid
@@ -401,10 +373,8 @@ function MediaHeaderEncode(message as Object) as String
     end if
 
     if field_sequence_lmt <> invalid then
-        if not __pb_scalarEqualsDefault(field_sequence_lmt, "uint64", "0") then
-            __pb_writeVarint(bytes, 128)
-            __pb_writeVarint64(bytes, field_sequence_lmt)
-        end if
+        __pb_writeVarint(bytes, 128)
+        __pb_writeVarint64(bytes, field_sequence_lmt)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -668,61 +638,5 @@ function MediaHeaderDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("headerId") = false then
-        header_idDefaultValue = 0
-        message["headerId"] = header_idDefaultValue
-    end if
-    if message.DoesExist("videoId") = false then
-        video_idDefaultValue = ""
-        message["videoId"] = video_idDefaultValue
-    end if
-    if message.DoesExist("itag") = false then
-        itagDefaultValue = 0
-        message["itag"] = itagDefaultValue
-    end if
-    if message.DoesExist("lmt") = false then
-        lmtDefaultValue = "0"
-        message["lmt"] = lmtDefaultValue
-    end if
-    if message.DoesExist("xtags") = false then
-        xtagsDefaultValue = ""
-        message["xtags"] = xtagsDefaultValue
-    end if
-    if message.DoesExist("startRange") = false then
-        start_rangeDefaultValue = __pb_toSignedInt64String("0")
-        message["startRange"] = start_rangeDefaultValue
-    end if
-    if message.DoesExist("compressionAlgorithm") = false then
-        compression_algorithmDefaultValue = MediaHeader_compression_algorithm_enumName(0)
-        message["compressionAlgorithm"] = compression_algorithmDefaultValue
-    end if
-    if message.DoesExist("isInitSeg") = false then
-        is_init_segDefaultValue = false
-        message["isInitSeg"] = is_init_segDefaultValue
-    end if
-    if message.DoesExist("sequenceNumber") = false then
-        sequence_numberDefaultValue = 0
-        message["sequenceNumber"] = sequence_numberDefaultValue
-    end if
-    if message.DoesExist("bitrateBps") = false then
-        bitrate_bpsDefaultValue = __pb_toSignedInt64String("0")
-        message["bitrateBps"] = bitrate_bpsDefaultValue
-    end if
-    if message.DoesExist("startMs") = false then
-        start_msDefaultValue = __pb_toSignedInt64String("0")
-        message["startMs"] = start_msDefaultValue
-    end if
-    if message.DoesExist("durationMs") = false then
-        duration_msDefaultValue = __pb_toSignedInt64String("0")
-        message["durationMs"] = duration_msDefaultValue
-    end if
-    if message.DoesExist("contentLength") = false then
-        content_lengthDefaultValue = __pb_toSignedInt64String("0")
-        message["contentLength"] = content_lengthDefaultValue
-    end if
-    if message.DoesExist("sequenceLmt") = false then
-        sequence_lmtDefaultValue = "0"
-        message["sequenceLmt"] = sequence_lmtDefaultValue
-    end if
     return message
 end function

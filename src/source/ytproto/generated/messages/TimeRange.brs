@@ -24,10 +24,8 @@ function TimeRangeEncode(message as Object) as String
     end if
 
     if field_start_ticks <> invalid then
-        if not __pb_scalarEqualsDefault(field_start_ticks, "int64", "0") then
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint64(bytes, field_start_ticks)
-        end if
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint64(bytes, field_start_ticks)
     end if
 
     field_duration_ticks = invalid
@@ -47,10 +45,8 @@ function TimeRangeEncode(message as Object) as String
     end if
 
     if field_duration_ticks <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_ticks, "int64", "0") then
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint64(bytes, field_duration_ticks)
-        end if
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint64(bytes, field_duration_ticks)
     end if
 
     field_timescale = invalid
@@ -65,11 +61,9 @@ function TimeRangeEncode(message as Object) as String
     end if
 
     if field_timescale <> invalid then
-        if not __pb_scalarEqualsDefault(field_timescale, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_timescale)
-            __pb_writeVarint(bytes, 24)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_timescale)
+        __pb_writeVarint(bytes, 24)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -126,17 +120,5 @@ function TimeRangeDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("startTicks") = false then
-        start_ticksDefaultValue = __pb_toSignedInt64String("0")
-        message["startTicks"] = start_ticksDefaultValue
-    end if
-    if message.DoesExist("durationTicks") = false then
-        duration_ticksDefaultValue = __pb_toSignedInt64String("0")
-        message["durationTicks"] = duration_ticksDefaultValue
-    end if
-    if message.DoesExist("timescale") = false then
-        timescaleDefaultValue = 0
-        message["timescale"] = timescaleDefaultValue
-    end if
     return message
 end function

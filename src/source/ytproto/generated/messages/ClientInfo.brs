@@ -44,18 +44,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_device_make <> invalid then
-        if not __pb_scalarEqualsDefault(field_device_make, "string", "") then
-            strValue = field_device_make
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 98)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_device_make
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 98)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_device_model = invalid
@@ -75,18 +73,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_device_model <> invalid then
-        if not __pb_scalarEqualsDefault(field_device_model, "string", "") then
-            strValue = field_device_model
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 106)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_device_model
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 106)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_client_name = invalid
@@ -106,11 +102,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_client_name <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_name, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_client_name)
-            __pb_writeVarint(bytes, 128)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_client_name)
+        __pb_writeVarint(bytes, 128)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_version = invalid
@@ -130,18 +124,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_client_version <> invalid then
-        if not __pb_scalarEqualsDefault(field_client_version, "string", "") then
-            strValue = field_client_version
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 138)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_client_version
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 138)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_os_name = invalid
@@ -161,18 +153,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_os_name <> invalid then
-        if not __pb_scalarEqualsDefault(field_os_name, "string", "") then
-            strValue = field_os_name
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 146)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_os_name
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 146)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_os_version = invalid
@@ -192,18 +182,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_os_version <> invalid then
-        if not __pb_scalarEqualsDefault(field_os_version, "string", "") then
-            strValue = field_os_version
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 154)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_os_version
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 154)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_accept_language = invalid
@@ -223,18 +211,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_accept_language <> invalid then
-        if not __pb_scalarEqualsDefault(field_accept_language, "string", "") then
-            strValue = field_accept_language
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 170)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_accept_language
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 170)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_accept_region = invalid
@@ -254,18 +240,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_accept_region <> invalid then
-        if not __pb_scalarEqualsDefault(field_accept_region, "string", "") then
-            strValue = field_accept_region
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 178)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_accept_region
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 178)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_screen_width_points = invalid
@@ -285,11 +269,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_width_points <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_width_points, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_screen_width_points)
-            __pb_writeVarint(bytes, 296)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_screen_width_points)
+        __pb_writeVarint(bytes, 296)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_screen_height_points = invalid
@@ -309,11 +291,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_height_points <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_height_points, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_screen_height_points)
-            __pb_writeVarint(bytes, 304)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_screen_height_points)
+        __pb_writeVarint(bytes, 304)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_screen_width_inches = invalid
@@ -333,11 +313,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_width_inches <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_width_inches, "float", "0") then
-            normalized = __pb_toLong(field_screen_width_inches)
-            __pb_writeVarint(bytes, 317)
-            __pb_writeFloat32(bytes, normalized)
-        end if
+        normalized = __pb_toLong(field_screen_width_inches)
+        __pb_writeVarint(bytes, 317)
+        __pb_writeFloat32(bytes, normalized)
     end if
 
     field_screen_height_inches = invalid
@@ -357,11 +335,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_height_inches <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_height_inches, "float", "0") then
-            normalized = __pb_toLong(field_screen_height_inches)
-            __pb_writeVarint(bytes, 325)
-            __pb_writeFloat32(bytes, normalized)
-        end if
+        normalized = __pb_toLong(field_screen_height_inches)
+        __pb_writeVarint(bytes, 325)
+        __pb_writeFloat32(bytes, normalized)
     end if
 
     field_screen_pixel_density = invalid
@@ -381,11 +357,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_pixel_density <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_pixel_density, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_screen_pixel_density)
-            __pb_writeVarint(bytes, 328)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_screen_pixel_density)
+        __pb_writeVarint(bytes, 328)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_client_form_factor = invalid
@@ -406,10 +380,8 @@ function ClientInfoEncode(message as Object) as String
 
     if field_client_form_factor <> invalid then
         numericValue = ClientInfo_client_form_factor_normalizeEnum(field_client_form_factor)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 368)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 368)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_gmscore_version_code = invalid
@@ -429,11 +401,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_gmscore_version_code <> invalid then
-        if not __pb_scalarEqualsDefault(field_gmscore_version_code, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_gmscore_version_code)
-            __pb_writeVarint(bytes, 400)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_gmscore_version_code)
+        __pb_writeVarint(bytes, 400)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_window_width_points = invalid
@@ -453,11 +423,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_window_width_points <> invalid then
-        if not __pb_scalarEqualsDefault(field_window_width_points, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_window_width_points)
-            __pb_writeVarint(bytes, 440)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_window_width_points)
+        __pb_writeVarint(bytes, 440)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_window_height_points = invalid
@@ -477,11 +445,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_window_height_points <> invalid then
-        if not __pb_scalarEqualsDefault(field_window_height_points, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_window_height_points)
-            __pb_writeVarint(bytes, 448)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_window_height_points)
+        __pb_writeVarint(bytes, 448)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_android_sdk_version = invalid
@@ -501,11 +467,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_android_sdk_version <> invalid then
-        if not __pb_scalarEqualsDefault(field_android_sdk_version, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_android_sdk_version)
-            __pb_writeVarint(bytes, 512)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_android_sdk_version)
+        __pb_writeVarint(bytes, 512)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_screen_density_float = invalid
@@ -525,11 +489,9 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_screen_density_float <> invalid then
-        if not __pb_scalarEqualsDefault(field_screen_density_float, "float", "0") then
-            normalized = __pb_toLong(field_screen_density_float)
-            __pb_writeVarint(bytes, 525)
-            __pb_writeFloat32(bytes, normalized)
-        end if
+        normalized = __pb_toLong(field_screen_density_float)
+        __pb_writeVarint(bytes, 525)
+        __pb_writeFloat32(bytes, normalized)
     end if
 
     field_utc_offset_minutes = invalid
@@ -549,10 +511,8 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_utc_offset_minutes <> invalid then
-        if not __pb_scalarEqualsDefault(field_utc_offset_minutes, "int64", "0") then
-            __pb_writeVarint(bytes, 536)
-            __pb_writeVarint64(bytes, field_utc_offset_minutes)
-        end if
+        __pb_writeVarint(bytes, 536)
+        __pb_writeVarint64(bytes, field_utc_offset_minutes)
     end if
 
     field_time_zone = invalid
@@ -572,18 +532,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_time_zone <> invalid then
-        if not __pb_scalarEqualsDefault(field_time_zone, "string", "") then
-            strValue = field_time_zone
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 642)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_time_zone
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 642)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_chipset = invalid
@@ -598,18 +556,16 @@ function ClientInfoEncode(message as Object) as String
     end if
 
     if field_chipset <> invalid then
-        if not __pb_scalarEqualsDefault(field_chipset, "string", "") then
-            strValue = field_chipset
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 738)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_chipset
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 738)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_gl_device_info = invalid
@@ -984,93 +940,5 @@ function ClientInfoDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("deviceMake") = false then
-        device_makeDefaultValue = ""
-        message["deviceMake"] = device_makeDefaultValue
-    end if
-    if message.DoesExist("deviceModel") = false then
-        device_modelDefaultValue = ""
-        message["deviceModel"] = device_modelDefaultValue
-    end if
-    if message.DoesExist("clientName") = false then
-        client_nameDefaultValue = 0
-        message["clientName"] = client_nameDefaultValue
-    end if
-    if message.DoesExist("clientVersion") = false then
-        client_versionDefaultValue = ""
-        message["clientVersion"] = client_versionDefaultValue
-    end if
-    if message.DoesExist("osName") = false then
-        os_nameDefaultValue = ""
-        message["osName"] = os_nameDefaultValue
-    end if
-    if message.DoesExist("osVersion") = false then
-        os_versionDefaultValue = ""
-        message["osVersion"] = os_versionDefaultValue
-    end if
-    if message.DoesExist("acceptLanguage") = false then
-        accept_languageDefaultValue = ""
-        message["acceptLanguage"] = accept_languageDefaultValue
-    end if
-    if message.DoesExist("acceptRegion") = false then
-        accept_regionDefaultValue = ""
-        message["acceptRegion"] = accept_regionDefaultValue
-    end if
-    if message.DoesExist("screenWidthPoints") = false then
-        screen_width_pointsDefaultValue = 0
-        message["screenWidthPoints"] = screen_width_pointsDefaultValue
-    end if
-    if message.DoesExist("screenHeightPoints") = false then
-        screen_height_pointsDefaultValue = 0
-        message["screenHeightPoints"] = screen_height_pointsDefaultValue
-    end if
-    if message.DoesExist("screenWidthInches") = false then
-        screen_width_inchesDefaultValue = 0
-        message["screenWidthInches"] = screen_width_inchesDefaultValue
-    end if
-    if message.DoesExist("screenHeightInches") = false then
-        screen_height_inchesDefaultValue = 0
-        message["screenHeightInches"] = screen_height_inchesDefaultValue
-    end if
-    if message.DoesExist("screenPixelDensity") = false then
-        screen_pixel_densityDefaultValue = 0
-        message["screenPixelDensity"] = screen_pixel_densityDefaultValue
-    end if
-    if message.DoesExist("clientFormFactor") = false then
-        client_form_factorDefaultValue = ClientInfo_client_form_factor_enumName(0)
-        message["clientFormFactor"] = client_form_factorDefaultValue
-    end if
-    if message.DoesExist("gmscoreVersionCode") = false then
-        gmscore_version_codeDefaultValue = 0
-        message["gmscoreVersionCode"] = gmscore_version_codeDefaultValue
-    end if
-    if message.DoesExist("windowWidthPoints") = false then
-        window_width_pointsDefaultValue = 0
-        message["windowWidthPoints"] = window_width_pointsDefaultValue
-    end if
-    if message.DoesExist("windowHeightPoints") = false then
-        window_height_pointsDefaultValue = 0
-        message["windowHeightPoints"] = window_height_pointsDefaultValue
-    end if
-    if message.DoesExist("androidSdkVersion") = false then
-        android_sdk_versionDefaultValue = 0
-        message["androidSdkVersion"] = android_sdk_versionDefaultValue
-    end if
-    if message.DoesExist("screenDensityFloat") = false then
-        screen_density_floatDefaultValue = 0
-        message["screenDensityFloat"] = screen_density_floatDefaultValue
-    end if
-    if message.DoesExist("utcOffsetMinutes") = false then
-        utc_offset_minutesDefaultValue = __pb_toSignedInt64String("0")
-        message["utcOffsetMinutes"] = utc_offset_minutesDefaultValue
-    end if
-    if message.DoesExist("timeZone") = false then
-        time_zoneDefaultValue = ""
-        message["timeZone"] = time_zoneDefaultValue
-    end if
-    if message.DoesExist("chipset") = false then
-        chipsetDefaultValue = ""
-        message["chipset"] = chipsetDefaultValue
-    end if
     return message
 end function

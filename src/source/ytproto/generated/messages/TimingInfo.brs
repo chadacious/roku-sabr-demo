@@ -24,10 +24,8 @@ function TimingInfoEncode(message as Object) as String
     end if
 
     if field_timestamp_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_timestamp_ms, "int64", "0") then
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint64(bytes, field_timestamp_ms)
-        end if
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint64(bytes, field_timestamp_ms)
     end if
 
     field_duration_ms = invalid
@@ -47,11 +45,9 @@ function TimingInfoEncode(message as Object) as String
     end if
 
     if field_duration_ms <> invalid then
-        if not __pb_scalarEqualsDefault(field_duration_ms, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_duration_ms)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_duration_ms)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_content = invalid
@@ -131,13 +127,5 @@ function TimingInfoDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("timestampMs") = false then
-        timestamp_msDefaultValue = __pb_toSignedInt64String("0")
-        message["timestampMs"] = timestamp_msDefaultValue
-    end if
-    if message.DoesExist("durationMs") = false then
-        duration_msDefaultValue = 0
-        message["durationMs"] = duration_msDefaultValue
-    end if
     return message
 end function

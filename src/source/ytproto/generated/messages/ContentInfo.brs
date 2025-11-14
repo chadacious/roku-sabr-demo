@@ -24,18 +24,16 @@ function ContentInfoEncode(message as Object) as String
     end if
 
     if field_content_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_content_id, "string", "") then
-            strValue = field_content_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_content_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_content_type = invalid
@@ -55,11 +53,9 @@ function ContentInfoEncode(message as Object) as String
     end if
 
     if field_content_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_content_type, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_content_type)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_content_type)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -107,13 +103,5 @@ function ContentInfoDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("contentId") = false then
-        content_idDefaultValue = ""
-        message["contentId"] = content_idDefaultValue
-    end if
-    if message.DoesExist("contentType") = false then
-        content_typeDefaultValue = 0
-        message["contentType"] = content_typeDefaultValue
-    end if
     return message
 end function

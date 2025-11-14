@@ -103,11 +103,9 @@ function MediaCapabilitiesEncode(message as Object) as String
     end if
 
     if field_hdr_mode_bitmask <> invalid then
-        if not __pb_scalarEqualsDefault(field_hdr_mode_bitmask, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_hdr_mode_bitmask)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_hdr_mode_bitmask)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -190,9 +188,5 @@ function MediaCapabilitiesDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("hdrModeBitmask") = false then
-        hdr_mode_bitmaskDefaultValue = 0
-        message["hdrModeBitmask"] = hdr_mode_bitmaskDefaultValue
-    end if
     return message
 end function

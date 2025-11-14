@@ -19,11 +19,9 @@ function PlaybackCookieEncode(message as Object) as String
     end if
 
     if field_resolution <> invalid then
-        if not __pb_scalarEqualsDefault(field_resolution, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_resolution)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_resolution)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_field2 = invalid
@@ -38,11 +36,9 @@ function PlaybackCookieEncode(message as Object) as String
     end if
 
     if field_field2 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field2, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field2)
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field2)
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_video_fmt = invalid
@@ -166,13 +162,5 @@ function PlaybackCookieDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("resolution") = false then
-        resolutionDefaultValue = 0
-        message["resolution"] = resolutionDefaultValue
-    end if
-    if message.DoesExist("field2") = false then
-        field2DefaultValue = 0
-        message["field2"] = field2DefaultValue
-    end if
     return message
 end function

@@ -33,20 +33,18 @@ function SabrContextValueEncode(message as Object) as String
     end if
 
     if field_signature <> invalid then
-        if not __pb_scalarEqualsDefault(field_signature, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_signature <> invalid then
-                valueType = Type(field_signature)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_signature)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_signature)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_signature <> invalid then
+            valueType = Type(field_signature)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_signature)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_signature)
             end if
-            __pb_writeVarint(bytes, 18)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 18)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_field5 = invalid
@@ -61,11 +59,9 @@ function SabrContextValueEncode(message as Object) as String
     end if
 
     if field_field5 <> invalid then
-        if not __pb_scalarEqualsDefault(field_field5, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_field5)
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_field5)
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -129,13 +125,5 @@ function SabrContextValueDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("signature") = false then
-        signatureDefaultValue = ""
-        message["signature"] = signatureDefaultValue
-    end if
-    if message.DoesExist("field5") = false then
-        field5DefaultValue = 0
-        message["field5"] = field5DefaultValue
-    end if
     return message
 end function

@@ -23,18 +23,16 @@ function UnknownInnerMessageEncode(message as Object) as String
     end if
 
     if field_video_id <> invalid then
-        if not __pb_scalarEqualsDefault(field_video_id, "string", "") then
-            strValue = field_video_id
-            valueType = Type(strValue)
-            if valueType <> "String" and valueType <> "roString" then
-                strValue = strValue + ""
-            end if
-            strBytes = __pb_createByteArray()
-            strBytes.FromAsciiString(strValue)
-            __pb_writeVarint(bytes, 10)
-            __pb_writeVarint(bytes, strBytes.Count())
-            __pb_appendByteArray(bytes, strBytes)
+        strValue = field_video_id
+        valueType = Type(strValue)
+        if valueType <> "String" and valueType <> "roString" then
+            strValue = strValue + ""
         end if
+        strBytes = __pb_createByteArray()
+        strBytes.FromAsciiString(strValue)
+        __pb_writeVarint(bytes, 10)
+        __pb_writeVarint(bytes, strBytes.Count())
+        __pb_appendByteArray(bytes, strBytes)
     end if
 
     field_lmt = invalid
@@ -49,10 +47,8 @@ function UnknownInnerMessageEncode(message as Object) as String
     end if
 
     if field_lmt <> invalid then
-        if not __pb_scalarEqualsDefault(field_lmt, "uint64", "0") then
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint64(bytes, field_lmt)
-        end if
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint64(bytes, field_lmt)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -100,13 +96,5 @@ function UnknownInnerMessageDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("videoId") = false then
-        video_idDefaultValue = ""
-        message["videoId"] = video_idDefaultValue
-    end if
-    if message.DoesExist("lmt") = false then
-        lmtDefaultValue = "0"
-        message["lmt"] = lmtDefaultValue
-    end if
     return message
 end function

@@ -19,11 +19,9 @@ function SabrContextUpdateEncode(message as Object) as String
     end if
 
     if field_type <> invalid then
-        if not __pb_scalarEqualsDefault(field_type, "int32", "0") then
-            normalized = __pb_normalizeSigned32(field_type)
-            __pb_writeVarint(bytes, 8)
-            __pb_writeVarint(bytes, normalized)
-        end if
+        normalized = __pb_normalizeSigned32(field_type)
+        __pb_writeVarint(bytes, 8)
+        __pb_writeVarint(bytes, normalized)
     end if
 
     field_scope = invalid
@@ -39,10 +37,8 @@ function SabrContextUpdateEncode(message as Object) as String
 
     if field_scope <> invalid then
         numericValue = SabrContextUpdate_scope_normalizeEnum(field_scope)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 16)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 16)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     field_value = invalid
@@ -57,20 +53,18 @@ function SabrContextUpdateEncode(message as Object) as String
     end if
 
     if field_value <> invalid then
-        if not __pb_scalarEqualsDefault(field_value, "bytes", "") then
-            dataBytes = __pb_createByteArray()
-            if field_value <> invalid then
-                valueType = Type(field_value)
-                if valueType = "String" or valueType = "roString" then
-                    dataBytes.FromBase64String(field_value)
-                else if valueType = "roByteArray" then
-                    __pb_appendByteArray(dataBytes, field_value)
-                end if
+        dataBytes = __pb_createByteArray()
+        if field_value <> invalid then
+            valueType = Type(field_value)
+            if valueType = "String" or valueType = "roString" then
+                dataBytes.FromBase64String(field_value)
+            else if valueType = "roByteArray" then
+                __pb_appendByteArray(dataBytes, field_value)
             end if
-            __pb_writeVarint(bytes, 26)
-            __pb_writeVarint(bytes, dataBytes.Count())
-            __pb_appendByteArray(bytes, dataBytes)
         end if
+        __pb_writeVarint(bytes, 26)
+        __pb_writeVarint(bytes, dataBytes.Count())
+        __pb_appendByteArray(bytes, dataBytes)
     end if
 
     field_send_by_default = invalid
@@ -90,22 +84,20 @@ function SabrContextUpdateEncode(message as Object) as String
     end if
 
     if field_send_by_default <> invalid then
-        if not __pb_scalarEqualsDefault(field_send_by_default, "bool", false) then
-            boolValue = field_send_by_default
-            boolType = Type(boolValue)
-            if boolType = "String" or boolType = "roString" then
-                lower = LCase(boolValue)
-                boolValue = (lower = "true") or (lower = "1")
-            else if boolType = "Boolean" or boolType = "roBoolean" then
-                ' keep as is
-            else
-                boolValue = (boolValue <> 0)
-            end if
-            boolInt = 0
-            if boolValue = true then boolInt = 1
-            __pb_writeVarint(bytes, 32)
-            __pb_writeVarint(bytes, boolInt)
+        boolValue = field_send_by_default
+        boolType = Type(boolValue)
+        if boolType = "String" or boolType = "roString" then
+            lower = LCase(boolValue)
+            boolValue = (lower = "true") or (lower = "1")
+        else if boolType = "Boolean" or boolType = "roBoolean" then
+            ' keep as is
+        else
+            boolValue = (boolValue <> 0)
         end if
+        boolInt = 0
+        if boolValue = true then boolInt = 1
+        __pb_writeVarint(bytes, 32)
+        __pb_writeVarint(bytes, boolInt)
     end if
 
     field_write_policy = invalid
@@ -126,10 +118,8 @@ function SabrContextUpdateEncode(message as Object) as String
 
     if field_write_policy <> invalid then
         numericValue = SabrContextUpdate_write_policy_normalizeEnum(field_write_policy)
-        if not __pb_scalarEqualsDefault(numericValue, "enum", "0") then
-            __pb_writeVarint(bytes, 40)
-            __pb_writeVarint(bytes, numericValue)
-        end if
+        __pb_writeVarint(bytes, 40)
+        __pb_writeVarint(bytes, numericValue)
     end if
 
     __pb_appendUnknownFields(bytes, message)
@@ -319,25 +309,5 @@ function SabrContextUpdateDecode(encoded as String) as Object
             cursor = nextIndex
         end if
     end while
-    if message.DoesExist("type") = false then
-        typeDefaultValue = 0
-        message["type"] = typeDefaultValue
-    end if
-    if message.DoesExist("scope") = false then
-        scopeDefaultValue = SabrContextUpdate_scope_enumName(0)
-        message["scope"] = scopeDefaultValue
-    end if
-    if message.DoesExist("value") = false then
-        valueDefaultValue = ""
-        message["value"] = valueDefaultValue
-    end if
-    if message.DoesExist("sendByDefault") = false then
-        send_by_defaultDefaultValue = false
-        message["sendByDefault"] = send_by_defaultDefaultValue
-    end if
-    if message.DoesExist("writePolicy") = false then
-        write_policyDefaultValue = SabrContextUpdate_write_policy_enumName(0)
-        message["writePolicy"] = write_policyDefaultValue
-    end if
     return message
 end function
