@@ -44,16 +44,16 @@ sub YtsabrServer()
     while(true)
         msg = wait(0, port)
         msgType = type(msg)
-        if msgType <> "Invalid"
-            sabr_log(m.logs, log_level_Type.VERBOSE, `[YTSABR-Server] Event received type=${msgType}`)
-        end if
+        ' if msgType <> "Invalid"
+        '     sabr_log(m.logs, log_level_Type.VERBOSE, `[YTSABR-Server] Event received type=${msgType}`)
+        ' end if
         if msgType = "roSocketEvent"
             try
                 socketId = msg.getSocketID()
                 if socketId = tcp.getID()
                     client = tcp.accept()
                     if client = invalid
-                        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Accept failed on listen socket ${tcp.getID()}`, false)
+                        ' sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Accept failed on listen socket ${tcp.getID()}`, false)
                     else
                         client.notifyReadable(true)
                         client.setMessagePort(port)
@@ -87,9 +87,9 @@ sub YtsabrServer()
                             ' print "tcp " ; socketId ; connection.eOK() ; connection.status() ; connection.isConnected() ; connection.isReadable() ; connection.getCountRcvBuf() = 0
                             handle_tcp(connection, port)
                         end if
-                    else
-                        ' Stale event for a connection we already closed; ignore instead of spamming WARNs.
-                        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Ignoring socket event for closed id=${socketId}`)
+                    ' else
+                    '     ' Stale event for a connection we already closed; ignore instead of spamming WARNs.
+                    '     sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Ignoring socket event for closed id=${socketId}`)
                     end if
                 end if
             catch e
