@@ -137,7 +137,7 @@ function sabr_prepareProtoRequest(request as object, contentType as string, sabr
     })
 
     optionsPayload = {
-        "method": "POST_FILE_TO_FILE_WITH_DECODINGS"
+        "method": "POST_FILE_TO_FILE_TAP"
         "body": protoPath
         "responseFilePath": destPath
     }

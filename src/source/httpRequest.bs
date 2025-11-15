@@ -65,7 +65,7 @@ function makeRequest(params as object)
                 requestSent = ut.asyncPostFromFileToFile(options.body, destFile)
                 logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
                 ' removeFile("tmp", options.body)
-            else if method = "POST_FILE_TO_FILE_WITH_DECODINGS"
+            else if method = "POST_FILE_TO_FILE_TAP"
                 timeSpan = logs.mark()
                 destFile = options?.responseFilePath
                 if not IsString(destFile) or destFile = ""
@@ -73,7 +73,7 @@ function makeRequest(params as object)
                 end if
                 ut.setRequest("POST")
                 requestSent = ut.asyncPostFromFileToFile(options.body, destFile)
-                logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
+                logs.printTime(log_level_Type.TRACE, `[HTTPRequest] Proxying POST_FILE_TO_FILE_TAP ${options.body} - requestSent: ${requestSent}`, timeSpan, -1)
                 ' removeFile("tmp", options.body)
             else if method = "GET_TO_FILE"
                 timeSpan = logs.mark()
@@ -156,6 +156,7 @@ function makeRequest(params as object)
 
                                 if currentSize <> invalid and streamTap.DoesExist("poll")
                                     pollResponse = streamTap.poll(activePath, currentSize)
+                                    tapCompleted = false
                                     if IsAssociativeArray(pollResponse)
                                         if pollResponse.Lookup("done") = true then tapResult = pollResponse
                                         if tapCancelIssued <> true and pollResponse.Lookup("cancel") = true
@@ -190,6 +191,11 @@ function makeRequest(params as object)
                                             tapResult = pollResponse
                                             ut.AsyncCancel()
                                         end if
+                                        if pollResponse.Lookup("done") = true then tapCompleted = true
+                                    end if
+                                    if tapCompleted = true
+                                        responseEvent = { "__tapComplete": true }
+                                        transferDone = true
                                     end if
                                 end if
                             end if
@@ -268,7 +274,8 @@ function makeRequest(params as object)
                     tapResult["path"] = finalPath
                 end if
 
-                if timedOut and responseEvent = invalid
+                tapCompleteEvent = IsAssociativeArray(responseEvent) and responseEvent.Lookup("__tapComplete") = true
+                if timedOut and responseEvent = invalid and tapCompleteEvent <> true
                     output = { "error": "Request timed out" }
                 else if type(responseEvent) = "roUrlEvent"
                     statusCode = responseEvent.GetResponseCode()
@@ -279,7 +286,7 @@ function makeRequest(params as object)
                         ok = statusCode >= 200 and statusCode <= 206 ? true : false
                     end if
 
-                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_WITH_DECODINGS" or method = "GET_TO_FILE"
+                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_TAP" or method = "GET_TO_FILE"
                         body = finalPath
                         logs.printl(log_level_Type.TRACE, `[HTTPRequest] Proxying response to file: ${finalPath}`)
                     else
@@ -291,6 +298,17 @@ function makeRequest(params as object)
                     if not ok
                         logs.printl(log_level_Type.WARN, `[HTTPRequest] Request failed: ${FormatJson(output)}`)
                     end if
+                else if tapCompleteEvent = true
+                    statusCode = 206
+                    ok = true
+                    if method = "POST_FILE_TO_FILE" or method = "POST_FILE_TO_FILE_TAP" or method = "GET_TO_FILE"
+                        body = finalPath
+                        logs.printl(log_level_Type.TRACE, `[HTTPRequest] POST_FILE_TO_FILE_TAP completed via tap: ${finalPath}`)
+                    else
+                        body = ""
+                    end if
+                    headers = {}
+                    output = { "body": body, "ok": ok, "status": statusCode, "headers": headers }
                 else
                     output = { "error": `Unexpected roUrlEvent: ${type(responseEvent)}` }
                 end if
