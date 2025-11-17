@@ -91,6 +91,52 @@ function sabr_joinWithPipe(parts as object) as string
     return result
 end function
 
+' Parse SABR key in format itag:xtags:scope (exactly two colons; xtags may be empty)
+function sabr_parseScopedKey(keyValue as dynamic) as dynamic
+    if not isValid(keyValue) then return invalid
+    if not IsString(keyValue) then return invalid
+    trimmed = keyValue.trim()
+    if trimmed = "" then return invalid
+    re = CreateObject("roRegex", "^([^:]+):([^:]*):([^:]+)$", "i")
+    match = re.Match(trimmed)
+    if match.Count() = 4
+        itagVal = sabr_toInt(match[1])
+        if itagVal = invalid then return invalid
+        return {
+            "raw": trimmed
+            "itag": itagVal
+            "xtags": match[2]
+            "scope": match[3]
+        }
+    end if
+
+    ' Fallback: accept itag:xtags (no scope) or just itag, and default scope to root
+    reLegacy = CreateObject("roRegex", "^([^:]+):([^:]*)$", "i")
+    legacyMatch = reLegacy.Match(trimmed)
+    if legacyMatch.Count() >= 3
+        itagVal = sabr_toInt(legacyMatch[1])
+        if itagVal = invalid then return invalid
+        return {
+            "raw": trimmed
+            "itag": itagVal
+            "xtags": legacyMatch[2]
+            "scope": "root"
+        }
+    end if
+
+    itagOnly = sabr_toInt(trimmed)
+    if itagOnly <> invalid
+        return {
+            "raw": trimmed
+            "itag": itagOnly
+            "xtags": ""
+            "scope": "root"
+        }
+    end if
+
+    return invalid
+end function
+
 function sabr_isNumericLiteralString(text as string) as boolean
     if not IsString(text) then return false
     trimmed = text.trim()
@@ -318,6 +364,149 @@ function sabr_pathIsDir(path as string) as boolean
     dotPos = currentSegment.InStr(".")
     return dotPos = 0
 end function
+
+'------------------------------------------------------------------------------
+' SABR SupplementalProperty extraction (scoped SABR payloads)
+'------------------------------------------------------------------------------
+function sabr_extractScopedSabrPayloads(manifest as string, logs = invalid as dynamic) as object
+    payloadsByScope = {}
+    cleanedManifest = manifest
+    if not isValid(manifest) or Len(manifest) = 0 then return { "manifest": cleanedManifest, "payloads": payloadsByScope }
+
+    mpd = CreateObject("roXMLElement")
+    parsed = false
+    try
+        parsed = mpd.Parse(manifest)
+    catch e
+        parsed = false
+    end try
+    if parsed
+        sabr_collectScopedPayloads(mpd, payloadsByScope, logs)
+    else if isValid(logs)
+        logs.printl(log_level_Type.WARN, "[SabrUtils] Failed to parse MPD XML while extracting SABR payloads")
+    end if
+
+    removeRegex = CreateObject("roRegex", `<SupplementalProperty[^>]*schemeIdUri=["'][^"']*urn:youtube:sabr["'][^>]*?value=["'][^"']*["'][^>]*?>`, "gi")
+    cleanedManifest = removeRegex.ReplaceAll(manifest, "")
+
+    return {
+        "manifest": cleanedManifest
+        "payloads": payloadsByScope
+    }
+end function
+
+sub sabr_collectScopedPayloads(mpd as object, payloads as object, logs = invalid as dynamic)
+    if not isValid(mpd) then return
+
+    ' Root-level SupplementalProperty entries
+    childElements = mpd.GetChildElements()
+    for each child in childElements
+        if sabr_isSabrSupplementalProperty(child)
+            payload = sabr_decodeSabrPayload(child, logs, "root")
+            if isValid(payload)
+                payloads["root"] = payload
+            end if
+        end if
+    end for
+
+    ' Period-level SupplementalProperty entries
+    idx = 0
+    for each child in childElements
+        if LCase(child.GetName()) <> "period" then goto nextPeriod
+        attrs = child.GetAttributes()
+        scopeId = sabr_toSafeString(attrs?.Lookup("id"))
+        if scopeId = ""
+            scopeId = `period-${idx}`
+        end if
+        for each periodChild in child.GetChildElements()
+            if sabr_isSabrSupplementalProperty(periodChild)
+                payload = sabr_decodeSabrPayload(periodChild, logs, scopeId)
+                if isValid(payload)
+                    payloads[scopeId] = payload
+                end if
+            end if
+        end for
+        idx = idx + 1
+        nextPeriod:
+    end for
+end sub
+
+function sabr_isSabrSupplementalProperty(node as dynamic) as boolean
+    if not isValid(node) then return false
+    if LCase(node.GetName()) <> "supplementalproperty" then return false
+    attrs = node.GetAttributes()
+    if not isValid(attrs) then return false
+    schemeId = LCase(sabr_toSafeString(attrs?.Lookup("schemeIdUri")))
+    return Instr(1, schemeId, "urn:youtube:sabr") > 0
+end function
+
+function sabr_decodeSabrPayload(node as dynamic, logs = invalid as dynamic, scopeId = "" as string) as dynamic
+    if not isValid(node) then return invalid
+    attrs = node.GetAttributes()
+    if not isValid(attrs) then return invalid
+    encoded = sabr_toSafeString(attrs?.Lookup("value"))
+    if encoded = "" then return invalid
+    decodedText = fromBase64(encoded)
+    payload = ParseJson(decodedText)
+    if payload = invalid and isValid(logs)
+        logs.printl(log_level_Type.WARN, `[SabrUtils] Failed to parse SABR payload JSON for scope ${scopeId}`)
+    end if
+    return payload
+end function
+
+'------------------------------------------------------------------------------
+' Debug helper: log BaseURLs grouped by Period id to validate manifest rewrites.
+'------------------------------------------------------------------------------
+sub sabr_debugLogBaseUrls(manifest as string, logs = invalid as dynamic)
+    if not isValid(logs) then return
+    if manifest = invalid or Len(manifest) = 0 then return
+    mpd = CreateObject("roXMLElement")
+    parsed = false
+    try
+        parsed = mpd.Parse(manifest)
+    catch e
+        parsed = false
+    end try
+    if not parsed then return
+
+    childElements = mpd.GetChildElements()
+    for each child in childElements
+        if LCase(child.GetName()) <> "period" then goto nextPeriod
+        attrs = child.GetAttributes()
+        periodId = sabr_toSafeString(attrs?.Lookup("id"))
+        if periodId = "" then periodId = "root-period"
+        baseUrls = []
+        for each periodChild in child.GetChildElements()
+            if LCase(periodChild.GetName()) = "baseurl"
+                baseVal = sabr_toSafeString(periodChild.GetText())
+                if baseVal <> "" then baseUrls.push(baseVal)
+            end if
+            ' Also scan adaptation/repr for BaseURL
+            for each grandChild in periodChild.GetChildElements()
+                if LCase(grandChild.GetName()) = "baseurl"
+                    baseVal = sabr_toSafeString(grandChild.GetText())
+                    if baseVal <> "" then baseUrls.push(baseVal)
+                end if
+                for each repChild in grandChild.GetChildElements()
+                    if LCase(repChild.GetName()) = "baseurl"
+                        baseVal = sabr_toSafeString(repChild.GetText())
+                        if baseVal <> "" then baseUrls.push(baseVal)
+                    end if
+                end for
+            end for
+        end for
+        if baseUrls.count() > 0
+            for each entry in baseUrls
+                val = entry
+                if Len(val) > 200 then val = Left(val, 200) + "..."
+                logs.printl(log_level_Type.INFO, `[SabrUtils] Period ${periodId} BaseURL: ${val}`)
+            end for
+        else
+            logs.printl(log_level_Type.INFO, `[SabrUtils] Period ${periodId} has no BaseURL entries`)
+        end if
+        nextPeriod:
+    end for
+end sub
 
 ' Aliases kept for legacy SABR UMP helpers so callers need not change.
 

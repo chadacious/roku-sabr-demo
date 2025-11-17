@@ -103,11 +103,7 @@
 			</Representation>
 		</AdaptationSet>
 	</Period>
-<<<<<<< HEAD
-	<Period id="content-0" start="PT95.005S">
-=======
 	<Period id="content-final" start="PT95.005S">
->>>>>>> 07dfeb57471762fd9a49afcc044fcb23017a3475
 		<AdaptationSet id="0" contentType="video" subsegmentAlignment="true" subsegmentStartsWithSAP="1" bitstreamSwitching="true" startWithSAP="1" default="true" mimeType="video/mp4">
 			<Representation id="137:" contentType="video" codecs="avc1.640028" startWithSAP="1" bandwidth="4320853" width="1920" height="1080" frameRate="24000/1001" data-dedupe-key="137">
 				<BaseURL ns2:contentLength="1003728009">sabr://video?key=137::root</BaseURL>
