@@ -99,15 +99,42 @@ function sabr_parseScopedKey(keyValue as dynamic) as dynamic
     if trimmed = "" then return invalid
     re = CreateObject("roRegex", "^([^:]+):([^:]*):([^:]+)$", "i")
     match = re.Match(trimmed)
-    if match.Count() <> 4 then return invalid
-    itagVal = sabr_toInt(match[1])
-    if itagVal = invalid then return invalid
-    return {
-        "raw": trimmed
-        "itag": itagVal
-        "xtags": match[2]
-        "scope": match[3]
-    }
+    if match.Count() = 4
+        itagVal = sabr_toInt(match[1])
+        if itagVal = invalid then return invalid
+        return {
+            "raw": trimmed
+            "itag": itagVal
+            "xtags": match[2]
+            "scope": match[3]
+        }
+    end if
+
+    ' Fallback: accept itag:xtags (no scope) or just itag, and default scope to root
+    reLegacy = CreateObject("roRegex", "^([^:]+):([^:]*)$", "i")
+    legacyMatch = reLegacy.Match(trimmed)
+    if legacyMatch.Count() >= 3
+        itagVal = sabr_toInt(legacyMatch[1])
+        if itagVal = invalid then return invalid
+        return {
+            "raw": trimmed
+            "itag": itagVal
+            "xtags": legacyMatch[2]
+            "scope": "root"
+        }
+    end if
+
+    itagOnly = sabr_toInt(trimmed)
+    if itagOnly <> invalid
+        return {
+            "raw": trimmed
+            "itag": itagOnly
+            "xtags": ""
+            "scope": "root"
+        }
+    end if
+
+    return invalid
 end function
 
 function sabr_isNumericLiteralString(text as string) as boolean
