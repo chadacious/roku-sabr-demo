@@ -5,7 +5,7 @@ sub init()
     m.top.functionName = "messageHandlers"
     m.port = CreateObject("roMessagePort")
     m.top.ObserveField("LOAD_FILE_TO_STRING", m.port)
-    m.top.ObserveField("CACHE_STRING_TO_FILE", m.port)
+    ' m.top.ObserveField("CACHE_STRING_TO_FILE", m.port)
     m.nextRequestId = {}
     m.logs = logger()
 end sub
@@ -18,8 +18,8 @@ sub messageHandlers()
             field = msg.GetField()
             if field = "LOAD_FILE_TO_STRING"
                 loadFileToString(msg)
-            else if field = "CACHE_STRING_TO_FILE"
-                cacheStringToFile(msg)
+            ' else if field = "CACHE_STRING_TO_FILE"
+            '     cacheStringToFile(msg)
             end if
         end if
     end while
@@ -59,45 +59,45 @@ sub loadFileToString(msg as object)
 
 end sub
 
-sub cacheStringToFile(msg as object)
-    params = msg.getData()
-    content = params.content
-    path = params.path
-    result = { "status": "error", "message": "", "uri": invalid }
+' sub cacheStringToFile(msg as object)
+'     params = msg.getData()
+'     content = params.content
+'     path = params.path
+'     result = { "status": "error", "message": "", "uri": invalid }
 
-    m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] Starting string cache write: ${path}`)
+'     m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] Starting string cache write: ${path}`)
 
-    fileSystem = CreateObject("roFileSystem")
+'     fileSystem = CreateObject("roFileSystem")
 
-    ' handle if the the path includes a directory that doesn't yet exist
-    volumeIndex = Instr(1, path, ":")
-    searchPos = 1
-    while true
-        slashPos = Instr(searchPos, path, "/")
-        if slashPos = 0 then exit while
+'     ' handle if the the path includes a directory that doesn't yet exist
+'     volumeIndex = Instr(1, path, ":")
+'     searchPos = 1
+'     while true
+'         slashPos = Instr(searchPos, path, "/")
+'         if slashPos = 0 then exit while
 
-        if volumeIndex > 0 and slashPos <= volumeIndex + 1
-            searchPos = slashPos + 1
-            continue while
-        end if
+'         if volumeIndex > 0 and slashPos <= volumeIndex + 1
+'             searchPos = slashPos + 1
+'             continue while
+'         end if
 
-        dirPath = Left(path, slashPos - 1)
-        if dirPath <> "" and fileSystem.Exists(dirPath) <> true
-            fileSystem.CreateDirectory(dirPath)
-        end if
+'         dirPath = Left(path, slashPos - 1)
+'         if dirPath <> "" and fileSystem.Exists(dirPath) <> true
+'             fileSystem.CreateDirectory(dirPath)
+'         end if
 
-        searchPos = slashPos + 1
-    end while
+'         searchPos = slashPos + 1
+'     end while
 
-    if writeFile(path, content)
-        result["status"] = "ok"
-        result["uri"] = path
-    else
-        result["message"] = `[cacheStringToFile] Failed to write string file: ${path}`
-    end if
+'     if writeFile(path, content)
+'         result["status"] = "ok"
+'         result["uri"] = path
+'     else
+'         result["message"] = `[cacheStringToFile] Failed to write string file: ${path}`
+'     end if
 
-    m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] String cache write result: ${FormatJson(result)}`)
+'     m.logs.printl(log_level_Type.INFO, `[CACHE_STRING_TO_FILE] String cache write result: ${FormatJson(result)}`)
 
-    sendUIMessage({ "type": "CACHED_STRING_TO_FILE", "result": result })
+'     sendUIMessage({ "type": "CACHED_STRING_TO_FILE", "result": result })
 
-end sub
+' end sub

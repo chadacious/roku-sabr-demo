@@ -585,9 +585,15 @@ end sub
 '------------------------------------------------------------------------------
 function sabr_findFormatForKey(keyParam as string, sabr as object, contentType as string, logTag as string) as dynamic
     if not isValid(keyParam) or keyParam = "" return invalid
-    parts = keyParam.Split(":")
-    itag = sabr_toInt(parts[0])
-    xTags = parts.count() > 1 ? parts[1] : ""
+    parsed = sabr_parseScopedKey(keyParam)
+    itag = parsed?.itag
+    xTags = parsed?.xtags
+    if itag = invalid
+        ' fall back to legacy two-part parsing as a safety net
+        parts = keyParam.Split(":")
+        itag = sabr_toInt(parts[0])
+        xTags = parts.count() > 1 ? parts[1] : ""
+    end if
     candidates = sabr?.adaptiveFormats
     if not isValid(candidates) or candidates.count() = 0
         candidates = sabr?.hlsFormats

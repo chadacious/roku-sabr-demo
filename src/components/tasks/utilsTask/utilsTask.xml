@@ -2,7 +2,7 @@
 <component name="utilsTask" extends="Task">
     <interface>
         <field id="LOAD_FILE_TO_STRING" type="string" access="writeonly" />
-        <field id="CACHE_STRING_TO_FILE" type="assocarray" access="writeonly" />
+        <!-- <field id="CACHE_STRING_TO_FILE" type="assocarray" access="writeonly" /> -->
         <field id="uiMessage" type="assocarray" access="readwrite" />
         <function name="getNextId" />
     </interface>

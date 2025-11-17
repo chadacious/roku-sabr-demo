@@ -32,3 +32,40 @@ function generateHexString(length as integer) as string
     end for
     return hexString
 end function
+
+function cacheStringToFile(fileName as string, content as string)
+    result = { "status": "error", "message": "", "uri": invalid }
+
+    m.logs.printl(log_level_Type.INFO, `[cacheStringToFile] Starting string cache write: ${fileName}`)
+
+    ' handle if the the path includes a directory that doesn't yet exist
+    volumeIndex = Instr(1, fileName, ":")
+    searchPos = 1
+    while true
+        slashPos = Instr(searchPos, fileName, "/")
+        if slashPos = 0 then exit while
+
+        if volumeIndex > 0 and slashPos <= volumeIndex + 1
+            searchPos = slashPos + 1
+            continue while
+        end if
+
+        dirPath = Left(fileName, slashPos - 1)
+        if dirPath <> ""
+            CreateDirectory(dirPath)
+        end if
+
+        searchPos = slashPos + 1
+    end while
+
+    if writeAsciiFile(fileName, content)
+        result["status"] = "ok"
+        result["uri"] = fileName
+    else
+        result["message"] = `[cacheStringToFile] Failed to write string file: ${fileName}`
+    end if
+
+    m.logs.printl(log_level_Type.INFO, `[cacheStringToFile] String cache write result: ${FormatJson(result)}`)
+
+    return result
+end function

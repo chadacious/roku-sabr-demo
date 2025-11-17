@@ -91,6 +91,25 @@ function sabr_joinWithPipe(parts as object) as string
     return result
 end function
 
+' Parse SABR key in format itag:xtags:scope (exactly two colons; xtags may be empty)
+function sabr_parseScopedKey(keyValue as dynamic) as dynamic
+    if not isValid(keyValue) then return invalid
+    if not IsString(keyValue) then return invalid
+    trimmed = keyValue.trim()
+    if trimmed = "" then return invalid
+    re = CreateObject("roRegex", "^([^:]+):([^:]*):([^:]+)$", "i")
+    match = re.Match(trimmed)
+    if match.Count() <> 4 then return invalid
+    itagVal = sabr_toInt(match[1])
+    if itagVal = invalid then return invalid
+    return {
+        "raw": trimmed
+        "itag": itagVal
+        "xtags": match[2]
+        "scope": match[3]
+    }
+end function
+
 function sabr_isNumericLiteralString(text as string) as boolean
     if not IsString(text) then return false
     trimmed = text.trim()
