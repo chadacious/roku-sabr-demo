@@ -427,6 +427,60 @@ function sabr_decodeSabrPayload(node as dynamic, logs = invalid as dynamic, scop
     return payload
 end function
 
+'------------------------------------------------------------------------------
+' Debug helper: log BaseURLs grouped by Period id to validate manifest rewrites.
+'------------------------------------------------------------------------------
+sub sabr_debugLogBaseUrls(manifest as string, logs = invalid as dynamic)
+    if not isValid(logs) then return
+    if manifest = invalid or Len(manifest) = 0 then return
+    mpd = CreateObject("roXMLElement")
+    parsed = false
+    try
+        parsed = mpd.Parse(manifest)
+    catch e
+        parsed = false
+    end try
+    if not parsed then return
+
+    childElements = mpd.GetChildElements()
+    for each child in childElements
+        if LCase(child.GetName()) <> "period" then goto nextPeriod
+        attrs = child.GetAttributes()
+        periodId = sabr_toSafeString(attrs?.Lookup("id"))
+        if periodId = "" then periodId = "root-period"
+        baseUrls = []
+        for each periodChild in child.GetChildElements()
+            if LCase(periodChild.GetName()) = "baseurl"
+                baseVal = sabr_toSafeString(periodChild.GetText())
+                if baseVal <> "" then baseUrls.push(baseVal)
+            end if
+            ' Also scan adaptation/repr for BaseURL
+            for each grandChild in periodChild.GetChildElements()
+                if LCase(grandChild.GetName()) = "baseurl"
+                    baseVal = sabr_toSafeString(grandChild.GetText())
+                    if baseVal <> "" then baseUrls.push(baseVal)
+                end if
+                for each repChild in grandChild.GetChildElements()
+                    if LCase(repChild.GetName()) = "baseurl"
+                        baseVal = sabr_toSafeString(repChild.GetText())
+                        if baseVal <> "" then baseUrls.push(baseVal)
+                    end if
+                end for
+            end for
+        end for
+        if baseUrls.count() > 0
+            for each entry in baseUrls
+                val = entry
+                if Len(val) > 200 then val = Left(val, 200) + "..."
+                logs.printl(log_level_Type.INFO, `[SabrUtils] Period ${periodId} BaseURL: ${val}`)
+            end for
+        else
+            logs.printl(log_level_Type.INFO, `[SabrUtils] Period ${periodId} has no BaseURL entries`)
+        end if
+        nextPeriod:
+    end for
+end sub
+
 ' Aliases kept for legacy SABR UMP helpers so callers need not change.
 
 function sabr_ump_toInt(value as dynamic) as dynamic

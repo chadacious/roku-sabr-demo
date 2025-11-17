@@ -102,6 +102,9 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                     res = replaceSabrBaseUrlsByContentType(manifest, "audio", `http://0.0.0.0:7012/sabr/${mediaIdHash}/`)
                     manifest = res.manifest
 
+                    ' debug log the BaseURLs after rewrite to confirm scopes
+                    sabr_debugLogBaseUrls(manifest, m.logs)
+
                     ' Store the scoped SABR payload map to disk for the server task to load.
                     payloadMapPath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
                     ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": FormatJson(sabrPayloadsByScope), "path": payloadMapPath }
