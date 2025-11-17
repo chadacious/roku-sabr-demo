@@ -34,8 +34,8 @@ import "pkg:/source/taskUtils.bs"
 ' Purpose: minimal SABR adapter that streams each request directly from the
 '          SABR spool pipeline, caching only init segments on disk.
 '------------------------------------------------------------------------------
-function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer) as object
-    playbackContext = sabr_loadPlaybackContext(mediaIdHash)
+function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer, scopeKey = "root" as string) as object
+    playbackContext = sabr_loadPlaybackContext(mediaIdHash, scopeKey)
     requestNumber = sabr_nextRequestId(playbackContext)
     logTag = `[YTSABR-${contentType}-${requestNumber}]`
     sabr_pruneOtherMediaDirs(mediaIdHash)
@@ -83,8 +83,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
             return sabr_buildErrorResponseForPlayer(502, "redirect limit reached")
         end if
         sabr_log(m.logs, log_level_Type.INFO, `${logTag} Following SABR redirect to ${redirectUrl}`)
-        sabr_savePlaybackContext(mediaIdHash, playbackContext)
-        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtMs, redirectDepth + 1)
+        sabr_savePlaybackContext(mediaIdHash, playbackContext, scopeKey)
+        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtMs, redirectDepth + 1, scopeKey)
     end if
     if not IsAssociativeArray(streamResult)
         return sabr_buildErrorResponseForPlayer(500, "SABR stream failed")
@@ -98,7 +98,7 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     end if
     sabr_debugDumpResponse(playbackContext, response, requestByteRange, contentType, currentFormat, logTag, requestNumber)
 
-    sabr_savePlaybackContext(mediaIdHash, playbackContext)
+    sabr_savePlaybackContext(mediaIdHash, playbackContext, scopeKey)
     return response
 end function
 
@@ -544,21 +544,26 @@ end function
 ' Purpose  : Materialize (or initialize) the persisted playback context cache
 '            keyed by mediaIdHash.
 '------------------------------------------------------------------------------
-function sabr_loadPlaybackContext(mediaIdHash as string) as object
-    path = `${sabr_mediaDir(mediaIdHash)}/playbackContext.json`
+function sabr_loadPlaybackContext(mediaIdHash as string, scopeKey = "root" as string) as object
+    path = sabr_playbackContextPath(mediaIdHash, scopeKey)
     if not fileExists(path)
         ctx = {}
         ctx["mediaIdHash"] = mediaIdHash
+        ctx["scope"] = scopeKey
         return ctx
     end if
     data = ParseJson(getFile(path))
     if not IsAssociativeArray(data)
         data = {}
         data["mediaIdHash"] = mediaIdHash
+        data["scope"] = scopeKey
     else
         storedHash = sabr_toSafeString(data.Lookup("mediaIdHash"))
         if storedHash = ""
             data["mediaIdHash"] = mediaIdHash
+        end if
+        if not isValid(data?.scope) or sabr_toSafeString(data.scope) = ""
+            data["scope"] = scopeKey
         end if
         if data.DoesExist("sidxIndexByFormat")
             data.Delete("sidxIndexByFormat")
@@ -567,13 +572,19 @@ function sabr_loadPlaybackContext(mediaIdHash as string) as object
     return data
 end function
 
-sub sabr_savePlaybackContext(mediaIdHash as string, playbackContext as object)
-    path = `${sabr_mediaDir(mediaIdHash)}/playbackContext.json`
+sub sabr_savePlaybackContext(mediaIdHash as string, playbackContext as object, scopeKey = "root" as string)
+    path = sabr_playbackContextPath(mediaIdHash, scopeKey)
     if IsAssociativeArray(playbackContext) and playbackContext.DoesExist("sidxIndexByFormat")
         playbackContext.Delete("sidxIndexByFormat")
     end if
     writeFile(path, FormatJson(playbackContext))
 end sub
+
+function sabr_playbackContextPath(mediaIdHash as string, scopeKey = "root" as string) as string
+    safeScope = sabr_sanitizeForFilename(sabr_toSafeString(scopeKey))
+    if safeScope = "" then safeScope = "root"
+    return `${sabr_mediaDir(mediaIdHash)}/playbackContext-${safeScope}.json`
+end function
 
 '------------------------------------------------------------------------------
 ' Request helpers

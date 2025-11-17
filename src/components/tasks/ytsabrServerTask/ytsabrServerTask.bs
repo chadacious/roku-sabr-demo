@@ -340,7 +340,7 @@ function process_request(request as object, connection as object, port as object
         sabrResponse = invalid
         fatalReason = ""
         try
-            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid)
+            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid, 0, scopeKey)
         catch e
             fatalReason = sabr_formatExceptionDetail(e)
             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} sabr_handleRequest exception: ${fatalReason}`, false)

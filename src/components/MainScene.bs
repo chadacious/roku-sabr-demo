@@ -39,13 +39,13 @@ sub onUtilsTaskMessage(msg)
     if message.type = "FILE_LOADED_TO_STRING"
         fileData = message.fileData
         prepareManifest(fileData)
-    else if message.type = "CACHED_STRING_TO_FILE"
-        result = message.result
-        m.logs.printl(log_level_Type.INFO, `[${TAG}] Cached string to file result: ${FormatJson(result)}`)
-        if result.uri = m.videoConfig.manifestPath
-            m.logs.printl(log_level_Type.INFO, `[${TAG}] Manifest stored to file: ${result.uri}`)
-            loadVideo()
-        end if
+    ' else if message.type = "CACHED_STRING_TO_FILE"
+    '     result = message.result
+    '     m.logs.printl(log_level_Type.INFO, `[${TAG}] Cached string to file result: ${FormatJson(result)}`)
+    '     if result.uri = m.videoConfig.manifestPath
+    '         m.logs.printl(log_level_Type.INFO, `[${TAG}] Manifest stored to file: ${result.uri}`)
+    '         loadVideo()
+    '     end if
     end if
 end sub
 
@@ -67,6 +67,8 @@ sub prepareManifest(manifest as string)
     ' store the manifest
     ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": manifest, "path": m.videoConfig.manifestPath }
     cacheStringToFile(m.videoConfig.manifestPath, manifest)
+    m.logs.printl(log_level_Type.INFO, `[${TAG}] Manifest stored to file: ${m.videoConfig.manifestPath}`)
+    loadVideo()
 end sub
 
 sub loadVideo()
@@ -94,7 +96,6 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                 m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Found SABR payload scopes: ${sabr_joinWithPipe(sabrPayloadsByScope.Keys())}`)
                 if isValid(mediaId) and mediaId <> ""
                     mediaIdHash = hashStringEVP(mediaId, "md5")
-                    sabr_ensureMediaDir(mediaIdHash)
                     ' replace sabr:// base URLs with the scoped local servers
                     res = replaceSabrBaseUrlsByContentType(manifest, "video", `http://0.0.0.0:7011/sabr/${mediaIdHash}/`)
                     manifest = res.manifest
