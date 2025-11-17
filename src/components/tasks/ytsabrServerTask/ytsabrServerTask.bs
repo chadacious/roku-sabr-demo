@@ -280,38 +280,54 @@ function process_request(request as object, connection as object, port as object
             return true
         end if
 
-        ' check if we already have this mediaIdHash sabrPayload.json file loaded
-        if m.sabrPayloads[mediaIdHash] = invalid then
-            ' Load the sabrPayload.json file from storage
-            filePath = `${sabr_mediaDir(mediaIdHash)}/sabrPayload.json`
+        keyParam = ""
+        if IsAssociativeArray(request?.search)
+            keyParam = sabr_valueToLabel(request.search.Lookup("key"))
+        end if
+        parsedKey = sabr_parseScopedKey(keyParam)
+        if parsedKey = invalid
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Invalid SABR key format: ${keyParam} on ${connection.getID()}`, false)
+            status = send_http_reply(connection, "400", "text/plain", "Bad Request - invalid SABR key")
+            return true
+        end if
+        scopeKey = parsedKey.scope
+
+        ' check if we already have this mediaIdHash scoped sabrPayload map loaded
+        if m.sabrPayloads[mediaIdHash] = invalid
+            filePath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
             fileContent = getFile(filePath)
             if fileContent = invalid or fileContent = ""
-                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayload.json file: ${filePath} on ${connection.getID()}`, false)
+                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayloadMap.json file: ${filePath} on ${connection.getID()}`, false)
                 status = send_http_reply(connection, "503", "text/plain", "Service Unavailable - SABR metadata not ready")
                 return true
             end if
-            ' Parse the JSON content
-            sabrPayload = ParseJson(fileContent)
-            if sabrPayload = invalid then
-                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] sabrPayload.json file is not valid JSON: ${filePath} on ${connection.getID()}`, false)
-                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - sabrPayload.json is not valid JSON")
+            sabrPayloadMap = ParseJson(fileContent)
+            if not IsAssociativeArray(sabrPayloadMap)
+                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] sabrPayloadMap.json file is not valid JSON: ${filePath} on ${connection.getID()}`, false)
+                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - sabrPayload map is not valid JSON")
                 return true
             end if
-            m.sabrPayloads[mediaIdHash] = sabrPayload
-            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayload for mediaIdHash: ${mediaIdHash} from ${filePath}`)
+            m.sabrPayloads[mediaIdHash] = sabrPayloadMap
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayloadMap for mediaIdHash: ${mediaIdHash} from ${filePath}`)
         else
-            sabrPayload = m.sabrPayloads[mediaIdHash]
-            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayload for mediaIdHash: ${mediaIdHash}`)
+            sabrPayloadMap = m.sabrPayloads[mediaIdHash]
+            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayloadMap for mediaIdHash: ${mediaIdHash}`)
+        end if
+
+        sabrPayload = invalid
+        if IsAssociativeArray(sabrPayloadMap)
+            sabrPayload = sabrPayloadMap.Lookup(scopeKey)
+        end if
+        if sabrPayload = invalid
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] No SABR payload for scope ${scopeKey} (mediaIdHash=${mediaIdHash})`, false)
+            status = send_http_reply(connection, "404", "text/plain", "Not Found - SABR scope missing")
+            return true
         end if
         rangeHeader = ""
         if IsAssociativeArray(request?.headers)
             rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
         end if
-        keyParam = ""
-        if IsAssociativeArray(request?.search)
-            keyParam = sabr_valueToLabel(request.search.Lookup("key"))
-        end if
-        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} range=${rangeHeader}`)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} scope=${scopeKey} range=${rangeHeader}`)
 
         requestId = invalid
         if isValid(m.top?.utilsTask)
@@ -324,7 +340,7 @@ function process_request(request as object, connection as object, port as object
         sabrResponse = invalid
         fatalReason = ""
         try
-            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid)
+            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid, 0, scopeKey)
         catch e
             fatalReason = sabr_formatExceptionDetail(e)
             sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} sabr_handleRequest exception: ${fatalReason}`, false)

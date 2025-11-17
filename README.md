@@ -80,6 +80,12 @@ artifacts/                # Log and screenshot outputs from automation
 4. `VideoPlayer` sets `Video.content` to the local manifest proxy (`http://0.0.0.0:7010/manifest/<base64 path>`), so the Roku player fetches segments through the local servers.
 5. `ytsabrServerTask` uses `SabrStreamingAdapter` + protobuf bindings to interpret SABR/UMP responses, build in-memory spool maps (including SIDX data from init segments), and stream the requested byte ranges straight from the SABR spool file back to the Roku video stack without staging per-segment files.
 
+### Multi-period MPDs and SABR scope handling
+- The app supports DASH manifests with multiple `Period` entries where the SABR `<SupplementalProperty schemeIdUri="urn:youtube:sabr">` may appear at the MPD root or per-period. Each payload is decoded into a scope map keyed by period id (root scope = `root`) and persisted as `sabrPayloadMap.json` under `tmp:/<mediaIdHash>/`.
+- `BaseURL` entries in the MPD must include the scope in the key suffix (e.g., `.../video?key=144::root` for root or `.../video?key=137::ad-5.005` for an ad period). The player bakes that scoped key into segment requests; the local SABR server parses it, selects the matching scoped payload, and keeps playback contexts/SIDX/init caches isolated per scope.
+- If a key omits the scope (legacy single-period manifests), the server falls back to `scope=root` so unscoped manifests can still play.
+- Debug uploads and cache filenames include the scope (e.g., `...-scoperoot-...`, `...-scopead-5.005-...`) to make multi-period debugging easier.
+
 ## Player Time Strategy
 
 `SabrStreamingAdapter` now relies exclusively on the SIDX metadata embedded in SABR init segments to resolve `playerTimeMs`. Each init response is parsed (`SabrUmpProcessor`) and the resulting entries are cached per format. When the Roku player requests a byte range, the adapter locates the SIDX entry that contains (or most closely precedes) the start byte and maps it to a playback timestamp.
