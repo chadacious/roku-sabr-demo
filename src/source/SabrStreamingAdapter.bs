@@ -910,13 +910,13 @@ end function
 '------------------------------------------------------------------------------
 function sabr_resolvePlayerTimeFromRequest(playbackContext as object, contentType as string, currentFormat as object, requestByteRange as object) as dynamic
     entriesInfo = sabr_lookupSidxEntries(playbackContext, contentType, currentFormat)
+    
     entries = entriesInfo?.entries
     if not IsArray(entries) or entries.count() = 0 then return invalid
 
     requestStart = sabr_toInt(requestByteRange?.startRange)
     if requestStart = invalid then return invalid
 
-    matchedIndex = -1
     matchedEntry = invalid
 
     totalEntries = entries.count()
@@ -927,18 +927,9 @@ function sabr_resolvePlayerTimeFromRequest(playbackContext as object, contentTyp
         rangeEnd = sabr_toInt(entry?.rangeEnd)
         if rangeStart = invalid or rangeEnd = invalid then continue for
 
+        ' Only accept an actual overlap with the requested start.
         if requestStart >= rangeStart and requestStart <= rangeEnd
             matchedEntry = entry
-            matchedIndex = idx
-            exit for
-        end if
-
-        if requestStart > rangeEnd
-            matchedEntry = entry
-            matchedIndex = idx
-        else if requestStart < rangeStart and matchedEntry = invalid
-            matchedEntry = entry
-            matchedIndex = idx
             exit for
         end if
     end for
@@ -947,6 +938,17 @@ function sabr_resolvePlayerTimeFromRequest(playbackContext as object, contentTyp
 
     playerTimeMs = sabr_toInt(matchedEntry?.startTimeMs)
     if playerTimeMs = invalid then playerTimeMs = 0
+
+    ' Instrumentation: log which SIDX entry we used for this range.
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    formatKey = sabr_formatKey(currentFormat)
+    matchedStart = sabr_toInt(matchedEntry?.rangeStart)
+    matchedEnd = sabr_toInt(matchedEntry?.rangeEnd)
+    seqIndex = sabr_toInt(matchedEntry?.sequenceIndex)
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] resolvePlayerTime scope=${scopeKey} media=${mediaIdHash} type=${contentType} format=${formatKey} reqStart=${requestStart} matchedRange=${matchedStart}-${matchedEnd} seq=${seqIndex} startMs=${playerTimeMs}`)
+    end if
 
     info = {
         "playerTimeMs": playerTimeMs
@@ -1008,27 +1010,31 @@ end sub
 ' Function : sabr_sidxIndexKey
 ' Purpose  : Derive cache key used to store parsed SIDX entries by content type.
 '------------------------------------------------------------------------------
-function sabr_sidxIndexKey(contentType as string, format as object, overrideKey = "" as string, scopeKey = "root" as string) as string
+function sabr_sidxIndexKey(contentType as string, format as object, overrideKey = "" as string, scopeKey = "root" as string, mediaIdHash = "" as string) as string
     typeLabel = UCase(sabr_toSafeString(contentType))
     scopeLabel = UCase(sabr_toSafeString(scopeKey))
+    mediaLabel = UCase(sabr_toSafeString(mediaIdHash))
     if typeLabel = "" then typeLabel = "UNKNOWN"
     if scopeLabel = "" then scopeLabel = "ROOT"
+    if mediaLabel = "" then mediaLabel = "GLOBAL"
     formatKey = overrideKey
     if formatKey = "" then formatKey = sabr_formatKey(format)
     if formatKey = "" then formatKey = "default"
-    return `${scopeLabel}|${typeLabel}|${formatKey}`
+    return `${mediaLabel}|${scopeLabel}|${typeLabel}|${formatKey}`
 end function
 
 '------------------------------------------------------------------------------
 ' Function : sabr_sidxCacheKeyForType
 ' Purpose  : Provide the top-level associative array key for SIDX caches.
 '------------------------------------------------------------------------------
-function sabr_sidxCacheKeyForType(contentType as string, scopeKey = "root" as string) as string
+function sabr_sidxCacheKeyForType(contentType as string, scopeKey = "root" as string, mediaIdHash = "" as string) as string
     label = UCase(sabr_toSafeString(contentType))
     scopeLabel = UCase(sabr_toSafeString(scopeKey))
+    mediaLabel = UCase(sabr_toSafeString(mediaIdHash))
     if label = "" then label = "UNKNOWN"
     if scopeLabel = "" then scopeLabel = "ROOT"
-    return `${scopeLabel}|${label}`
+    if mediaLabel = "" then mediaLabel = "GLOBAL"
+    return `${mediaLabel}|${scopeLabel}|${label}`
 end function
 
 '------------------------------------------------------------------------------
@@ -1045,31 +1051,34 @@ function sabr_sidxCacheRoot() as object
     return cache
 end function
 
-sub sabr_sidxCacheStore(contentType as string, indexKey as string, info as object, scopeKey = "root" as string)
+sub sabr_sidxCacheStore(contentType as string, indexKey as string, info as object, scopeKey = "root" as string, mediaIdHash = "" as string)
     cache = sabr_sidxCacheRoot()
-    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey)
+    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey, mediaIdHash)
+    if not IsAssociativeArray(cache[typeKey])
+        cache[typeKey] = {}
+    end if
     if not IsAssociativeArray(info)
-        cache.Delete(typeKey)
+        cache[typeKey].Delete(indexKey)
+        if cache[typeKey].Count() = 0
+            cache.Delete(typeKey)
+        end if
         return
     end if
-    cache[typeKey] = {
-        "key": indexKey
-        "info": info
-    }
+    cache[typeKey][indexKey] = info
 end sub
 
 '------------------------------------------------------------------------------
 ' Function : sabr_sidxCacheLookup
 ' Purpose  : Fetch cached SIDX data for the requested format and content type.
 '------------------------------------------------------------------------------
-function sabr_sidxCacheLookup(contentType as string, indexKey as string, scopeKey = "root" as string) as dynamic
+function sabr_sidxCacheLookup(contentType as string, indexKey as string, scopeKey = "root" as string, mediaIdHash = "" as string) as dynamic
     cache = sabr_sidxCacheRoot()
-    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey)
-    entry = cache.Lookup(typeKey)
-    if not IsAssociativeArray(entry) then return invalid
-    cachedKey = sabr_toSafeString(entry.Lookup("key"))
-    if cachedKey = "" or (indexKey <> "" and cachedKey <> indexKey) then return invalid
-    info = entry.Lookup("info")
+    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey, mediaIdHash)
+    entryMap = cache.Lookup(typeKey)
+    if not IsAssociativeArray(entryMap) then return invalid
+    lookupKey = sabr_toSafeString(indexKey)
+    if lookupKey = "" then return invalid
+    info = entryMap.Lookup(lookupKey)
     if IsAssociativeArray(info) then return info
     return invalid
 end function
@@ -1127,7 +1136,7 @@ function sabr_reloadSidxEntriesFromInit(playbackContext as object, contentType a
     sabr_storeSidxIndexUpdate(playbackContext, contentType, format, update, fakeSegmentEntry)
     scopeKey = sabr_toSafeString(playbackContext?.scope)
     if scopeKey = "" then scopeKey = "root"
-    return sabr_sidxCacheLookup(contentType, indexKey, scopeKey)
+    return sabr_sidxCacheLookup(contentType, indexKey, scopeKey, mediaIdHash)
 end function
 
 sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, currentFormat as object, update as object, segmentEntry as object)
@@ -1145,7 +1154,8 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     end if
     scopeKey = sabr_toSafeString(playbackContext?.scope)
     if scopeKey = "" then scopeKey = "root"
-    key = sabr_sidxIndexKey(contentType, currentFormat, formatKey, scopeKey)
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    key = sabr_sidxIndexKey(contentType, currentFormat, formatKey, scopeKey, mediaIdHash)
 
     sequenceBase = sabr_toInt(segmentEntry?.mediaHeader?.startSegmentIndex)
     if sequenceBase = invalid then sequenceBase = 0
@@ -1182,7 +1192,14 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     }
     scopeKey = sabr_toSafeString(playbackContext?.scope)
     if scopeKey = "" then scopeKey = "root"
-    sabr_sidxCacheStore(contentType, key, cacheInfo, scopeKey)
+    sabr_sidxCacheStore(contentType, key, cacheInfo, scopeKey, mediaIdHash)
+
+    ' Debug: log the SIDX summary we just cached to confirm parsing correctness.
+    if isValid(m?.logs)
+        firstEntry = normalizedEntries[0]
+        lastEntry = normalizedEntries[normalizedEntries.count() - 1]
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] cached scope=${scopeKey} media=${mediaIdHash} type=${contentType} format=${formatKey} timescale=${sabr_toInt(update?.timescale)} entries=${normalizedEntries.count()} firstRange=${sabr_toInt(firstEntry?.rangeStart)}-${sabr_toInt(firstEntry?.rangeEnd)} firstStartMs=${sabr_toInt(firstEntry?.startTimeMs)} lastRange=${sabr_toInt(lastEntry?.rangeStart)}-${sabr_toInt(lastEntry?.rangeEnd)} lastStartMs=${sabr_toInt(lastEntry?.startTimeMs)}`)
+    end if
 end sub
 
 '------------------------------------------------------------------------------
@@ -1193,10 +1210,12 @@ end sub
 function sabr_lookupSidxEntries(playbackContext as object, contentType as string, format as object) as dynamic
     scopeKey = sabr_toSafeString(playbackContext?.scope)
     if scopeKey = "" then scopeKey = "root"
-    key = sabr_sidxIndexKey(contentType, format, "", scopeKey)
-    cached = sabr_sidxCacheLookup(contentType, key, scopeKey)
-    if IsAssociativeArray(cached) then return cached
-    return sabr_reloadSidxEntriesFromInit(playbackContext, contentType, format, key)
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    key = sabr_sidxIndexKey(contentType, format, "", scopeKey, mediaIdHash)
+    ' Always prefer the on-disk init for this scope/format to avoid cross-period bleed.
+    reloaded = sabr_reloadSidxEntriesFromInit(playbackContext, contentType, format, key)
+    if IsAssociativeArray(reloaded) then return reloaded
+    return sabr_sidxCacheLookup(contentType, key, scopeKey, mediaIdHash)
 end function
 
 '------------------------------------------------------------------------------
@@ -1239,6 +1258,14 @@ function sabr_buildBufferedRangeFromSidx(playbackContext as object, contentType 
     if durationMs = invalid then durationMs = 0
     startMs = sabr_toInt(previousEntry?.startTimeMs)
     if startMs = invalid then startMs = 0
+
+    ' Instrumentation: log which buffered-range entry we derive from SIDX.
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    formatKey = sabr_formatKey(format)
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] bufferedRange scope=${scopeKey} media=${mediaIdHash} type=${contentType} format=${formatKey} seq=${seqIndex} range=${rangeStart}-${rangeEnd} durationMs=${durationMs} startMs=${startMs}`)
+    end if
 
     return {
         "rangeStart": rangeStart

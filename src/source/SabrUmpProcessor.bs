@@ -1228,6 +1228,12 @@ function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as objec
     timescale = sabr_toInt(indexInfo?.timescale)
     if timescale = invalid or timescale <= 0 then timescale = 1
 
+    baseOffsetMs = 0
+    earliestPts = sabr_toInt(indexInfo?.earliestPresentationTime)
+    if earliestPts <> invalid and earliestPts > 0
+        baseOffsetMs = sabr_ump_ticksToMs(earliestPts, timescale)
+    end if
+
     entries = []
     accumulated = 0
     references = indexInfo?.references
@@ -1236,8 +1242,8 @@ function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as objec
             if not IsAssociativeArray(reference) then continue for
             duration = sabr_toInt(reference?.subsegmentDuration)
             if duration = invalid or duration < 0 then duration = 0
-            startMs = int((accumulated * 1000) / timescale)
-            durationMs = int((duration * 1000) / timescale)
+            startMs = baseOffsetMs + sabr_ump_ticksToMs(accumulated, timescale)
+            durationMs = sabr_ump_ticksToMs(duration, timescale)
             rangeStart = sabr_toInt(reference?.rangeStart)
             if rangeStart = invalid then rangeStart = int(reference?.rangeStart)
             rangeEnd = sabr_toInt(reference?.rangeEnd)
@@ -1287,4 +1293,16 @@ function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as objec
     end if
 
     return update
+end function
+
+'------------------------------------------------------------------------------
+' Helper : sabr_ump_ticksToMs
+' Purpose: Convert a tick count to milliseconds using integer math to avoid
+'          overflow when ticks are multiplied by 1000.
+'------------------------------------------------------------------------------
+function sabr_ump_ticksToMs(ticks as integer, timescale as integer) as integer
+    if timescale = invalid or timescale <= 0 then return 0
+    whole = ticks / timescale
+    remainder = ticks mod timescale
+    return (whole * 1000) + int((remainder * 1000) / timescale)
 end function
