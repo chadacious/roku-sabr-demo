@@ -84,7 +84,7 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
     if byteLength <= 0 or offset + byteLength > totalCount then return info
 
     cursor = offset
-    value = 0.0
+    value = 0
 
     if byteLength = 1
         value = buffer[cursor]
@@ -92,25 +92,25 @@ function sabr_ump_readVarint(buffer as object, offset as integer) as object
     else if byteLength = 2
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h3f) + 64.0 * byte2
+        value = (byte1 and &h3f) + 64 * byte2
     else if byteLength = 3
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h1f) + 32.0 * (byte2 + 256.0 * byte3)
+        value = (byte1 and &h1f) + 32 * (byte2 + 256 * byte3)
     else if byteLength = 4
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
         byte4 = buffer[cursor] : cursor = cursor + 1
-        value = (byte1 and &h0f) + 16.0 * (byte2 + 256.0 * (byte3 + 256.0 * byte4))
+        value = (byte1 and &h0f) + 16 * (byte2 + 256 * (byte3 + 256 * byte4))
     else
         cursor = cursor + 1
         byte1 = buffer[cursor] : cursor = cursor + 1
         byte2 = buffer[cursor] : cursor = cursor + 1
         byte3 = buffer[cursor] : cursor = cursor + 1
         byte4 = buffer[cursor] : cursor = cursor + 1
-        value = byte1 + 256.0 * byte2 + 65536.0 * byte3 + 16777216.0 * byte4
+        value = byte1 + 256 * byte2 + 65536 * byte3 + 16777216 * byte4
     end if
 
     info.value = sabr_ump_finalizeVarintValue(value)
@@ -1236,8 +1236,8 @@ function sabr_ump_buildSidxIndexUpdate(existing as dynamic, mediaHeader as objec
             if not IsAssociativeArray(reference) then continue for
             duration = sabr_toInt(reference?.subsegmentDuration)
             if duration = invalid or duration < 0 then duration = 0
-            startMs = int((accumulated * 1000.0) / timescale)
-            durationMs = int((duration * 1000.0) / timescale)
+            startMs = int((accumulated * 1000) / timescale)
+            durationMs = int((duration * 1000) / timescale)
             rangeStart = sabr_toInt(reference?.rangeStart)
             if rangeStart = invalid then rangeStart = int(reference?.rangeStart)
             rangeEnd = sabr_toInt(reference?.rangeEnd)
