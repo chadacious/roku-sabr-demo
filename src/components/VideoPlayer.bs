@@ -9,6 +9,12 @@ sub init()
     m.titleBackground = m.top.findNode("titleBackground")
     m.titleLabel = m.top.findNode("titleLabel")
     m.top.focusable = true
+
+    if m.videoNode <> invalid
+        m.videoNode.observeField("errorCode", "onVideoNodeFieldChanged")
+        m.videoNode.observeField("warningCode", "onVideoNodeFieldChanged")
+        m.videoNode.observeField("state", "onVideoNodeFieldChanged")
+    end if
 end sub
 
 function getVideoNodeRef() as object
@@ -40,6 +46,40 @@ sub setVideo(data as object)
     m.videoNode.control = "play"
     m.videoNode.setFocus(true)
 
+end sub
+
+sub onVideoNodeFieldChanged(event as object)
+    if event = invalid then return
+    field = event.GetField()
+    if field = invalid then return
+    if m.videoNode = invalid then return
+
+    posMs = int(m.videoNode.position * 1000)
+    state = m.videoNode.state
+    warningCode = m.videoNode.warningCode
+    errorCode = m.videoNode.errorCode
+    errorMsg = m.videoNode.errorMsg
+
+    if field = "errorCode" and errorCode <> 0
+        m.logs.printl(log_level_Type.FATAL, `[${TAG}] VideoNode error code=${errorCode} msg='${errorMsg}' state=${state} positionMs=${posMs}`)
+        streamInfo = m.videoNode.streamInfo
+        if streamInfo <> invalid
+            try
+                m.logs.printl(log_level_Type.DEBUG, `[${TAG}] VideoNode streamInfo on error: ${FormatJson(streamInfo)}`)
+            catch e
+            end try
+        end if
+        return
+    end if
+
+    if field = "warningCode" and warningCode <> 0
+        m.logs.printl(log_level_Type.WARN, `[${TAG}] VideoNode warning code=${warningCode} state=${state} positionMs=${posMs}`)
+        return
+    end if
+
+    if field = "state"
+        m.logs.printl(log_level_Type.DEBUG, `[${TAG}] VideoNode state=${state} positionMs=${posMs}`)
+    end if
 end sub
 
 sub showTitleOverlay(title as string)
