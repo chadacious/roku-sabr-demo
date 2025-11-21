@@ -683,6 +683,31 @@ function sabr_normalizeByteRange(byteRange as object, context = invalid as dynam
 end function
 
 '------------------------------------------------------------------------------
+' Function : sabr_parseNrrRange
+' Purpose  : Extract and normalize the next-request-range (nrr) header.
+'------------------------------------------------------------------------------
+function sabr_parseNrrRange(request as object) as dynamic
+    headerNrr = ""
+    if isValid(request?.headers?.nrr)
+        headerNrr = request.headers.nrr
+    else if isValid(request?.headers?["cmcd-request"])
+        cmcdReq = sabr_toSafeString(request.headers["cmcd-request"])
+        nrrMatch = CreateObject("roRegex", "nrr\\s*=\\s*\"?([0-9]+-[0-9]+)\"?", "i").Match(cmcdReq)
+        if nrrMatch.Count() >= 2 then headerNrr = nrrMatch[1]
+    end if
+    if headerNrr = "" then return invalid
+    parts = headerNrr.Split("-")
+    if parts.Count() <> 2 then return invalid
+    startVal = sabr_toInt(parts[0])
+    endVal = sabr_toInt(parts[1])
+    if startVal = invalid or endVal = invalid or endVal < startVal then return invalid
+    return {
+        "startRange": startVal
+        "endRange": endVal
+    }
+end function
+
+'------------------------------------------------------------------------------
 ' Function : sabr_isInit
 ' Purpose  : Decide if the incoming request targets an init segment (we treat
 '            them very differently for caching/reporting).
@@ -989,6 +1014,15 @@ function sabr_detectSeekBack(previousPlayerTimeMs as dynamic, currentPlayerTimeM
 end function
 
 '------------------------------------------------------------------------------
+' Function : sabr_isNrrPrefetchEligible
+' Purpose  : Gate nrr prefetch when user state suggests we should avoid it
+'            (e.g., seeking or paused).
+'------------------------------------------------------------------------------
+function sabr_isNrrPrefetchEligible(playbackContext as object, videoNode = invalid as dynamic) as boolean
+    return videoNode?.state = "playing"
+end function
+
+'------------------------------------------------------------------------------
 ' Function : sabr_formatKey
 ' Purpose  : Build a stable key for cached format metadata.
 '------------------------------------------------------------------------------
@@ -1039,6 +1073,57 @@ function sabr_sidxIndexKey(contentType as string, format as object, overrideKey 
     if formatKey = "" then formatKey = sabr_formatKey(format)
     if formatKey = "" then formatKey = "default"
     return `${mediaLabel}|${scopeLabel}|${typeLabel}|${formatKey}`
+end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_nrrPrefetchKey
+' Purpose  : Build a stable key for NRR prefetch entries.
+'------------------------------------------------------------------------------
+function sabr_nrrPrefetchKey(contentType as string, format as object, scopeKey as string, mediaIdHash as string, nrrRange as object) as string
+    sidxKey = sabr_sidxIndexKey(contentType, format, "", scopeKey, mediaIdHash)
+    startVal = sabr_toInt(nrrRange?.startRange)
+    endVal = sabr_toInt(nrrRange?.endRange)
+    if startVal = invalid then startVal = 0
+    rangeLabel = `${startVal}-${endVal}`
+    return `${sidxKey}|NRR|${rangeLabel}`
+end function
+
+'------------------------------------------------------------------------------
+' NRR Prefetch Registry (single-process bookkeeping)
+'------------------------------------------------------------------------------
+function sabr_nrrPrefetchRegistry() as object
+    if not IsAssociativeArray(m) then m = {}
+    reg = m.Lookup("nrrPrefetch")
+    if not IsAssociativeArray(reg)
+        reg = {}
+        m["nrrPrefetch"] = reg
+    end if
+    return reg
+end function
+
+sub sabr_nrrPrefetchMark(key as string, status as string, data = invalid as dynamic)
+    reg = sabr_nrrPrefetchRegistry()
+    lookupKey = sabr_toSafeString(key)
+    if lookupKey = ""
+        return
+    end if
+    entry = reg.Lookup(lookupKey)
+    if not IsAssociativeArray(entry)
+        entry = {}
+    end if
+    entry["status"] = status
+    entry["data"] = data
+    entry["updatedMs"] = CreateObject("roDateTime").AsSeconds() * 1000
+    reg[lookupKey] = entry
+end sub
+
+function sabr_nrrPrefetchLookup(key as string) as dynamic
+    reg = sabr_nrrPrefetchRegistry()
+    lookupKey = sabr_toSafeString(key)
+    if lookupKey = "" then return invalid
+    entry = reg.Lookup(lookupKey)
+    if IsAssociativeArray(entry) then return entry
+    return invalid
 end function
 
 '------------------------------------------------------------------------------
