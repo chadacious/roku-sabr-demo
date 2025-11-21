@@ -35,6 +35,12 @@ import "pkg:/source/taskUtils.bs"
 '          SABR spool pipeline, caching only init segments on disk.
 '------------------------------------------------------------------------------
 function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer, scopeKey = "root" as string) as object
+    parsedKey = sabr_parseScopedKey(request?.search?.key)
+    if IsAssociativeArray(parsedKey)
+        scopedLabel = sabr_toSafeString(parsedKey?.scope)
+        if scopedLabel <> "" then scopeKey = scopedLabel
+    end if
+
     playbackContext = sabr_loadPlaybackContext(mediaIdHash, scopeKey)
     requestNumber = sabr_nextRequestId(playbackContext)
     logTag = `[YTSABR-${contentType}-${requestNumber}]`
@@ -603,6 +609,12 @@ function sabr_findFormatForKey(keyParam as string, sabr as object, contentType a
     parsed = sabr_parseScopedKey(keyParam)
     itag = parsed?.itag
     xTags = parsed?.xtags
+    ' if IsAssociativeArray(parsed)
+    '     scopedLabel = sabr_toSafeString(parsed?.scope)
+    '     if scopedLabel <> "" and IsAssociativeArray(m?.logs)
+    '         sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] request scoped key=${keyParam} scope=${scopedLabel}`)
+    '     end if
+    ' end if
     if itag = invalid
         ' fall back to legacy two-part parsing as a safety net
         parts = keyParam.Split(":")
@@ -733,7 +745,13 @@ end function
 function sabr_computeInitSegmentPath(mediaIdHash as string, contentType as string, keyParam as string, scopeKey = "root" as string) as string
     baseDir = sabr_mediaDir(mediaIdHash)
     typeLabel = sabr_sanitizeForFilename(LCase(sabr_toSafeString(contentType)))
-    keyLabel = sabr_sanitizeForFilename(sabr_toSafeString(keyParam))
+    rawKey = sabr_toSafeString(keyParam)
+    scopeLabel = sabr_sanitizeForFilename(sabr_toSafeString(scopeKey))
+    scopeSuffix = scopeLabel <> "" ? `:${scopeLabel}` : ""
+    if rawKey <> "" and scopeSuffix <> "" and Right(rawKey, Len(scopeSuffix)) = scopeSuffix
+        rawKey = Left(rawKey, Len(rawKey) - Len(scopeSuffix))
+    end if
+    keyLabel = sabr_sanitizeForFilename(rawKey)
     scopeLabel = sabr_sanitizeForFilename(sabr_toSafeString(scopeKey))
     if typeLabel = "" then typeLabel = "unknown"
     if keyLabel = "" then keyLabel = "nokey"
@@ -1024,64 +1042,35 @@ function sabr_sidxIndexKey(contentType as string, format as object, overrideKey 
 end function
 
 '------------------------------------------------------------------------------
-' Function : sabr_sidxCacheKeyForType
-' Purpose  : Provide the top-level associative array key for SIDX caches.
+' Function : sabr_lastSidxCacheForKey
+' Purpose  : Provide single-entry module-scoped SIDX cache keyed by type/format/scope/media.
 '------------------------------------------------------------------------------
-function sabr_sidxCacheKeyForType(contentType as string, scopeKey = "root" as string, mediaIdHash = "" as string) as string
-    label = UCase(sabr_toSafeString(contentType))
-    scopeLabel = UCase(sabr_toSafeString(scopeKey))
-    mediaLabel = UCase(sabr_toSafeString(mediaIdHash))
-    if label = "" then label = "UNKNOWN"
-    if scopeLabel = "" then scopeLabel = "ROOT"
-    if mediaLabel = "" then mediaLabel = "GLOBAL"
-    return `${mediaLabel}|${scopeLabel}|${label}`
-end function
-
-'------------------------------------------------------------------------------
-' Function : sabr_sidxCacheRoot
-' Purpose  : Lazy-init the associative array that stores cached SIDX entries.
-'------------------------------------------------------------------------------
-function sabr_sidxCacheRoot() as object
-    globalAA = GetGlobalAA()
-    cache = globalAA.Lookup("sabrSidxCache")
-    if not IsAssociativeArray(cache)
-        cache = {}
-        globalAA["sabrSidxCache"] = cache
-    end if
-    return cache
-end function
-
-sub sabr_sidxCacheStore(contentType as string, indexKey as string, info as object, scopeKey = "root" as string, mediaIdHash = "" as string)
-    cache = sabr_sidxCacheRoot()
-    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey, mediaIdHash)
-    if not IsAssociativeArray(cache[typeKey])
-        cache[typeKey] = {}
-    end if
-    if not IsAssociativeArray(info)
-        cache[typeKey].Delete(indexKey)
-        if cache[typeKey].Count() = 0
-            cache.Delete(typeKey)
-        end if
-        return
-    end if
-    cache[typeKey][indexKey] = info
-end sub
-
-'------------------------------------------------------------------------------
-' Function : sabr_sidxCacheLookup
-' Purpose  : Fetch cached SIDX data for the requested format and content type.
-'------------------------------------------------------------------------------
-function sabr_sidxCacheLookup(contentType as string, indexKey as string, scopeKey = "root" as string, mediaIdHash = "" as string) as dynamic
-    cache = sabr_sidxCacheRoot()
-    typeKey = sabr_sidxCacheKeyForType(contentType, scopeKey, mediaIdHash)
-    entryMap = cache.Lookup(typeKey)
-    if not IsAssociativeArray(entryMap) then return invalid
-    lookupKey = sabr_toSafeString(indexKey)
+function sabr_lastSidxCacheForKey(cacheKey as string) as dynamic
+    lookupKey = sabr_toSafeString(cacheKey)
     if lookupKey = "" then return invalid
-    info = entryMap.Lookup(lookupKey)
-    if IsAssociativeArray(info) then return info
+    cache = invalid
+    if IsAssociativeArray(m) and m.DoesExist("lastSidxCache")
+        cache = m.lastSidxCache
+    end if
+    if IsAssociativeArray(cache) and sabr_toSafeString(cache.Lookup("key")) = lookupKey
+        info = cache.Lookup("info")
+        if IsAssociativeArray(info) then return info
+    end if
     return invalid
 end function
+
+sub sabr_setLastSidxCache(cacheKey as string, info as object)
+    lookupKey = sabr_toSafeString(cacheKey)
+    if lookupKey = "" or not IsAssociativeArray(info)
+        m.lastSidxCache = invalid
+        return
+    end if
+    ' Single-entry hot cache to avoid re-reading/parsing the same init SIDX repeatedly.
+    m.lastSidxCache = {
+        "key": lookupKey
+        "info": info
+    }
+end sub
 
 '------------------------------------------------------------------------------
 ' Function : sabr_reloadSidxEntriesFromInit
@@ -1092,19 +1081,37 @@ function sabr_reloadSidxEntriesFromInit(playbackContext as object, contentType a
     if not IsAssociativeArray(format) then return invalid
     mediaIdHash = sabr_toSafeString(playbackContext.Lookup("mediaIdHash"))
     if mediaIdHash = "" then return invalid
-    formatKey = sabr_formatKey(format)
-    if formatKey = "" then return invalid
     scopeKey = sabr_toSafeString(playbackContext.Lookup("scope"))
     if scopeKey = "" then scopeKey = "root"
-    initPath = sabr_computeInitSegmentPath(mediaIdHash, contentType, formatKey, scopeKey)
+    ' Use the scoped format key so we match the init filename we wrote (itag:xtags:scope).
+    scopedFormatKey = sabr_formatKey(format)
+    if scopedFormatKey = "" then return invalid
+    initPath = sabr_computeInitSegmentPath(mediaIdHash, contentType, scopedFormatKey, scopeKey)
     fs = CreateObject("roFileSystem")
-    if fs.Exists(initPath) <> true then return invalid
+    readStartMs = CreateObject("roTimespan")
+    readStartMs.Mark()
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] init-path key=${indexKey} scope=${scopeKey} contentType=${contentType} format=${scopedFormatKey} path=${initPath}`)
+    end if
+    if fs.Exists(initPath) <> true
+        if isValid(m?.logs)
+            sabr_log(m.logs, log_level_Type.INFO, `[SIDX] init-missing path=${initPath} key=${indexKey}`)
+        end if
+        return invalid
+    end if
     stat = fs.Stat(initPath)
     fileSize = sabr_toInt(stat?.size)
     if fileSize = invalid or fileSize <= 0 then return invalid
 
     bytes = CreateObject("roByteArray")
     if bytes.ReadFile(initPath, 0, fileSize) <> true then return invalid
+    elapsedMs = 0
+    if GetInterface(readStartMs, "ifTimespan") <> invalid
+        elapsedMs = readStartMs.TotalMilliseconds()
+    end if
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.INFO, `[SIDX] init-read path=${initPath} bytes=${fileSize} elapsedMs=${elapsedMs}`)
+    end if
 
     formatInfo = sabr_formatToFormatId(format)
     if IsAssociativeArray(formatInfo)
@@ -1133,17 +1140,20 @@ function sabr_reloadSidxEntriesFromInit(playbackContext as object, contentType a
             "startSegmentIndex": 0
         }
     }
-    sabr_storeSidxIndexUpdate(playbackContext, contentType, format, update, fakeSegmentEntry)
-    scopeKey = sabr_toSafeString(playbackContext?.scope)
-    if scopeKey = "" then scopeKey = "root"
-    return sabr_sidxCacheLookup(contentType, indexKey, scopeKey, mediaIdHash)
+    cacheInfo = sabr_storeSidxIndexUpdate(playbackContext, contentType, format, update, fakeSegmentEntry)
+    if IsAssociativeArray(cacheInfo) and isValid(m?.logs)
+        entryCount = IsArray(cacheInfo.entries) ? cacheInfo.entries.count() : 0
+        sabr_log(m.logs, log_level_Type.INFO, `[SIDX] loaded-from-disk key=${indexKey} path=${initPath} entries=${entryCount}`)
+    end if
+    sabr_setLastSidxCache(indexKey, cacheInfo)
+    return cacheInfo
 end function
 
-sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, currentFormat as object, update as object, segmentEntry as object)
-    if not IsAssociativeArray(playbackContext) then return
-    if not IsAssociativeArray(update) then return
+function sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, currentFormat as object, update as object, segmentEntry as object) as dynamic
+    if not IsAssociativeArray(playbackContext) then return invalid
+    if not IsAssociativeArray(update) then return invalid
     entries = update?.entries
-    if not IsArray(entries) or entries.count() = 0 then return
+    if not IsArray(entries) or entries.count() = 0 then return invalid
 
     formatKey = sabr_toSafeString(update?.formatKey)
     if formatKey = "" and IsAssociativeArray(segmentEntry?.mediaHeader?.formatId)
@@ -1184,7 +1194,7 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
         })
         idx = idx + 1
     end for
-    if normalizedEntries.count() = 0 then return
+    if normalizedEntries.count() = 0 then return invalid
 
     cacheInfo = {
         "entries": normalizedEntries
@@ -1192,7 +1202,6 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
     }
     scopeKey = sabr_toSafeString(playbackContext?.scope)
     if scopeKey = "" then scopeKey = "root"
-    sabr_sidxCacheStore(contentType, key, cacheInfo, scopeKey, mediaIdHash)
 
     ' Debug: log the SIDX summary we just cached to confirm parsing correctness.
     if isValid(m?.logs)
@@ -1200,7 +1209,9 @@ sub sabr_storeSidxIndexUpdate(playbackContext as object, contentType as string, 
         lastEntry = normalizedEntries[normalizedEntries.count() - 1]
         sabr_log(m.logs, log_level_Type.DEBUG, `[SIDX] cached scope=${scopeKey} media=${mediaIdHash} type=${contentType} format=${formatKey} timescale=${sabr_toInt(update?.timescale)} entries=${normalizedEntries.count()} firstRange=${sabr_toInt(firstEntry?.rangeStart)}-${sabr_toInt(firstEntry?.rangeEnd)} firstStartMs=${sabr_toInt(firstEntry?.startTimeMs)} lastRange=${sabr_toInt(lastEntry?.rangeStart)}-${sabr_toInt(lastEntry?.rangeEnd)} lastStartMs=${sabr_toInt(lastEntry?.startTimeMs)}`)
     end if
-end sub
+    sabr_setLastSidxCache(key, cacheInfo)
+    return cacheInfo
+end function
 
 '------------------------------------------------------------------------------
 ' Function : sabr_lookupSidxEntries
@@ -1212,10 +1223,18 @@ function sabr_lookupSidxEntries(playbackContext as object, contentType as string
     if scopeKey = "" then scopeKey = "root"
     mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
     key = sabr_sidxIndexKey(contentType, format, "", scopeKey, mediaIdHash)
-    ' Always prefer the on-disk init for this scope/format to avoid cross-period bleed.
+    ' Fast path: reuse last SIDX if the key matches current scope/format/media.
+    cached = sabr_lastSidxCacheForKey(key)
+    if IsAssociativeArray(cached)
+        if isValid(m?.logs)
+            entryCount = IsArray(cached.entries) ? cached.entries.count() : 0
+            sabr_log(m.logs, log_level_Type.INFO, `[SIDX] hit-last-cache key=${key} entries=${entryCount}`)
+        end if
+        return cached
+    end if
     reloaded = sabr_reloadSidxEntriesFromInit(playbackContext, contentType, format, key)
     if IsAssociativeArray(reloaded) then return reloaded
-    return sabr_sidxCacheLookup(contentType, key, scopeKey, mediaIdHash)
+    return invalid
 end function
 
 '------------------------------------------------------------------------------
