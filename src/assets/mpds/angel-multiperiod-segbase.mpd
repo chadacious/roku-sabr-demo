@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD
+    xmlns="urn:mpeg:dash:schema:mpd:2011"
+    profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"
+    type="static"
+    minBufferTime="PT2S"
+    mediaPresentationDuration="PT60S">
+    <BaseURL>https://storage.googleapis.com/shaka-demo-assets/angel-one/</BaseURL>
+
+    <!-- Period 0: first 30 seconds of Angel-One content -->
+    <Period id="p0" start="PT0S" duration="PT30S">
+        <AdaptationSet contentType="video" maxWidth="720" maxHeight="576" frameRate="12800/512" par="5:4">
+            <Representation id="7" bandwidth="991296" codecs="avc1.4d4015" mimeType="video/mp4" sar="1:1" width="450" height="360">
+                <BaseURL>video_360p_400k_h264.mp4</BaseURL>
+                <SegmentBase indexRange="862-1073" timescale="12800">
+                    <Initialization range="0-861"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+        <AdaptationSet contentType="audio" lang="fr">
+            <Representation id="19" bandwidth="130446" codecs="mp4a.40.2" mimeType="audio/mp4" audioSamplingRate="48000">
+                <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+                <BaseURL>audio_fr_2c_128k_aac.mp4</BaseURL>
+                <SegmentBase indexRange="786-1009" timescale="48000">
+                    <Initialization range="0-785"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+    </Period>
+
+    <!-- Period 1: short ad (alternate video rep, 10 seconds) -->
+    <Period id="ad0" start="PT30S" duration="PT10S">
+        <AdaptationSet contentType="video" maxWidth="720" maxHeight="576" frameRate="12800/512" par="5:4">
+            <Representation id="14" bandwidth="2752882" codecs="avc1.4d401e" mimeType="video/mp4" sar="1:1" width="600" height="480">
+                <BaseURL>video_480p_1M_h264.mp4</BaseURL>
+                <SegmentBase indexRange="860-1071" timescale="12800" presentationTimeOffset="384000">
+                    <Initialization range="0-859"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+        <AdaptationSet contentType="audio" lang="fr">
+            <Representation id="19" bandwidth="130446" codecs="mp4a.40.2" mimeType="audio/mp4" audioSamplingRate="48000">
+                <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+                <BaseURL>audio_fr_2c_128k_aac.mp4</BaseURL>
+                <SegmentBase indexRange="786-1009" timescale="48000" presentationTimeOffset="1440000">
+                    <Initialization range="0-785"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+    </Period>
+
+    <!-- Period 2: resume Angel-One content after ad; presentationTimeOffset includes ad duration -->
+    <Period id="p1" start="PT40S" duration="PT20S">
+        <AdaptationSet contentType="video" maxWidth="720" maxHeight="576" frameRate="12800/512" par="5:4">
+            <Representation id="7" bandwidth="991296" codecs="avc1.4d4015" mimeType="video/mp4" sar="1:1" width="450" height="360">
+                <BaseURL>video_360p_400k_h264.mp4</BaseURL>
+                <SegmentBase indexRange="862-1073" timescale="12800" presentationTimeOffset="512000">
+                    <Initialization range="0-861"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+        <AdaptationSet contentType="audio" lang="fr">
+            <Representation id="19" bandwidth="130446" codecs="mp4a.40.2" mimeType="audio/mp4" audioSamplingRate="48000">
+                <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+                <BaseURL>audio_fr_2c_128k_aac.mp4</BaseURL>
+                <SegmentBase indexRange="786-1009" timescale="48000" presentationTimeOffset="1920000">
+                    <Initialization range="0-785"/>
+                </SegmentBase>
+            </Representation>
+        </AdaptationSet>
+    </Period>
+</MPD>

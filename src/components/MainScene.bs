@@ -16,8 +16,9 @@ sub init()
     m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
 
     m.videoConfig = { "title": "Sample YouTube SABR Video", "playbackPositionMs": 0 }
+    loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
-    loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
+    ' loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
 
 end sub
 

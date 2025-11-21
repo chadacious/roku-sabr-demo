@@ -14,6 +14,19 @@
             enableUI="true"
             enableTrickPlay="true"
         />
+        <Label
+            id="timeLabel"
+            translation="[680, 160]"
+            horizAlign="left"
+            vertAlign="center"
+            text=""
+            color="0xFFFFFFFF"
+            wrap="false"
+            width="400"
+            height="40"
+            visible="true"
+            font="font:MediumSystemFont"
+        />
         <Rectangle
             id="titleBackground"
             translation="[0, 640]"

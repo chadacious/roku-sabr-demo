@@ -8,14 +8,17 @@ sub init()
     m.videoNode = m.top.findNode("videoNode")
     m.titleBackground = m.top.findNode("titleBackground")
     m.titleLabel = m.top.findNode("titleLabel")
+    m.timeLabel = m.top.findNode("timeLabel")
     m.top.focusable = true
 
     if m.videoNode <> invalid
         m.videoNode.observeField("errorCode", "onVideoNodeFieldChanged")
         m.videoNode.observeField("warningCode", "onVideoNodeFieldChanged")
         m.videoNode.observeField("state", "onVideoNodeFieldChanged")
+        m.videoNode.observeField("position", "onVideoNodeFieldChanged")
         ' Decode stats help root-cause finishes/errors without extra probes.
         m.videoNode.enableDecoderStats = true
+        m.videoNode.notificationInterval = 0.5
     end if
 end sub
 
@@ -45,6 +48,7 @@ sub setVideo(data as object)
     content.playStart = playbackPositionMs / 1000
 
     m.videoNode.content = content
+    updateTimeLabel(int(playbackPositionMs), int(m.videoNode.duration * 1000), m.videoNode.state)
     m.videoNode.control = "play"
     m.videoNode.setFocus(true)
 
@@ -61,6 +65,7 @@ sub onVideoNodeFieldChanged(event as object)
     warningCode = m.videoNode.warningCode
     errorCode = m.videoNode.errorCode
     errorMsg = m.videoNode.errorMsg
+    durationMs = int(m.videoNode.duration * 1000)
 
     if field = "errorCode" and errorCode <> 0
         m.logs.printl(log_level_Type.FATAL, `[${TAG}] VideoNode error code=${errorCode} msg='${errorMsg}' state=${state} positionMs=${posMs}`)
@@ -84,6 +89,10 @@ sub onVideoNodeFieldChanged(event as object)
         if state = "finished" or state = "error"
             logVideoSnapshot(state)
         end if
+    end if
+
+    if field = "position" or field = "state"
+        updateTimeLabel(posMs, durationMs, state)
     end if
 end sub
 
@@ -135,3 +144,35 @@ sub showTitleOverlay(title as string)
         m.titleBackground.visible = title <> ""
     end if
 end sub
+
+sub updateTimeLabel(posMs as integer, durationMs as integer, state as string)
+    if m.timeLabel = invalid then return
+    posLabel = formatMs(posMs)
+    durLabel = durationMs > 0 ? formatMs(durationMs) : "??:??"
+    stateLabel = state <> "" ? state : "unknown"
+    m.timeLabel.text = `${posLabel} / ${durLabel} (${stateLabel})`
+end sub
+
+function formatMs(totalMs as integer) as string
+    if totalMs < 0 then totalMs = 0
+    secs = int(totalMs / 1000)
+    msRemainder = totalMs mod 1000
+    hours = int(secs / 3600)
+    mins = int((secs mod 3600) / 60)
+    seconds = secs mod 60
+    if hours > 0
+        return `${hours}:${pad2(mins)}:${pad2(seconds)}.${pad3(msRemainder)}`
+    end if
+    return `${mins}:${pad2(seconds)}.${pad3(msRemainder)}`
+end function
+
+function pad2(value as integer) as string
+    if value < 10 then return `0${value}`
+    return value.toStr()
+end function
+
+function pad3(value as integer) as string
+    if value < 10 then return `00${value}`
+    if value < 100 then return `0${value}`
+    return value.toStr()
+end function
