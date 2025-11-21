@@ -14,6 +14,8 @@ sub init()
         m.videoNode.observeField("errorCode", "onVideoNodeFieldChanged")
         m.videoNode.observeField("warningCode", "onVideoNodeFieldChanged")
         m.videoNode.observeField("state", "onVideoNodeFieldChanged")
+        ' Decode stats help root-cause finishes/errors without extra probes.
+        m.videoNode.enableDecoderStats = true
     end if
 end sub
 
@@ -79,7 +81,49 @@ sub onVideoNodeFieldChanged(event as object)
 
     if field = "state"
         m.logs.printl(log_level_Type.DEBUG, `[${TAG}] VideoNode state=${state} positionMs=${posMs}`)
+        if state = "finished" or state = "error"
+            logVideoSnapshot(state)
+        end if
     end if
+end sub
+
+sub logVideoSnapshot(reason as string)
+    if m.videoNode = invalid then return
+    snapshot = {
+        "reason": reason
+        "state": m.videoNode.state
+        "positionMs": int(m.videoNode.position * 1000)
+        "durationMs": int(m.videoNode.duration * 1000)
+        "contentIndex": m.videoNode.contentIndex
+        "isPlaylist": m.videoNode.contentIsPlaylist
+        "playStartMs": int((m.videoNode?.content?.playStart ?? 0) * 1000)
+        "seekRequest": m.videoNode.seek
+    }
+    try
+        snapshot["streamingSegment"] = m.videoNode.streamingSegment
+    catch e
+    end try
+    try
+        snapshot["downloadedSegment"] = m.videoNode.downloadedSegment
+    catch e
+    end try
+    try
+        snapshot["completedStreamInfo"] = m.videoNode.completedStreamInfo
+    catch e
+    end try
+    try
+        snapshot["decoderStats"] = m.videoNode.decoderStats
+    catch e
+    end try
+    try
+        snapshot["positionInfo"] = m.videoNode.positionInfo
+    catch e
+    end try
+    try
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] Video snapshot: ${FormatJson(snapshot)}`)
+    catch e
+        m.logs.printl(log_level_Type.INFO, `[${TAG}] Video snapshot failed to serialize`)
+    end try
 end sub
 
 sub showTitleOverlay(title as string)
