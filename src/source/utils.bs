@@ -33,16 +33,13 @@ function generateHexString(length as integer) as string
     return hexString
 end function
 
-function cacheStringToFile(fileName as string, content as string)
-    result = { "status": "error", "message": "", "uri": invalid }
 
-    m.logs.printl(log_level_Type.INFO, `[cacheStringToFile] Starting string cache write: ${fileName}`)
-
-    ' handle if the the path includes a directory that doesn't yet exist
-    volumeIndex = Instr(1, fileName, ":")
+function ensureDirectoryExistsForPath(filePath as string) as boolean
+    ' Walk the path and create missing directories (skip the volume portion like "tmp:/")
+    volumeIndex = Instr(1, filePath, ":")
     searchPos = 1
     while true
-        slashPos = Instr(searchPos, fileName, "/")
+        slashPos = Instr(searchPos, filePath, "/")
         if slashPos = 0 then exit while
 
         if volumeIndex > 0 and slashPos <= volumeIndex + 1
@@ -50,13 +47,27 @@ function cacheStringToFile(fileName as string, content as string)
             continue while
         end if
 
-        dirPath = Left(fileName, slashPos - 1)
-        if dirPath <> ""
-            CreateDirectory(dirPath)
+        dirPath = Left(filePath, slashPos - 1)
+        if dirPath <> "" and CreateDirectory(dirPath) = false
+            return false
         end if
 
         searchPos = slashPos + 1
     end while
+
+    return true
+end function
+
+function cacheStringToFile(fileName as string, content as string)
+    result = { "status": "error", "message": "", "uri": invalid }
+
+    m.logs.printl(log_level_Type.INFO, `[cacheStringToFile] Starting string cache write: ${fileName}`)
+
+    if not ensureDirectoryExistsForPath(fileName)
+        result["message"] = `[cacheStringToFile] Failed to create directory for string file: ${fileName}`
+        m.logs.printl(log_level_Type.WARN, result["message"])
+        return result
+    end if
 
     if writeAsciiFile(fileName, content)
         result["status"] = "ok"
@@ -69,3 +80,4 @@ function cacheStringToFile(fileName as string, content as string)
 
     return result
 end function
+

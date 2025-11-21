@@ -28,6 +28,7 @@ import "pkg:/source/SabrUtils.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrMp4Parser.bs"
 import "pkg:/source/taskUtils.bs"
+import "pkg:/source/utils.bs"
 
 '------------------------------------------------------------------------------
 ' Entry: sabr_handleRequest
@@ -132,7 +133,12 @@ function sabr_prepareProtoRequest(request as object, contentType as string, sabr
     protoPath = `${sabr_mediaDir(playbackContext.mediaIdHash)}/sabrRequest-${contentType}-${scopeLabel}-${sabr_sanitizeForFilename(logTag)}.bin`
     protoBytes.WriteFile(protoPath)
 
+    desiredCachePath = sabr_toSafeString(request?.cachePath)
     destPath = `${protoPath}-res`
+    if desiredCachePath <> ""
+        destPath = desiredCachePath
+        ensureDirectoryExistsForPath(destPath)
+    end if
     tap = sabr_createStreamTap({
         "destPath": destPath
         "keyParam": request.search.key

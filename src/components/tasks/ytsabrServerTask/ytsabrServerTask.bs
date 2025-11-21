@@ -19,6 +19,12 @@ sub init()
     sabr_log(m.logs, log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
     m.sabrPayloads = {}
     m.contentType = invalid
+    m.segmentCache = {}
+    m.segmentCacheSeq = 0
+    m.segmentCacheLimit = sabr_toInt(m.top?.segmentCacheCount)
+    if m.segmentCacheLimit = invalid or m.segmentCacheLimit < 0
+        m.segmentCacheLimit = 1
+    end if
 end sub
 
 ' Task entry point for the SABR HTTP server (video or audio). Accepts
@@ -113,6 +119,7 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     payloadSize = sabrResponse.payloadSize
     streamStatus = 0
     responseHeaders = sabrResponse.headers
+    skipCleanup = sabrResponse?.skipCleanup = true or sabrResponse?.servedFromCache = true
     if not isValid(responseHeaders)
         responseHeaders = CreateObject("roAssociativeArray")
     end if
@@ -155,7 +162,7 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
                 streamStatus = sent
             end if
             cleanupPath = sabr_toSafeString(sabrResponse?.cleanupPath)
-            if cleanupPath <> ""
+            if skipCleanup <> true and cleanupPath <> ""
                 sabr_deleteFileIfExists(cleanupPath)
             end if
             return streamStatus
@@ -193,10 +200,178 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     if cleanupPath = "" and sabrResponse?.isInitSeg <> true
         cleanupPath = sabr_toSafeString(path)
     end if
-    if cleanupPath <> ""
+    if skipCleanup <> true and cleanupPath <> ""
         sabr_deleteFileIfExists(cleanupPath)
     end if
     return streamStatus
+end function
+
+function ytsabr_segmentCacheEnabled() as boolean
+    limit = sabr_toInt(m.segmentCacheLimit)
+    if limit = invalid then return false
+    return limit > 0
+end function
+
+function ytsabr_nextCacheSeq() as integer
+    m.segmentCacheSeq = sabr_toInt(m.segmentCacheSeq) + 1
+    return m.segmentCacheSeq
+end function
+
+function ytsabr_segmentCacheCount() as integer
+    total = 0
+    if IsAssociativeArray(m.segmentCache)
+        for each _ in m.segmentCache
+            total = total + 1
+        end for
+    end if
+    return total
+end function
+
+function ytsabr_cloneResponse(res as object) as dynamic
+    if not IsAssociativeArray(res) then return invalid
+    clone = {}
+    for each key in res
+        clone[key] = res[key]
+    end for
+    chunks = res.Lookup("chunks")
+    if IsArray(chunks)
+        chunkCopy = []
+        for each ch in chunks
+            if IsAssociativeArray(ch)
+                copyCh = {}
+                for each ck in ch
+                    copyCh[ck] = ch[ck]
+                end for
+                chunkCopy.push(copyCh)
+            else
+                chunkCopy.push(ch)
+            end if
+        end for
+        clone["chunks"] = chunkCopy
+    end if
+    return clone
+end function
+
+function ytsabr_buildSegmentCacheKey(mediaIdHash as string, scopeKey as string, contentType as string, keyParam as string, requestByteRange as object) as object
+    if ytsabr_segmentCacheEnabled() <> true then return invalid
+    parsedKey = sabr_parseScopedKey(keyParam)
+    cacheScope = sabr_toSafeString(scopeKey)
+    formatForKey = invalid
+    if IsAssociativeArray(parsedKey)
+        if sabr_toSafeString(parsedKey?.scope) <> ""
+            cacheScope = parsedKey.scope
+        end if
+        formatForKey = {
+            "itag": parsedKey.itag
+            "xTags": parsedKey.xtags
+            "xtags": parsedKey.xtags
+        }
+    end if
+    if cacheScope = "" then cacheScope = "root"
+    cacheLabel = sabr_sidxIndexKey(contentType, formatForKey, "", cacheScope, mediaIdHash)
+    rangeLabel = sabr_formatRequestedRangeForPath(requestByteRange)
+    if cacheLabel = "" or rangeLabel = "" then return invalid
+    key = `${cacheLabel}|${rangeLabel}`
+    dirPath = `${sabr_mediaDir(mediaIdHash)}/segment-cache`
+    safeLabel = sabr_sanitizeForFilename(cacheLabel)
+    safeRange = sabr_sanitizeForFilename(rangeLabel)
+    if safeLabel = "" then safeLabel = "segment"
+    if safeRange = "" then safeRange = "range"
+    return {
+        "key": key
+        "dir": dirPath
+        "path": `${dirPath}/${safeLabel}_${safeRange}.bin`
+        "scope": cacheScope
+    }
+end function
+
+function ytsabr_canCacheResponse(cacheInfo as object, sabrResponse as object) as boolean
+    if ytsabr_segmentCacheEnabled() <> true then return false
+    if not IsAssociativeArray(cacheInfo) then return false
+    if not IsAssociativeArray(sabrResponse) then return false
+    if sabrResponse?.isInitSeg = true then return false
+    path = sabr_toSafeString(sabrResponse?.path)
+    if path = "" then return false
+    chunks = sabrResponse?.chunks
+    if not IsArray(chunks) or chunks.count() = 0 then return false
+    return true
+end function
+
+function ytsabr_segmentCacheLookup(cacheInfo as object, requestLogTag as string) as dynamic
+    if ytsabr_segmentCacheEnabled() <> true then return invalid
+    if not IsAssociativeArray(cacheInfo) then return invalid
+    key = sabr_toSafeString(cacheInfo?.key)
+    if key = "" then return invalid
+    entry = m.segmentCache.Lookup(key)
+    if not IsAssociativeArray(entry) then return invalid
+    cachePath = sabr_toSafeString(entry?.path)
+    fs = CreateObject("roFileSystem")
+    if cachePath = "" or fs.Exists(cachePath) <> true
+        m.segmentCache.Delete(key)
+        return invalid
+    end if
+    entry["lastUsed"] = ytsabr_nextCacheSeq()
+    cachedResponse = ytsabr_cloneResponse(entry.response)
+    if IsAssociativeArray(cachedResponse)
+        cachedResponse["skipCleanup"] = true
+        cachedResponse["servedFromCache"] = true
+    end if
+    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Serving spooled segment from cache key=${key}`)
+    return cachedResponse
+end function
+
+sub ytsabr_segmentCacheEnforceLimit()
+    limit = sabr_toInt(m.segmentCacheLimit)
+    if limit = invalid or limit <= 0 then return
+    while ytsabr_segmentCacheCount() > limit
+        oldestKey = ""
+        oldestSeq = 0
+        for each key in m.segmentCache
+            entry = m.segmentCache[key]
+            seq = sabr_toInt(entry?.lastUsed)
+            if oldestKey = "" or (seq <> invalid and seq < oldestSeq)
+                oldestKey = key
+                oldestSeq = seq
+            end if
+        end for
+        if oldestKey = "" then exit while
+        entry = m.segmentCache[oldestKey]
+        sabr_deleteFileIfExists(entry?.path)
+        m.segmentCache.Delete(oldestKey)
+    end while
+end sub
+
+function ytsabr_segmentCacheStore(cacheInfo as object, sabrResponse as object, mediaIdHash as string, requestLogTag as string) as object
+    if ytsabr_canCacheResponse(cacheInfo, sabrResponse) <> true then return sabrResponse
+    sabr_ensureMediaDir(mediaIdHash)
+    cachePath = sabr_toSafeString(cacheInfo?.path)
+    cacheDir = sabr_toSafeString(cacheInfo?.dir)
+    if cachePath = "" or cacheDir = "" then return sabrResponse
+    fs = CreateObject("roFileSystem")
+    fs.CreateDirectory(cacheDir)
+    sourcePath = sabr_toSafeString(sabrResponse?.path)
+    if sourcePath <> "" and sourcePath <> cachePath
+        ignore = fs.CopyFile(sourcePath, cachePath)
+    end if
+    if sourcePath <> "" and sourcePath <> cachePath
+        sabr_deleteFileIfExists(sourcePath)
+    end if
+    cachedResponse = ytsabr_cloneResponse(sabrResponse)
+    if not IsAssociativeArray(cachedResponse) then cachedResponse = {}
+    cachedResponse["path"] = cachePath
+    cachedResponse["cleanupPath"] = ""
+    cachedResponse["skipCleanup"] = true
+    key = sabr_toSafeString(cacheInfo?.key)
+    if key <> ""
+        m.segmentCache[key] = {
+            "path": cachePath
+            "response": cachedResponse
+            "lastUsed": ytsabr_nextCacheSeq()
+        }
+        ytsabr_segmentCacheEnforceLimit()
+        sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Cached spooled segment key=${key} path=${cachePath}`)
+    end if
+    return cachedResponse
 end function
 
 function sabr_hasBlobData(response as object) as boolean
@@ -327,6 +502,11 @@ function process_request(request as object, connection as object, port as object
         if IsAssociativeArray(request?.headers)
             rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
         end if
+        requestByteRange = sabr_getHeaderByteRange(request)
+        requestByteRange = sabr_normalizeByteRange(requestByteRange, {
+            "mediaIdHash": mediaIdHash
+            "contentType": m.contentType
+        })
         sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} scope=${scopeKey} range=${rangeHeader}`)
 
         requestId = invalid
@@ -337,6 +517,17 @@ function process_request(request as object, connection as object, port as object
             requestId = Stri(connection.getID())
         end if
         requestLogTag = sabr_utilLogTag(m.contentType, requestId)
+        cacheInfo = ytsabr_buildSegmentCacheKey(mediaIdHash, scopeKey, m.contentType, keyParam, requestByteRange)
+        if IsAssociativeArray(cacheInfo)
+            request["cachePath"] = cacheInfo.path
+        end if
+        cachedResponse = ytsabr_segmentCacheLookup(cacheInfo, requestLogTag)
+        if IsAssociativeArray(cachedResponse)
+            status = sabr_streamUMPPayload(connection, cachedResponse, requestLogTag)
+            m.sockets[Stri(connection.getID())] = invalid
+            m.connections[Stri(connection.getID())] = invalid
+            return true
+        end if
         sabrResponse = invalid
         fatalReason = ""
         try
@@ -349,6 +540,9 @@ function process_request(request as object, connection as object, port as object
         if fatalReason <> ""
             status = send_http_reply(connection, "500", "text/plain", fatalReason)
         else if IsAssociativeArray(sabrResponse) and (sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart") or sabr_hasBlobData(sabrResponse))
+            if ytsabr_canCacheResponse(cacheInfo, sabrResponse)
+                sabrResponse = ytsabr_segmentCacheStore(cacheInfo, sabrResponse, mediaIdHash, requestLogTag)
+            end if
             status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
         end if
         m.sockets[Stri(connection.getID())] = invalid
