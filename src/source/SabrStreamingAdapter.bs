@@ -174,7 +174,7 @@ function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, content
     protoCleanupPath = sabr_toSafeString(sabrRequest?.options?.body)
     res = makeRequest(sabrRequest)
     sabr_deleteFileIfExists(protoCleanupPath)
-    if res?.status < 200 or res?.status > 206
+    if isValid(res?.error) or not isValid(res?.status) or res?.status < 200 or res?.status > 206
         sabr_log(m.logs, log_level_Type.WARN, `${logTag} SABR request failed ${res?.status}`)
         return invalid
     end if
