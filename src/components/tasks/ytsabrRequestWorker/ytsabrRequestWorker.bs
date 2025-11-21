@@ -1,0 +1,79 @@
+import "pkg:/source/SabrStreamingAdapter.bs"
+import "pkg:/source/SabrUtils.bs"
+import "pkg:/source/logger.bs"
+
+sub init()
+    m.logs = logger()
+    m.top.functionName = "runWorker"
+end sub
+
+sub runWorker()
+    reqId = sabr_toSafeString(m.top.requestId)
+    result = {
+        "id": reqId
+        "response": invalid
+        "fatalReason": ""
+    }
+    try
+        seq = sabr_toInt(m.top.requestSeq)
+        if seq <> invalid and seq > 0
+            globalAA = GetGlobalAA()
+            globalAA["sabrGlobalRequestSequence"] = seq - 1
+        end if
+        response = sabr_handleRequest(m.top.request, m.top.contentType, m.top.mediaIdHash, m.top.sabrPayload, m.top.videoNode, invalid, 0, m.top.scopeKey)
+        response = ytsabr_normalizeInitResponse(response, m.top.mediaIdHash, m.top.contentType, m.top.request)
+        result["response"] = response
+    catch e
+        result["fatalReason"] = sabr_formatExceptionDetail(e)
+    end try
+    m.top.result = result
+end sub
+
+function ytsabr_normalizeInitResponse(response as dynamic, mediaIdHash as string, contentType as string, request as object) as dynamic
+    if not IsAssociativeArray(response) then return response
+    if response?.isInitSeg <> true and not response.DoesExist("data") then return response
+    dataBlob = response.Lookup("data")
+    if GetInterface(dataBlob, "ifByteArray") = invalid then return response
+
+    ' Persist init/index bytearray to deterministic path and convert to chunk plan.
+    keyParam = sabr_toSafeString(request?.search?.key)
+    scopeKey = sabr_parseScopedKey(keyParam)?.scope
+    if scopeKey = invalid or scopeKey = "" then scopeKey = "root"
+    initPath = sabr_computeInitSegmentPath(mediaIdHash, contentType, keyParam, scopeKey)
+    fs = CreateObject("roFileSystem")
+    if fs.Exists(initPath) <> true
+        dataBlob.WriteFile(initPath)
+    end if
+    totalBytes = dataBlob.count()
+    rangeStart = 0
+    rangeEnd = totalBytes - 1
+    reqRange = request?.headers
+    if IsAssociativeArray(request?.headers)
+        rangeHeader = sabr_getHeaderByteRange(request)
+        rangeStart = sabr_toInt(rangeHeader?.startRange)
+        rangeEndReq = sabr_toInt(rangeHeader?.endRange)
+        if rangeStart = invalid or rangeStart < 0 then rangeStart = 0
+        if rangeEndReq = invalid or rangeEndReq >= totalBytes then rangeEndReq = totalBytes - 1
+        rangeEnd = rangeEndReq
+    end if
+    sliceLength = (rangeEnd - rangeStart) + 1
+    chunk = {
+        "offset": rangeStart
+        "length": sliceLength
+    }
+    normalized = {}
+    for each key in response
+        normalized[key] = response[key]
+    end for
+    normalized.Delete("data")
+    normalized["path"] = initPath
+    normalized["cleanupPath"] = ""
+    normalized["totalBytes"] = sliceLength
+    normalized["chunks"] = [chunk]
+    normalized["coverage"] = {
+        "rangeStart": rangeStart
+        "rangeEnd": rangeEnd
+    }
+    normalized["isInitSeg"] = true
+    return normalized
+end function

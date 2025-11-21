@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="ytsabrRequestWorker" extends="Task">
+    <interface>
+        <field id="requestId" type="string" />
+        <field id="request" type="assocarray" />
+        <field id="mediaIdHash" type="string" />
+        <field id="scopeKey" type="string" value="root" />
+        <field id="sabrPayload" type="assocarray" />
+        <field id="contentType" type="string" />
+        <field id="videoNode" type="node" />
+        <field id="debugUploadUrl" type="string" />
+        <field id="requestSeq" type="integer" />
+        <field id="result" type="assocarray" />
+    </interface>
+</component>

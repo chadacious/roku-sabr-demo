@@ -1572,7 +1572,7 @@ sub sabr_debugUploadSpool(playbackContext as object, requestNumber as string, co
 end sub
 
 sub sabr_debugDumpRequestPayload(playbackContext as object, payload as object, requestByteRange as object, contentType as string, currentFormat as object, logTag as string, requestNumber as string)
-    debugUploadUrl = m.top?.debugUploadUrl
+    debugUploadUrl = m.top?.debugUploadUrl ?? ""
     if debugUploadUrl = "" then return
     if not IsAssociativeArray(payload) then return
     rangeLabel = sabr_formatRequestedRangeForPath(requestByteRange)

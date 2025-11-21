@@ -25,6 +25,8 @@ sub init()
     if m.segmentCacheLimit = invalid or m.segmentCacheLimit < 0
         m.segmentCacheLimit = 1
     end if
+    m.localRequestSeq = 0
+    m.pendingRequests = {}
 end sub
 
 ' Task entry point for the SABR HTTP server (video or audio). Accepts
@@ -32,6 +34,7 @@ end sub
 ' into the SABR streaming adapter.
 sub YtsabrServer()
     port = CreateObject("roMessagePort")
+    m.serverPort = port
     tcp = createobject("roStreamSocket")
     tcp.setMessagePort(port)
     tcp_bind_addr = CreateObject("roSocketAddress")
@@ -102,6 +105,8 @@ sub YtsabrServer()
                 sabr_log(m.logs, log_level_Type.WARN, "[YTSABR-Server] emergency abort roSocket handling", false)
                 sabr_log(m.logs, log_level_Type.WARN, FormatJson(e), false)
             end try
+        else if msgType = "roSGNodeEvent"
+            onWorkerEvent(msg)
         end if
     end while
 end sub
@@ -128,46 +133,7 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
         statusCode = 206
     end if
 
-    dataBlob = invalid
-    if not IsArray(chunks) or chunks.count() = 0
-        dataBlob = sabrResponse?.data
-        if GetInterface(dataBlob, "ifByteArray") = invalid and path <> ""
-            dataBlob = invalid
-        end if
-        if GetInterface(dataBlob, "ifByteArray") <> invalid
-            totalBytes = dataBlob.count()
-            responseHeaders["Content-Length"] = totalBytes.toStr()
-            coverage = sabrResponse?.coverage
-            coverageStart = sabr_toInt(coverage?.rangeStart)
-            coverageEnd = sabr_toInt(coverage?.rangeEnd)
-            if coverageStart = invalid then coverageStart = 0
-            if coverageEnd = invalid and totalBytes > 0
-                coverageEnd = coverageStart + totalBytes - 1
-            end if
-            coverageLabel = "bytes ?-?"
-            if coverageStart <> invalid and coverageEnd <> invalid
-                coverageLabel = `bytes ${coverageStart}-${coverageEnd}`
-                responseHeaders["Content-Range"] = `${coverageLabel}/${coverageEnd + 1}`
-            end if
-            sourceLabel = "init_cache"
-            sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} blob range=${coverageLabel} bytes=${totalBytes}`)
-            if http_sendHeaders(connection, statusCode, responseHeaders) = false
-                return -1
-            end if
-            sent = connection.send(dataBlob, 0, dataBlob.count())
-            if sent <= 0
-                sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Client closed socket mid-body (blob) status=${sent}`, false)
-                streamStatus = sent
-            else
-                streamStatus = sent
-            end if
-            cleanupPath = sabr_toSafeString(sabrResponse?.cleanupPath)
-            if skipCleanup <> true and cleanupPath <> ""
-                sabr_deleteFileIfExists(cleanupPath)
-            end if
-            return streamStatus
-        end if
-    end if
+    ' We only stream from disk/chunk plans; bytearrays do not marshal across worker tasks.
 
     if totalBytes = invalid
         totalBytes = 0
@@ -191,7 +157,12 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     end if
     if coverageLabel = "" then coverageLabel = "bytes ?-?"
     sourceLabel = sabrResponse?.servedFromInitCache = true ? "init_cache" : "sabr_stream"
-    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} path=${path} range=${coverageLabel} chunks=${chunks.count()} totalBytes=${totalBytes}`)
+    chunkCount = IsArray(chunks) ? chunks.count() : 0
+    sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} path=${path} range=${coverageLabel} chunks=${chunkCount} totalBytes=${totalBytes}`)
+    if not IsArray(chunks) or chunkCount = 0
+        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Missing chunk plan path=${path} chunks=${chunkCount} totalBytes=${totalBytes}`, false)
+        return send_http_reply(connection, "500", "text/plain", "Internal Server Error - missing chunks")
+    end if
     streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
     if streamStatus <= 0
         sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Streaming reply ended early status=${streamStatus}`, false)
@@ -210,6 +181,23 @@ function ytsabr_segmentCacheEnabled() as boolean
     limit = sabr_toInt(m.segmentCacheLimit)
     if limit = invalid then return false
     return limit > 0
+end function
+
+function ytsabr_nextLocalRequestId() as string
+    m.localRequestSeq = sabr_toInt(m.localRequestSeq) + 1
+    return m.localRequestSeq.toStr()
+end function
+
+function ytsabr_isSocketPending(connection as object) as boolean
+    if connection = invalid then return false
+    socketId = Stri(connection.getID())
+    for each key in m.pendingRequests
+        entry = m.pendingRequests[key]
+        if Stri(entry?.socketId) = socketId
+            return true
+        end if
+    end for
+    return false
 end function
 
 function ytsabr_nextCacheSeq() as integer
@@ -374,6 +362,84 @@ function ytsabr_segmentCacheStore(cacheInfo as object, sabrResponse as object, m
     return cachedResponse
 end function
 
+sub ytsabr_dispatchWorker(requestId as string, request as object, connection as object, cacheInfo as object, requestLogTag as string, requestByteRange as object, mediaIdHash as string, scopeKey as string, sabrPayload as object)
+    ' if m.serverPort = invalid
+    '     m.serverPort = CreateObject("roMessagePort")
+    ' end if
+    worker = CreateObject("roSGNode", "ytsabrRequestWorker")
+    if worker = invalid
+        send_http_reply(connection, "500", "text/plain", "Internal Server Error - worker unavailable")
+        return
+    end if
+    worker.observeField("result", m.serverPort)
+    worker.requestId = requestId
+    worker.request = request
+    worker.mediaIdHash = mediaIdHash
+    worker.scopeKey = scopeKey
+    worker.sabrPayload = sabrPayload
+    worker.contentType = m.contentType
+    worker.videoNode = m.top.videoNode
+    worker.debugUploadUrl = m.top.debugUploadUrl
+    worker.requestSeq = sabr_toInt(requestId)
+    worker.control = "run"
+
+    m.pendingRequests[requestId] = {
+        "socketId": connection.getID()
+        "connection": connection
+        "requestLogTag": requestLogTag
+        "cacheInfo": cacheInfo
+        "requestByteRange": requestByteRange
+        "mediaIdHash": mediaIdHash
+    }
+end sub
+
+sub onWorkerEvent(msg as object)
+    if type(msg) <> "roSGNodeEvent" then return
+    field = msg.GetField()
+    if field <> "result" then return
+    data = msg.GetData()
+    reqId = sabr_toSafeString(data?.id)
+    if reqId = "" then reqId = sabr_toSafeString(msg.GetNode()?.requestId)
+    entry = m.pendingRequests.Lookup(reqId)
+    if not IsAssociativeArray(entry) then
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Worker result with no pending entry id=${reqId}`, false)
+        return
+    end if
+    m.pendingRequests.Delete(reqId)
+
+    connection = entry?.connection
+    if connection = invalid then return
+    requestLogTag = sabr_toSafeString(entry?.requestLogTag)
+    cacheInfo = entry?.cacheInfo
+    mediaIdHash = sabr_toSafeString(entry?.mediaIdHash)
+
+    fatalReason = sabr_toSafeString(data?.fatalReason)
+    sabrResponse = data?.response
+    status = invalid
+    if not IsAssociativeArray(data)
+        fatalReason = "worker_result_missing"
+        sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Worker result missing data id=${reqId}`)
+    else
+        sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server] Worker result id=${reqId} hasResponse=${IsAssociativeArray(sabrResponse)} fatal='${fatalReason}'`)
+    end if
+    if fatalReason <> ""
+        status = send_http_reply(connection, "500", "text/plain", fatalReason)
+    else if IsAssociativeArray(sabrResponse)
+        if ytsabr_canCacheResponse(cacheInfo, sabrResponse)
+            sabrResponse = ytsabr_segmentCacheStore(cacheInfo, sabrResponse, mediaIdHash, requestLogTag)
+        end if
+        status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
+    else
+        status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - empty SABR response")
+    end if
+
+    socketIdStr = Stri(connection.getID())
+    m.sockets[socketIdStr] = invalid
+    m.connections[socketIdStr] = invalid
+    connection.close()
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] finalizing connection close: ${socketIdStr} status=${status}`)
+end sub
+
 function sabr_hasBlobData(response as object) as boolean
     if not IsAssociativeArray(response) then return false
     dataBlob = response.Lookup("data")
@@ -408,6 +474,7 @@ end sub
 ' Reads data from a client socket until an HTTP request is complete, then
 ' dispatches it to `process_request`. Manages connection lifetime bookkeeping.
 sub handle_tcp(connection as object, port as object)
+    if ytsabr_isSocketPending(connection) then return
     request = m.connections[Stri(connection.getID())]
     if request = invalid then
         ' An unsolicited request. Create an http handler for it
@@ -509,13 +576,7 @@ function process_request(request as object, connection as object, port as object
         })
         sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Request method=${request?.method} path=${request?.path} key=${keyParam} scope=${scopeKey} range=${rangeHeader}`)
 
-        requestId = invalid
-        if isValid(m.top?.utilsTask)
-            requestId = m.top.utilsTask.callFunc("getNextId", "ytsabrServerRequest")
-        end if
-        if requestId = invalid
-            requestId = Stri(connection.getID())
-        end if
+        requestId = ytsabr_nextLocalRequestId()
         requestLogTag = sabr_utilLogTag(m.contentType, requestId)
         cacheInfo = ytsabr_buildSegmentCacheKey(mediaIdHash, scopeKey, m.contentType, keyParam, requestByteRange)
         if IsAssociativeArray(cacheInfo)
@@ -528,26 +589,8 @@ function process_request(request as object, connection as object, port as object
             m.connections[Stri(connection.getID())] = invalid
             return true
         end if
-        sabrResponse = invalid
-        fatalReason = ""
-        try
-            sabrResponse = sabr_handleRequest(request, m.contentType, mediaIdHash, sabrPayload, m.top.videoNode, invalid, 0, scopeKey)
-        catch e
-            fatalReason = sabr_formatExceptionDetail(e)
-            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} sabr_handleRequest exception: ${fatalReason}`, false)
-        end try
-
-        if fatalReason <> ""
-            status = send_http_reply(connection, "500", "text/plain", fatalReason)
-        else if IsAssociativeArray(sabrResponse) and (sabrResponse.DoesExist("chunks") or sabrResponse.DoesExist("payloadStart") or sabr_hasBlobData(sabrResponse))
-            if ytsabr_canCacheResponse(cacheInfo, sabrResponse)
-                sabrResponse = ytsabr_segmentCacheStore(cacheInfo, sabrResponse, mediaIdHash, requestLogTag)
-            end if
-            status = sabr_streamUMPPayload(connection, sabrResponse, requestLogTag)
-        end if
-        m.sockets[Stri(connection.getID())] = invalid
-        m.connections[Stri(connection.getID())] = invalid
-        return true
+        ytsabr_dispatchWorker(requestId, request, connection, cacheInfo, requestLogTag, requestByteRange, mediaIdHash, scopeKey, sabrPayload)
+        return false
     else
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`, false)
     end if
