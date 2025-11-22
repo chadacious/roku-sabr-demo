@@ -18,7 +18,11 @@ sub init()
     m.videoConfig = { "title": "Sample YouTube SABR Video", "playbackPositionMs": 0 }
     ' loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
+ 
     loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
+    ' loadManifest("pkg:/assets/mpds/yt-sabr-dash2.mpd")
+    ' loadManifest("pkg:/assets/mpds/yt-sabr-dash3.mpd")
+ 
     ' loadManifest("pkg:/assets/hls/angel-multiperiod.m3u8")
     ' loadManifest("pkg:/assets/hls/angel-singleperiod.m3u8")
     ' loadManifest("pkg:/assets/hls/sintel-master.m3u8")
