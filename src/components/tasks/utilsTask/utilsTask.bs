@@ -67,9 +67,21 @@ function sabrSharedUpdate(params as object) as object
     key = sabrSharedKey(mediaIdHash, scopeKey)
     current = m.sabrSharedState.Lookup(key)
     if not IsAssociativeArray(current) then current = {}
-    for each k in updates.Keys()
-        current[k] = updates.Lookup(k)
-    end for
+    contentType = sabr_toSafeString(updates.Lookup("contentType"))
+    if contentType <> ""
+        updates.Delete("contentType")
+        typeKey = LCase(contentType)
+        typed = current.Lookup(typeKey)
+        if not IsAssociativeArray(typed) then typed = {}
+        for each k in updates.Keys()
+            typed[k] = updates.Lookup(k)
+        end for
+        current[typeKey] = typed
+    else
+        for each k in updates.Keys()
+            current[k] = updates.Lookup(k)
+        end for
+    end if
     m.sabrSharedState[key] = current
     return current
 end function

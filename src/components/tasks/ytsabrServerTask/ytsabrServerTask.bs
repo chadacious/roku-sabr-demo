@@ -228,13 +228,13 @@ function ytsabr_loadPeriodBoundaries(mediaIdHash as string, connectionId as dyna
     return boundaries
 end function
 
-sub ytsabr_flagBoundaryRequest(periods as object, requestByteRange as object, requestLogTag as string)
-    if not IsArray(periods) or periods.count() = 0 then return
-    reqStart = sabr_toInt(requestByteRange?.startRange)
-    if reqStart = invalid then return
-    ' We lack direct time/range mapping here; log that a boundary-aware list exists.
-    sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Period info loaded count=${periods.count()} reqStart=${reqStart}`)
-end sub
+' sub ytsabr_flagBoundaryRequest(periods as object, requestByteRange as object, requestLogTag as string)
+'     if not IsArray(periods) or periods.count() = 0 then return
+'     reqStart = sabr_toInt(requestByteRange?.startRange)
+'     if reqStart = invalid then return
+'     ' We lack direct time/range mapping here; log that a boundary-aware list exists.
+'     sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Period info loaded count=${periods.count()} reqStart=${reqStart}`)
+' end sub
 
 function ytsabr_nextLocalRequestId() as string
     m.localRequestSeq = sabr_toInt(m.localRequestSeq) + 1
