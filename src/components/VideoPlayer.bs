@@ -9,6 +9,12 @@ sub init()
     m.titleBackground = m.top.findNode("titleBackground")
     m.titleLabel = m.top.findNode("titleLabel")
     m.timeLabel = m.top.findNode("timeLabel")
+    m.debugTimer = m.top.createChild("Timer")
+    if m.debugTimer <> invalid
+        m.debugTimer.duration = 2.0
+        m.debugTimer.repeat = true
+        m.debugTimer.observeField("fire", "onDebugTimerFired")
+    end if
     m.top.focusable = true
 
     if m.videoNode <> invalid
@@ -16,6 +22,7 @@ sub init()
         m.videoNode.observeField("warningCode", "onVideoNodeFieldChanged")
         m.videoNode.observeField("state", "onVideoNodeFieldChanged")
         m.videoNode.observeField("position", "onVideoNodeFieldChanged")
+        m.videoNode.observeField("streamingSegment", "onVideoNodeFieldChanged")
         ' Decode stats help root-cause finishes/errors without extra probes.
         m.videoNode.enableDecoderStats = true
         m.videoNode.notificationInterval = 0.5
@@ -52,6 +59,7 @@ sub setVideo(data as object)
     updateTimeLabel(int(playbackPositionMs), int(m.videoNode.duration * 1000), m.videoNode.state)
     m.videoNode.control = "play"
     m.videoNode.setFocus(true)
+    startDebugTimer()
 
 end sub
 
@@ -93,10 +101,30 @@ sub onVideoNodeFieldChanged(event as object)
         if state = "finished"
             detectPrematureFinish(posMs, durationMs)
         end if
+        if state = "stopped"
+            m.logs.printl(log_level_Type.INFO, `[${TAG}] VideoNode stopped for recovery, re-initializing content`)
+            if isValid(m.reinitializeVideoContent)
+                content = m.reinitializeVideoContent
+                m.reinitializeVideoContent = invalid
+                m.videoNode.content = content
+                m.videoNode.control = "play"
+            end if
+        end if
     end if
 
     if field = "position" or field = "state"
         updateTimeLabel(posMs, durationMs, state)
+    end if
+
+    if field = "streamingSegment"
+        seg = invalid
+        try
+            seg = m.videoNode.streamingSegment
+        catch e
+        end try
+        if IsAssociativeArray(seg)
+            m.logs.printl(log_level_Type.INFO, `[${TAG}] streamingSegment: ${FormatJson(seg)}`)
+        end if
     end if
 end sub
 
@@ -181,11 +209,35 @@ function pad3(value as integer) as string
     return value.toStr()
 end function
 
+sub startDebugTimer()
+    if m.debugTimer <> invalid
+        m.debugTimer.control = "start"
+    end if
+end sub
+
+sub onDebugTimerFired()
+    if m.videoNode = invalid then return
+    state = m.videoNode.state
+    posMs = int(m.videoNode.position * 1000)
+    durMs = int(m.videoNode.duration * 1000)
+    m.logs.printl(log_level_Type.DEBUG, `[${TAG}] heartbeat state=${state} posMs=${posMs} durMs=${durMs}`)
+end sub
+
 sub detectPrematureFinish(posMs as integer, durationMs as integer)
     ' Heuristic: finished far before duration -> likely boundary/bug.
+    ' Basically in a multi-period dash manifest Roku's video node when seek/skip crossing period boundaries is
+    ' much too agressive in finishing playback and putting the player into a unusable state. Once it is marked
+    ' finished in this way it cannot be recovered except by tearing down the video node and re-initializing it. 
     if durationMs <= 0 then return
     remaining = durationMs - posMs
     if remaining > 10000 ' more than 10 seconds left
         m.logs.printl(log_level_Type.WARN, `[${TAG}] Premature finish? posMs=${posMs} durationMs=${durationMs} remainingMs=${remaining}`)
+        m.logs.printl(log_level_Type.WARN, `[${TAG}] positionInfo: ${FormatJson(m.videoNode.positionInfo)}`)
+        ' perform a tear down and restart of the video node to recover
+        m.videoNode.asyncStopSemantics = true
+        m.reinitializeVideoContent = m.videoNode.content
+        m.videoNode.content = invalid
+        m.reinitializeVideoContent.playStart = m.videoNode.pauseBufferPosition
+        m.videoNode.control = "stop" ' await video node stopping
     end if
 end sub

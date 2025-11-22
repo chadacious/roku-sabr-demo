@@ -1637,6 +1637,7 @@ function sabr_buildResponseForPlayer(requestMetadata as object, umpResult as dyn
                 "rangeEnd": coverageEnd
             }
         }
+        sabr_log(m.logs, log_level_Type.DEBUG, `[SABR RESPONSE] Built data response bytes=${dataBlob.count()} range=${coverageStart}-${coverageEnd}`)
         if umpResult?.isInitSeg = true
             response["isInitSeg"] = true
         end if

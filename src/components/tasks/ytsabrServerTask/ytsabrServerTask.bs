@@ -152,19 +152,27 @@ function sabr_streamUMPPayload(connection as object, sabrResponse as dynamic, re
     coverageLabel = ""
     coverage = sabrResponse?.coverage
     if IsAssociativeArray(coverage)
-        startLabel = sabr_valueToLabel(coverage.Lookup("rangeStart"))
-        endLabel = sabr_valueToLabel(coverage.Lookup("rangeEnd"))
-        if startLabel <> "" and endLabel <> ""
-            coverageLabel = `bytes ${startLabel}-${endLabel}`
+        ' startLabel = sabr_valueToLabel(coverage.Lookup("rangeStart"))
+        ' endLabel = sabr_valueToLabel(coverage.Lookup("rangeEnd"))
+        ' if startLabel <> "" and endLabel <> ""
+        if coverage.rangeEnd - coverage.rangeStart < 10
+            ' stop
+            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Invalid coverage range start=${coverage.rangeStart} end=${coverage.rangeEnd}`, false)
         end if
+        coverageLabel = `bytes ${coverage.rangeStart}-${coverage.rangeEnd}`
+        ' end if
     end if
     if coverageLabel = "" then coverageLabel = "bytes ?-?"
     sourceLabel = sabrResponse?.servedFromInitCache = true ? "init_cache" : "sabr_stream"
     chunkCount = IsArray(chunks) ? chunks.count() : 0
     sabr_log(m.logs, log_level_Type.INFO, `${requestLogTag} Streaming ${sourceLabel} path=${path} range=${coverageLabel} chunks=${chunkCount} totalBytes=${totalBytes}`)
     if not IsArray(chunks) or chunkCount = 0
-        sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Missing chunk plan path=${path} chunks=${chunkCount} totalBytes=${totalBytes}`, false)
-        return send_http_reply(connection, "500", "text/plain", "Internal Server Error - missing chunks")
+        if not sabrResponse?.servedFromInitCache = true 
+            sabr_log(m.logs, log_level_Type.WARN, `${requestLogTag} Missing chunk plan path=${path} chunks=${chunkCount} totalBytes=${totalBytes}`, false)
+            return send_http_reply(connection, "500", "text/plain", "Internal Server Error - missing chunks")
+        else 
+            sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Chunk plan: ${FormatJson(chunks)}`)
+        end if
     end if
     streamStatus = send_http_reply_stream_chunks(connection, statusCode, responseHeaders, path, chunks, totalBytes)
     if streamStatus <= 0
@@ -495,12 +503,12 @@ sub onWorkerEvent(msg as object)
     sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server] finalizing connection close: ${socketIdStr} status=${status}`)
 end sub
 
-function sabr_hasBlobData(response as object) as boolean
-    if not IsAssociativeArray(response) then return false
-    dataBlob = response.Lookup("data")
-    if GetInterface(dataBlob, "ifByteArray") = invalid then return false
-    return dataBlob.count() > 0
-end function
+' function sabr_hasBlobData(response as object) as boolean
+'     if not IsAssociativeArray(response) then return false
+'     dataBlob = response.Lookup("data")
+'     if GetInterface(dataBlob, "ifByteArray") = invalid then return false
+'     return dataBlob.count() > 0
+' end function
 
 sub logSocketStatus(connection as object)
     if connection = invalid then return

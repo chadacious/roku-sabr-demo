@@ -58,7 +58,6 @@ function ytsabr_normalizeInitResponse(response as dynamic, mediaIdHash as string
         end if
     end if
     if rangeStart = invalid or rangeStart < 0 then rangeStart = 0
-    if rangeEnd = invalid or rangeEnd >= totalBytes then rangeEnd = totalBytes - 1
     if rangeEnd < rangeStart then rangeEnd = rangeStart
     sliceLength = (rangeEnd - rangeStart) + 1
     chunk = {
@@ -79,5 +78,9 @@ function ytsabr_normalizeInitResponse(response as dynamic, mediaIdHash as string
         "rangeEnd": rangeEnd
     }
     normalized["isInitSeg"] = true
+    sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-RequestWorker] normalized init response: path=${initPath} totalBytes=${sliceLength} range=${rangeStart}-${rangeEnd}`)
+    if rangeEnd - rangeStart < 10
+        stop
+    end if
     return normalized
 end function

@@ -81,3 +81,6 @@ function cacheStringToFile(fileName as string, content as string)
     return result
 end function
 
+function sabr_storageRoot() as string
+    return "tmp:/sabr"
+end function

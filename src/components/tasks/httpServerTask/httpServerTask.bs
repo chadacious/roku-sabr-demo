@@ -118,10 +118,23 @@ function processRequest(request as object, connection as object, port as object)
         m.logs.printl(log_level_Type.INFO, `[${TAG}] Intercepted manifest request: ${request.path}`)
         ' get the file name from the path and read the file
         mediaId = request.path.replace("/manifest/", "")
-        fileName = fromBase64(mediaId)
-        ' m.logs.printl(log_level_Type.INFO, `fileName: ${fileName}`)
+        if Instr(mediaId, ".m3u8") > 1
+            fileName = `pkg:/assets/hls/${mediaId}`
+        else
+            fileName = fromBase64(mediaId)
+        end if
+        m.logs.printl(log_level_Type.INFO, `fileName: ${fileName}`)
         manifestData = getFile(fileName)
-        contentType = manifestData.inStr("#EXTM3U") = 0 ? "application/x-mpegurl" : "application/dash+xml"
+        if manifestData.inStr("#EXTM3U") = 0
+            ' HLS: use vnd.apple for master, x-mpegurl for media playlists
+            if Instr(manifestData, "-STREAM-INF") > 0
+                contentType = "application/vnd.apple.mpegurl"
+            else
+                contentType = "application/x-mpegurl"
+            end if
+        else
+            contentType = "application/dash+xml"
+        end if
         status = send_http_reply(connection, "200", contentType, manifestData)
     else
         m.logs.printl(log_level_Type.WARN, `[${TAG}] Unexpected URI: ${request.path} on ${connection.getID()}`)

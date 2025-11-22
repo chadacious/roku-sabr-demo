@@ -19,6 +19,10 @@ sub init()
     ' loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
     loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
+    ' loadManifest("pkg:/assets/hls/angel-multiperiod.m3u8")
+    ' loadManifest("pkg:/assets/hls/angel-singleperiod.m3u8")
+    ' loadManifest("pkg:/assets/hls/sintel-master.m3u8")
+    ' loadManifest("pkg:/assets/hls/angel-sintel.m3u8")
 
 end sub
 
@@ -53,21 +57,41 @@ end sub
 sub prepareManifest(manifest as string)
 
     manifestType = "DASH"
+    manifestPath = ""
     if manifest.Instr("#EXTM3U") > -1
         m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected HLS manifest`)
         manifestType = "HLS"
+        manifestPath = `tmp:/currentManifest.m3u8`
     else
         m.logs.printl(log_level_Type.INFO, `[${TAG}] Detected DASH manifest`)
+        manifestPath = `tmp:/currentManifest.mpd`
     end if
 
     manifest = extractPlaybackContext(m.top, m.videoPlayer.callFunc("getVideoNodeRef"), { "manifest": manifest, "manifestType": manifestType, "mediaId": "sample-media-id", "playbackPositionMs": 0 })
 
-    m.videoConfig["manifestPath"] = `${sabr_storageRoot()}/currentManifest.mpd`
+    m.videoConfig["manifestPath"] = manifestPath
     m.videoConfig["manifestType"] = manifestType
 
     ' store the manifest
     ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": manifest, "path": m.videoConfig.manifestPath }
     cacheStringToFile(m.videoConfig.manifestPath, manifest)
+    ' if manifestType = "HLS"
+    '     ' we need to also store the media playlists referenced in the master playlist
+    '     ' parse the master playlist to find the media playlist URIs
+    '     lines = manifest.Split(chr(10))
+    '     for each line in lines
+    '         line = line.Trim()
+    '         if line.Len() = 0 then continue for
+    '         if line.Left(1) = "#" then continue for
+    '         ' this is a media playlist URI
+    '         mediaPlaylistUri = line
+    '         ' for simplicity, assume it's a relative URI and load from pkg:/assets/hls/
+    '         sourcePath = `pkg:/assets/hls/${mediaPlaylistUri}`
+    '         ' copy the media playlist to the storage root
+    '         copyFile(sourcePath, `${sabr_storageRoot()}/${mediaPlaylistUri}`)
+    '         m.logs.printl(log_level_Type.INFO, `[${TAG}] Copied media playlist: ${sourcePath} to ${sabr_storageRoot()}/${mediaPlaylistUri}`)
+    '     end for
+    ' end if
     m.logs.printl(log_level_Type.INFO, `[${TAG}] Manifest stored to file: ${m.videoConfig.manifestPath}`)
     loadVideo()
 end sub

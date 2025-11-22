@@ -264,9 +264,6 @@ end function
 '------------------------------------------------------------------------------
 ' Storage helpers for SABR artifacts
 '------------------------------------------------------------------------------
-function sabr_storageRoot() as string
-    return "tmp:/sabr"
-end function
 
 sub sabr_ensureStorageRoot()
     rootPath = sabr_storageRoot()
