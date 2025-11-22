@@ -73,7 +73,7 @@
 		<AdaptationSet id="0" contentType="video" subsegmentAlignment="true" subsegmentStartsWithSAP="1" bitstreamSwitching="true" startWithSAP="1" default="true" mimeType="video/mp4">
 			<Representation id="137:" contentType="video" codecs="avc1.640028" startWithSAP="1" bandwidth="4320853" width="1920" height="1080" frameRate="24000/1001" data-dedupe-key="137">
 				<BaseURL>sabr://video?key=137::root</BaseURL>
-				<SegmentBase indexRange="741-12700" indexRangeExact="true" presentationTimeOffset="3">
+				<SegmentBase indexRange="741-12700" indexRangeExact="true" presentationTimeOffset="3.212">
 					<Initialization range="0-740"/>
 				</SegmentBase>
 			</Representation>
@@ -81,7 +81,7 @@
 		<AdaptationSet id="1" contentType="audio" subsegmentAlignment="true" subsegmentStartsWithSAP="1" bitstreamSwitching="true" startWithSAP="1" default="false" mimeType="audio/mp4">
 			<Representation id="140:ChEKBWFjb250EghvcmlnaW5hbAoKCgRsYW5nEgJlbg" contentType="audio" codecs="mp4a.40.2" bandwidth="135181" lang="en" default="true" data-dedupe-key="140:en.4">
 				<BaseURL>sabr://audio?key=140:ChEKBWFjb250EghvcmlnaW5hbAoKCgRsYW5nEgJlbg:root</BaseURL>
-				<SegmentBase indexRange="723-7114" indexRangeExact="true" presentationTimeOffset="3">
+				<SegmentBase indexRange="723-7114" indexRangeExact="true" presentationTimeOffset="3.212">
 					<Initialization range="0-722"/>
 				</SegmentBase>
 			</Representation>

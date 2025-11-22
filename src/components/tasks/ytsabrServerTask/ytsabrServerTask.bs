@@ -3,6 +3,7 @@ import "pkg:/source/http.bs"
 import "pkg:/source/SabrStreamingAdapter.bs"
 import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrUtils.bs"
+import "pkg:/source/SabrShared.bs"
 import "pkg:/source/taskUtils.bs"
 
 sub init()
@@ -414,7 +415,7 @@ function ytsabr_segmentCacheStore(cacheInfo as object, sabrResponse as object, m
     return cachedResponse
 end function
 
-sub ytsabr_dispatchWorker(requestId as string, request as object, connection as object, cacheInfo as object, requestLogTag as string, requestByteRange as object, mediaIdHash as string, scopeKey as string, sabrPayload as object)
+sub ytsabr_dispatchWorker(requestId as string, request as object, connection as object, cacheInfo as object, requestLogTag as string, requestByteRange as object, mediaIdHash as string, scopeKey as string, sabrPayload as object, sharedState as object)
     ' if m.serverPort = invalid
     '     m.serverPort = CreateObject("roMessagePort")
     ' end if
@@ -433,6 +434,8 @@ sub ytsabr_dispatchWorker(requestId as string, request as object, connection as 
     worker.videoNode = m.top.videoNode
     worker.debugUploadUrl = m.top.debugUploadUrl
     worker.requestSeq = sabr_toInt(requestId)
+    worker.utilsTask = m.top.utilsTask
+    worker.sharedState = sharedState
     worker.control = "run"
 
     m.pendingRequests[requestId] = {
@@ -599,6 +602,12 @@ function process_request(request as object, connection as object, port as object
             status = send_http_reply(connection, "404", "text/plain", "Not Found - SABR scope missing")
             return true
         end if
+
+        sharedState = sabr_sharedSeedFromPayload(mediaIdHash, scopeKey, sabrPayload, m.top.utilsTask)
+        seedUrl = sabr_toSafeString(sharedState.Lookup("serverAbrStreamingUrl"))
+        ' if seedUrl <> ""
+        '     sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Shared SABR seed scope=${scopeKey} url=${seedUrl}`)
+        ' end if
         rangeHeader = ""
         if IsAssociativeArray(request?.headers)
             rangeHeader = sabr_valueToLabel(request.headers.Lookup("range"))
@@ -626,7 +635,7 @@ function process_request(request as object, connection as object, port as object
             m.connections[Stri(connection.getID())] = invalid
             return true
         end if
-        ytsabr_dispatchWorker(requestId, request, connection, cacheInfo, requestLogTag, requestByteRange, mediaIdHash, scopeKey, sabrPayload)
+        ytsabr_dispatchWorker(requestId, request, connection, cacheInfo, requestLogTag, requestByteRange, mediaIdHash, scopeKey, sabrPayload, sharedState)
         return false
     else
         sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Unexpected URI: ${request.path} on ${connection.getID()}`, false)

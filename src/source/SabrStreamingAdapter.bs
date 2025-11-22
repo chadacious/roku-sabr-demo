@@ -29,13 +29,14 @@ import "pkg:/source/SabrDebug.bs"
 import "pkg:/source/SabrMp4Parser.bs"
 import "pkg:/source/taskUtils.bs"
 import "pkg:/source/utils.bs"
+import "pkg:/source/SabrShared.bs"
 
 '------------------------------------------------------------------------------
 ' Entry: sabr_handleRequest
 ' Purpose: minimal SABR adapter that streams each request directly from the
 '          SABR spool pipeline, caching only init segments on disk.
 '------------------------------------------------------------------------------
-function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer, scopeKey = "root" as string) as object
+function sabr_handleRequest(request as object, contentType as string, mediaIdHash as string, sabr as object, videoNode as object, queuedAtMs = invalid as dynamic, redirectDepth = 0 as integer, scopeKey = "root" as string, utilsTask = invalid as dynamic, sharedState = invalid as dynamic) as object
     parsedKey = sabr_parseScopedKey(request?.search?.key)
     if IsAssociativeArray(parsedKey)
         scopedLabel = sabr_toSafeString(parsedKey?.scope)
@@ -47,6 +48,14 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     logTag = `[YTSABR-${contentType}-${requestNumber}]`
     sabr_pruneOtherMediaDirs(mediaIdHash)
     sabr_ensureMediaDir(mediaIdHash)
+
+    if not IsAssociativeArray(sharedState)
+        sharedState = sabr_sharedGet(mediaIdHash, scopeKey, utilsTask)
+    end if
+    sabr_applySharedState(sabr, sharedState, logTag, scopeKey, contentType)
+    if not IsAssociativeArray(sharedState) or sharedState.Count() = 0
+        sabr_log(m.logs, log_level_Type.WARN, `${logTag} Shared SABR state missing for scope=${scopeKey}`, false)
+    end if
 
     requestByteRange = sabr_getHeaderByteRange(request)
     requestByteRange = sabr_normalizeByteRange(requestByteRange, {
@@ -78,14 +87,17 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     end if
 
     if not IsAssociativeArray(streamResult)
-        serverUrl = sabr_toSafeString(playbackContext?.serverAbrStreamingUrl)
-        if serverUrl = "" then serverUrl = sabr_toSafeString(sabr?.serverAbrStreamingUrl)
-        sabr_log(m.logs, log_level_Type.INFO, `${logTag} Using SABR server URL (scope=${scopeKey}): ${serverUrl}`)
-        sabrRequest = sabr_prepareProtoRequest(request, contentType, sabr, currentFormat, activeFormats, requestByteRange, playbackContext, videoNode, isInitRequest, logTag, requestNumber)
+        serverUrl = sabr_toSafeString(sabr?.serverAbrStreamingUrl)
+        if serverUrl = ""
+            sabr_log(m.logs, log_level_Type.WARN, `${logTag} Missing SABR server URL for scope=${scopeKey}`, false)
+        ' else
+        '     sabr_log(m.logs, log_level_Type.INFO, `${logTag} Using SABR server URL (scope=${scopeKey}): ${serverUrl}`)
+        end if
+        sabrRequest = sabr_prepareProtoRequest(request, contentType, sabr, currentFormat, activeFormats, requestByteRange, playbackContext, videoNode, isInitRequest, logTag, requestNumber, sharedState)
         if not isValid(sabrRequest)
             return sabr_buildErrorResponseForPlayer(500, "proto build failed")
         end if
-        streamResult = sabr_streamViaUMP(sabrRequest, mediaIdHash, contentType, currentFormat, requestByteRange, itagKey, isInitRequest, playbackContext, sabr, logTag, requestNumber)
+        streamResult = sabr_streamViaUMP(sabrRequest, mediaIdHash, contentType, currentFormat, requestByteRange, itagKey, isInitRequest, playbackContext, sabr, logTag, requestNumber, utilsTask)
     end if
     redirectUrl = sabr_toSafeString(streamResult?.__redirectUrl)
     if redirectUrl <> ""
@@ -96,7 +108,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
         end if
         sabr_log(m.logs, log_level_Type.INFO, `${logTag} Following SABR redirect to ${redirectUrl}`)
         sabr_savePlaybackContext(mediaIdHash, playbackContext, scopeKey)
-        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtMs, redirectDepth + 1, scopeKey)
+        ' refresh shared state on redirect to pick up any server updates
+        nextShared = sabr_sharedGet(mediaIdHash, scopeKey, utilsTask)
+        return sabr_handleRequest(request, contentType, mediaIdHash, sabr, videoNode, queuedAtMs, redirectDepth + 1, scopeKey, utilsTask, nextShared)
     end if
     if not IsAssociativeArray(streamResult)
         return sabr_buildErrorResponseForPlayer(500, "SABR stream failed")
@@ -122,8 +136,8 @@ end function
 ' Purpose  : Assemble and encode the protobuf payload sent to SABR, wiring up
 '            a stream tap so we can capture the spool response.
 '------------------------------------------------------------------------------
-function sabr_prepareProtoRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, requestByteRange as object, playbackContext as object, videoNode as object, isInitRequest as boolean, logTag as string, requestNumber as string) as object
-    payload = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, requestByteRange, playbackContext, 0, videoNode, 0, isInitRequest)
+function sabr_prepareProtoRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, requestByteRange as object, playbackContext as object, videoNode as object, isInitRequest as boolean, logTag as string, requestNumber as string, sharedState = invalid as dynamic) as object
+    payload = sabr_createVideoPlaybackAbrRequest(request, contentType, sabr, currentFormat, activeFormats, requestByteRange, playbackContext, sharedState, 0, videoNode, 0, isInitRequest)
     if not IsAssociativeArray(payload) then return invalid
 
     sabr_debugDumpRequestPayload(playbackContext, payload, requestByteRange, contentType, currentFormat, logTag, requestNumber)
@@ -180,7 +194,7 @@ end function
 ' Purpose  : Fire the prepared SABR request, read the resulting spool data, and
 '            normalize it into a Roku player response structure.
 '------------------------------------------------------------------------------
-function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, contentType as string, currentFormat as object, requestByteRange as object, keyParam as string, isInitRequest as boolean, playbackContext as object, sabr as object, logTag as string, requestNumber as string) as dynamic
+function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, contentType as string, currentFormat as object, requestByteRange as object, keyParam as string, isInitRequest as boolean, playbackContext as object, sabr as object, logTag as string, requestNumber as string, utilsTask = invalid as dynamic) as dynamic
     sabr_log(m.logs, log_level_Type.INFO, `${logTag} Performing proxied request`)
     protoCleanupPath = sabr_toSafeString(sabrRequest?.options?.body)
     res = makeRequest(sabrRequest)
@@ -208,7 +222,7 @@ function sabr_streamViaUMP(sabrRequest as object, mediaIdHash as string, content
         spoolControlEffects = spoolMap.Lookup("controlEffects")
     end if
     controlEffects = sabr_mergeControlEffects(spoolControlEffects, tapControlEffects)
-    effectInfo = sabr_applyControlEffects(playbackContext, sabr, controlEffects, contentType, logTag)
+    effectInfo = sabr_applyControlEffects(playbackContext, sabr, controlEffects, contentType, logTag, utilsTask)
     redirectUrl = sabr_toSafeString(effectInfo?.redirectUrl)
 
     tapEntry = sabr_extractSegmentEntryFromTap(streamTapResult, spoolPath)
@@ -780,6 +794,34 @@ sub sabr_materializeInitSegment(entry as object, spoolPath as string, mediaIdHas
     chunkBytes.WriteFile(targetPath)
 end sub
 
+sub sabr_applySharedState(sabr as object, sharedState as object, logTag as string, scopeKey as string, contentType = "" as string)
+    if not IsAssociativeArray(sharedState) then return
+    stateSlice = sabr_sharedTypeSlice(sharedState, contentType)
+    sharedUrl = sabr_toSafeString(stateSlice.Lookup("serverAbrStreamingUrl"))
+    if sharedUrl <> "" then sabr.serverAbrStreamingUrl = sharedUrl
+
+    sharedCfg = stateSlice.Lookup("videoPlaybackUstreamerConfig")
+    if isValid(sharedCfg) then sabr.ustreamerConfig = sharedCfg
+
+    sharedToken = sabr_toSafeString(stateSlice.Lookup("poToken"))
+    if sharedToken <> "" then sabr.poToken = sharedToken
+
+    ' Note: playbackCookie is applied directly when building the proto request.
+    if isValid(m?.logs)
+        sabr_log(m.logs, log_level_Type.DEBUG, `${logTag} Applied shared SABR state scope=${scopeKey} hasUrl=${sharedUrl <> ""} hasCookie=${isValid(stateSlice?.playbackCookie)} hasCfg=${isValid(sharedCfg)} hasPoToken=${sharedToken <> ""}`)
+    end if
+end sub
+
+function sabr_sharedTypeSlice(sharedState as object, contentType as string) as object
+    if not IsAssociativeArray(sharedState) then return {}
+    if contentType <> ""
+        typeKey = LCase(sabr_toSafeString(contentType))
+        typed = sharedState.Lookup(typeKey)
+        if IsAssociativeArray(typed) then return typed
+    end if
+    return sharedState
+end function
+
 '------------------------------------------------------------------------------
 ' SABR proto + buffered ranges
 '------------------------------------------------------------------------------
@@ -787,18 +829,19 @@ end sub
 ' Function : sabr_createVideoPlaybackAbrRequest
 ' Purpose  : Populate the protobuf fields SABR expects for a proxied media pull.
 '------------------------------------------------------------------------------
-function sabr_createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, requestByteRange as object, playbackContext as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic, isInitRequest = false as boolean) as object
+function sabr_createVideoPlaybackAbrRequest(request as object, contentType as string, sabr as object, currentFormat as object, activeFormats as object, requestByteRange as object, playbackContext as object, sharedState as object, playerTimeOverride as dynamic, videoNode as object, requestRef = invalid as dynamic, isInitRequest = false as boolean) as object
     logTag = sabr_utilLogTag(contentType, requestRef)
     if not isValid(sabr?.ustreamerConfig) then return {}
 
+    stateSlice = sabr_sharedTypeSlice(sharedState, contentType)
     streamerContext = {
         "poToken": sabr.poToken
         "clientInfo": sabr.clientInfo
         "sabrContexts": []
         "unsentSabrContexts": []
     }
-    if isValid(playbackContext?.lastPlaybackCookie)
-        streamerContext["playbackCookie"] = playbackContext.lastPlaybackCookie
+    if isValid(stateSlice?.playbackCookie)
+        streamerContext["playbackCookie"] = stateSlice.playbackCookie
     end if
 
     bandwidthEstimate = sabr_pickMeasuredBitrate(videoNode?.completedStreamInfo)
@@ -1349,7 +1392,7 @@ end function
 ' Purpose  : Apply SABR instructions such as redirects, context reloads, and
 '            error reporting to the current playback context.
 '------------------------------------------------------------------------------
-function sabr_applyControlEffects(playbackContext as object, sabr as object, controlEffects as object, contentType as string, logTag as string) as dynamic
+function sabr_applyControlEffects(playbackContext as object, sabr as object, controlEffects as object, contentType as string, logTag as string, utilsTask = invalid as dynamic) as dynamic
     info = {}
     if not IsAssociativeArray(controlEffects) then return info
 
@@ -1357,11 +1400,18 @@ function sabr_applyControlEffects(playbackContext as object, sabr as object, con
         playbackContext = {}
     end if
 
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    if scopeKey = "" then scopeKey = "root"
+
     if IsAssociativeArray(controlEffects.nextRequestPolicy)
         playbackContext["nextRequestPolicy"] = controlEffects.nextRequestPolicy
         cookieProto = controlEffects.nextRequestPolicy?.playbackCookie
         if isValid(cookieProto)
-            playbackContext["lastPlaybackCookie"] = cookieProto
+            sabr_sharedUpdate(mediaIdHash, scopeKey, {
+                "playbackCookie": cookieProto
+                "contentType": contentType
+            }, utilsTask)
         end if
     end if
 
@@ -1372,14 +1422,14 @@ function sabr_applyControlEffects(playbackContext as object, sabr as object, con
     if IsAssociativeArray(controlEffects.redirect)
         redirectUrl = sabr_toSafeString(controlEffects.redirect?.url)
         if redirectUrl = "" then redirectUrl = sabr_toSafeString(controlEffects.redirect?.endpoint)
-        if sabr_updateServerRedirect(playbackContext, sabr, redirectUrl, logTag)
+        if sabr_updateServerRedirect(playbackContext, sabr, redirectUrl, logTag, utilsTask, contentType)
             info["redirectUrl"] = redirectUrl
         end if
     end if
 
     if IsAssociativeArray(controlEffects.reloadPlaybackContext)
         playbackContext["lastReloadPlaybackContext"] = controlEffects.reloadPlaybackContext
-        reloadInfo = sabr_handleReloadPlaybackContext(playbackContext, sabr, controlEffects.reloadPlaybackContext, logTag)
+        reloadInfo = sabr_handleReloadPlaybackContext(playbackContext, sabr, controlEffects.reloadPlaybackContext, logTag, utilsTask)
         if IsAssociativeArray(reloadInfo) and reloadInfo.Count() > 0
             info["reloadPlaybackContextResult"] = reloadInfo
         end if
@@ -1450,15 +1500,19 @@ end function
 ' Function : sabr_handleReloadPlaybackContext
 ' Purpose  : Merge SABR-provided playback context data into our cache.
 '------------------------------------------------------------------------------
-function sabr_handleReloadPlaybackContext(playbackContext as object, sabr as object, reloadContext as object, logTag as string) as dynamic
+function sabr_handleReloadPlaybackContext(playbackContext as object, sabr as object, reloadContext as object, logTag as string, utilsTask = invalid as dynamic) as dynamic
     if not IsAssociativeArray(reloadContext) then return invalid
     updates = {}
+
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    if scopeKey = "" then scopeKey = "root"
 
     newConfig = reloadContext.Lookup("ustreamerConfig")
     if isValid(newConfig)
         updates["ustreamerConfig"] = newConfig
         if isValid(sabr) then sabr.ustreamerConfig = newConfig
-        if IsAssociativeArray(playbackContext) then playbackContext["ustreamerConfig"] = newConfig
+        updates["videoPlaybackUstreamerConfig"] = newConfig
     end if
 
     serverUrl = sabr_toSafeString(reloadContext.Lookup("serverAbrStreamingUrl"))
@@ -1467,7 +1521,11 @@ function sabr_handleReloadPlaybackContext(playbackContext as object, sabr as obj
     end if
     if serverUrl <> ""
         updates["serverAbrStreamingUrl"] = serverUrl
-        sabr_updateServerRedirect(playbackContext, sabr, serverUrl, logTag)
+        sabr_updateServerRedirect(playbackContext, sabr, serverUrl, logTag, utilsTask)
+    end if
+
+    if updates.Count() > 0 and mediaIdHash <> ""
+        sabr_sharedUpdate(mediaIdHash, scopeKey, updates, utilsTask)
     end if
 
     if updates.Count() > 0 and isValid(m?.logs)
@@ -1480,14 +1538,21 @@ end function
 ' Function : sabr_updateServerRedirect
 ' Purpose  : Track server-provided redirect URLs and expose them to callers.
 '------------------------------------------------------------------------------
-function sabr_updateServerRedirect(playbackContext as object, sabr as object, redirectUrl as string, logTag as string) as boolean
+function sabr_updateServerRedirect(playbackContext as object, sabr as object, redirectUrl as string, logTag as string, utilsTask = invalid as dynamic, contentType = "" as string) as boolean
     target = sabr_toSafeString(redirectUrl)
     if target = "" then return false
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    if scopeKey = "" then scopeKey = "root"
     if isValid(sabr)
         sabr.serverAbrStreamingUrl = target
     end if
-    if IsAssociativeArray(playbackContext)
-        playbackContext["serverAbrStreamingUrl"] = target
+    if mediaIdHash <> ""
+        updateAA = {
+            "serverAbrStreamingUrl": target
+        }
+        if contentType <> "" then updateAA["contentType"] = contentType
+        sabr_sharedUpdate(mediaIdHash, scopeKey, updateAA, utilsTask)
     end if
     sabr_log(m.logs, log_level_Type.INFO, `${logTag} Updated SABR server URL via redirect: ${target}`)
     return true
@@ -1675,6 +1740,7 @@ sub sabr_deleteFileIfExists(path as dynamic)
     if not IsString(path) or path = "" then return
     fs = CreateObject("roFileSystem")
     if fs.Exists(path)
+        sabr_log(m.logs, log_level_Type.INFO, `[CLEANUP] Deleting temporary file: ${path}`)
         fs.Delete(path)
     end if
 end sub

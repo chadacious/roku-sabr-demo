@@ -5,5 +5,8 @@
         <!-- <field id="CACHE_STRING_TO_FILE" type="assocarray" access="writeonly" /> -->
         <field id="uiMessage" type="assocarray" access="readwrite" />
         <function name="getNextId" />
+        <function name="sabrSharedGet" />
+        <function name="sabrSharedUpdate" />
+        <function name="sabrSharedSeedFromPayload" />
     </interface>
 </component>

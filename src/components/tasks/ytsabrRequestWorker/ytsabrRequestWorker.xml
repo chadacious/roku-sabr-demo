@@ -11,5 +11,7 @@
         <field id="debugUploadUrl" type="string" />
         <field id="requestSeq" type="integer" />
         <field id="result" type="assocarray" />
+        <field id="utilsTask" type="node" />
+        <field id="sharedState" type="assocarray" />
     </interface>
 </component>

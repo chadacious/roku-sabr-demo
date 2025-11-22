@@ -48,6 +48,7 @@ sub setVideo(data as object)
     content.playStart = playbackPositionMs / 1000
 
     m.videoNode.content = content
+    m.videoNode.seekMode = "accurate"
     updateTimeLabel(int(playbackPositionMs), int(m.videoNode.duration * 1000), m.videoNode.state)
     m.videoNode.control = "play"
     m.videoNode.setFocus(true)

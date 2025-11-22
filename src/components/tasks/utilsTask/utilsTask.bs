@@ -1,5 +1,6 @@
 import "pkg:/source/logger.bs"
 import "pkg:/source/taskUtils.bs"
+import "pkg:/source/SabrUtils.bs"
 
 sub init()
     m.top.functionName = "messageHandlers"
@@ -7,6 +8,7 @@ sub init()
     m.top.ObserveField("LOAD_FILE_TO_STRING", m.port)
     ' m.top.ObserveField("CACHE_STRING_TO_FILE", m.port)
     m.nextRequestId = {}
+    m.sabrSharedState = {}
     m.logs = logger()
 end sub
 
@@ -36,6 +38,83 @@ function getNextId(group as string) as integer
     end if
     m.nextRequestId[group] = m.nextRequestId[group] + 1
     return m.nextRequestId[group]
+end function
+
+function sabrSharedKey(mediaIdHash as string, scopeKey as string) as string
+    safeHash = sabr_toSafeString(mediaIdHash)
+    safeScope = sabr_toSafeString(scopeKey)
+    if safeScope = "" then safeScope = "root"
+    return `${safeHash}|${safeScope}`
+end function
+
+function sabrSharedGet(params as object) as object
+    mediaIdHash = sabr_toSafeString(params?.mediaIdHash)
+    scopeKey = sabr_toSafeString(params?.scopeKey)
+    if scopeKey = "" then scopeKey = "root"
+    key = sabrSharedKey(mediaIdHash, scopeKey)
+    entry = m.sabrSharedState.Lookup(key)
+    if IsAssociativeArray(entry) then return entry
+    return {}
+end function
+
+function sabrSharedUpdate(params as object) as object
+    if not IsAssociativeArray(params) then return {}
+    mediaIdHash = sabr_toSafeString(params?.mediaIdHash)
+    scopeKey = sabr_toSafeString(params?.scopeKey)
+    updates = params.Lookup("updates")
+    if scopeKey = "" then scopeKey = "root"
+    if mediaIdHash = "" or not IsAssociativeArray(updates) then return sabrSharedGet({"mediaIdHash": mediaIdHash, "scopeKey": scopeKey})
+    key = sabrSharedKey(mediaIdHash, scopeKey)
+    current = m.sabrSharedState.Lookup(key)
+    if not IsAssociativeArray(current) then current = {}
+    for each k in updates.Keys()
+        current[k] = updates.Lookup(k)
+    end for
+    m.sabrSharedState[key] = current
+    return current
+end function
+
+function sabrSharedSeedFromPayload(params as object) as object
+    mediaIdHash = sabr_toSafeString(params?.mediaIdHash)
+    scopeKey = sabr_toSafeString(params?.scopeKey)
+    payload = params?.payload
+    if scopeKey = "" then scopeKey = "root"
+    if mediaIdHash = "" or not IsAssociativeArray(payload)
+        return sabrSharedGet({"mediaIdHash": mediaIdHash, "scopeKey": scopeKey})
+    end if
+    existing = sabrSharedGet({"mediaIdHash": mediaIdHash, "scopeKey": scopeKey})
+    toSet = {}
+
+    if sabr_toSafeString(existing.Lookup("serverAbrStreamingUrl")) = ""
+        url = sabr_toSafeString(payload.Lookup("serverAbrStreamingUrl"))
+        if url = "" and IsAssociativeArray(payload?.serverAbrStreamingEndpoint)
+            url = sabr_toSafeString(payload.serverAbrStreamingEndpoint.Lookup("url"))
+        end if
+        if url <> "" then toSet["serverAbrStreamingUrl"] = url
+    end if
+
+    if not IsValid(existing.Lookup("playbackCookie"))
+        cookieVal = payload.Lookup("playbackCookie")
+        if isValid(cookieVal) then toSet["playbackCookie"] = cookieVal
+    end if
+
+    if not IsValid(existing.Lookup("videoPlaybackUstreamerConfig"))
+        cfgVal = payload.Lookup("ustreamerConfig")
+        if not isValid(cfgVal) then cfgVal = payload.Lookup("videoPlaybackUstreamerConfig")
+        if isValid(cfgVal) then toSet["videoPlaybackUstreamerConfig"] = cfgVal
+    end if
+
+    if sabr_toSafeString(existing.Lookup("poToken")) = ""
+        poVal = sabr_toSafeString(payload.Lookup("poToken"))
+        if poVal <> "" then toSet["poToken"] = poVal
+    end if
+
+    if toSet.Count() = 0 then return existing
+    return sabrSharedUpdate({
+        "mediaIdHash": mediaIdHash
+        "scopeKey": scopeKey
+        "updates": toSet
+    })
 end function
 
 sub sendUIMessage(message as object)
