@@ -233,6 +233,11 @@ sub detectPrematureFinish(posMs as integer, durationMs as integer)
     if remaining > 10000 ' more than 10 seconds left
         m.logs.printl(log_level_Type.WARN, `[${TAG}] Premature finish? posMs=${posMs} durationMs=${durationMs} remainingMs=${remaining}`)
         m.logs.printl(log_level_Type.WARN, `[${TAG}] positionInfo: ${FormatJson(m.videoNode.positionInfo)}`)
+
+        ' unfortunately, this doesn't work to resume when the player gets into this state
+        ' m.videoNode.seek = m.videoNode.pauseBufferPosition
+        ' m.videoNode.control = "resume"
+
         ' perform a tear down and restart of the video node to recover
         m.videoNode.asyncStopSemantics = true
         m.reinitializeVideoContent = m.videoNode.content
