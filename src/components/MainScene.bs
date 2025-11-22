@@ -16,9 +16,9 @@ sub init()
     m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
 
     m.videoConfig = { "title": "Sample YouTube SABR Video", "playbackPositionMs": 0 }
-    loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
+    ' loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
     ' loadManifest("pkg:/assets/mpds/vanilla-dash.mpd")
-    ' loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
+    loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
 
 end sub
 
@@ -93,6 +93,7 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
             sabrExtraction = sabr_extractScopedSabrPayloads(manifest, m.logs)
             manifest = sabrExtraction.manifest
             sabrPayloadsByScope = sabrExtraction.payloads
+            periodBoundaries = sabr_extractPeriodBoundaries(manifest, m.logs)
             if IsAssociativeArray(sabrPayloadsByScope) and sabrPayloadsByScope.Count() > 0
                 m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Found SABR payload scopes: ${sabr_joinWithPipe(sabrPayloadsByScope.Keys())}`)
                 if isValid(mediaId) and mediaId <> ""
@@ -110,6 +111,11 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                     payloadMapPath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
                     ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": FormatJson(sabrPayloadsByScope), "path": payloadMapPath }
                     cacheStringToFile(payloadMapPath, FormatJson(sabrPayloadsByScope))
+                    if IsArray(periodBoundaries) and periodBoundaries.Count() > 0
+                        periodsPath = `${sabr_mediaDir(mediaIdHash)}/periodBoundaries.json`
+                        cacheStringToFile(periodsPath, FormatJson(periodBoundaries))
+                        m.logs.printl(log_level_Type.INFO, `[${TAG}] SDUIPlayer: Stored period boundaries to ${periodsPath}`)
+                    end if
                     ' Create SABR server tasks for audio/video if needed.
                     if not isValid(scene.ytsabrServerTaskVideo)
                         scene.ytsabrServerTaskVideo = CreateObject("roSGNode", "ytsabrServerTask")

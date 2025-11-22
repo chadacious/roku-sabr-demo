@@ -89,6 +89,9 @@ sub onVideoNodeFieldChanged(event as object)
         if state = "finished" or state = "error"
             logVideoSnapshot(state)
         end if
+        if state = "finished"
+            detectPrematureFinish(posMs, durationMs)
+        end if
     end if
 
     if field = "position" or field = "state"
@@ -176,3 +179,12 @@ function pad3(value as integer) as string
     if value < 100 then return `0${value}`
     return value.toStr()
 end function
+
+sub detectPrematureFinish(posMs as integer, durationMs as integer)
+    ' Heuristic: finished far before duration -> likely boundary/bug.
+    if durationMs <= 0 then return
+    remaining = durationMs - posMs
+    if remaining > 10000 ' more than 10 seconds left
+        m.logs.printl(log_level_Type.WARN, `[${TAG}] Premature finish? posMs=${posMs} durationMs=${durationMs} remainingMs=${remaining}`)
+    end if
+end sub

@@ -395,6 +395,46 @@ function sabr_extractScopedSabrPayloads(manifest as string, logs = invalid as dy
     }
 end function
 
+'------------------------------------------------------------------------------
+' Period boundary extraction (start/duration)
+'------------------------------------------------------------------------------
+function sabr_extractPeriodBoundaries(manifest as string, logs = invalid as dynamic) as object
+    periods = []
+    if not isValid(manifest) or Len(manifest) = 0 then return periods
+
+    mpd = CreateObject("roXMLElement")
+    parsed = false
+    try
+        parsed = mpd.Parse(manifest)
+    catch e
+        parsed = false
+    end try
+    if not parsed then return periods
+
+    idx = 0
+    for each child in mpd.GetChildElements()
+        if LCase(child.GetName()) <> "period" then goto nextPeriod
+        attrs = child.GetAttributes()
+        periodId = sabr_toSafeString(attrs?.Lookup("id"))
+        if periodId = "" then periodId = `period-${idx}`
+        startAttr = sabr_toSafeString(attrs?.Lookup("start"))
+        durAttr = sabr_toSafeString(attrs?.Lookup("duration"))
+        startMs = sabr_parseIsoDurationMs(startAttr)
+        durationMs = sabr_parseIsoDurationMs(durAttr)
+        periods.push({
+            "id": periodId
+            "startMs": startMs
+            "durationMs": durationMs
+        })
+        idx = idx + 1
+        nextPeriod:
+    end for
+    if periods.count() = 0 and isValid(logs)
+        logs.printl(log_level_Type.WARN, "[SabrUtils] No Period elements found for boundary extraction")
+    end if
+    return periods
+end function
+
 sub sabr_collectScopedPayloads(mpd as object, payloads as object, logs = invalid as dynamic)
     if not isValid(mpd) then return
 
@@ -438,6 +478,54 @@ function sabr_isSabrSupplementalProperty(node as dynamic) as boolean
     if not isValid(attrs) then return false
     schemeId = LCase(sabr_toSafeString(attrs?.Lookup("schemeIdUri")))
     return Instr(1, schemeId, "urn:youtube:sabr") > 0
+end function
+
+function sabr_parseIsoDurationMs(text as string) as integer
+    if not isValid(text) or text = "" then return 0
+    trimmed = text.trim()
+    if trimmed = "" then return 0
+    ' support simple PT#H#M#S forms, ignoring years/months/days for now
+    if Left(trimmed, 1) <> "P" then return 0
+    iso = Mid(trimmed, 2)
+    parts = {
+        "H": 0
+        "M": 0
+        "S": 0
+    }
+    number = ""
+    inTime = false
+    totalMs = 0
+    for i = 1 to Len(iso)
+        ch = Mid(iso, i, 1)
+        if ch = "T"
+            inTime = true
+            number = ""
+        else if ch >= "0" and ch <= "9" or ch = "."
+            number = number + ch
+        else if inTime and (ch = "H" or ch = "M" or ch = "S")
+            val = sabr_toFloatSafe(number)
+            if val <> invalid
+                if ch = "H" then totalMs = totalMs + int(val * 3600000)
+                if ch = "M" then totalMs = totalMs + int(val * 60000)
+                if ch = "S" then totalMs = totalMs + int(val * 1000)
+            end if
+            number = ""
+        end if
+    end for
+    return totalMs
+end function
+
+function sabr_toFloatSafe(text as string) as dynamic
+    if not isValid(text) then return invalid
+    trimmed = text.trim()
+    if trimmed = "" then return invalid
+    result = invalid
+    try
+        result = trimmed.toFloat()
+    catch e
+        result = invalid
+    end try
+    return result
 end function
 
 function sabr_decodeSabrPayload(node as dynamic, logs = invalid as dynamic, scopeId = "" as string) as dynamic

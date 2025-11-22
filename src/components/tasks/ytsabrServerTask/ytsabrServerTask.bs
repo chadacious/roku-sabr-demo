@@ -18,6 +18,8 @@ sub init()
     m.ut.initClientCertificates()
     sabr_log(m.logs, log_level_Type.DEBUG, "[YTSABR-Server] Initializing YtsabrServer...")
     m.sabrPayloads = {}
+    m.periodBoundaries = {}
+    m.periodBoundaries = {}
     m.contentType = invalid
     m.segmentCache = {}
     m.segmentCacheSeq = 0
@@ -182,6 +184,56 @@ function ytsabr_segmentCacheEnabled() as boolean
     if limit = invalid then return false
     return limit > 0
 end function
+
+function ytsabr_loadSabrPayloadMap(mediaIdHash as string, connectionId as dynamic) as dynamic
+    if m.sabrPayloads[mediaIdHash] = invalid
+        filePath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
+        fileContent = getFile(filePath)
+        if fileContent = invalid or fileContent = ""
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayloadMap.json file: ${filePath} on ${connectionId}`, false)
+            return invalid
+        end if
+        sabrPayloadMap = ParseJson(fileContent)
+        if not IsAssociativeArray(sabrPayloadMap)
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] sabrPayloadMap.json file is not valid JSON: ${filePath} on ${connectionId}`, false)
+            return invalid
+        end if
+        m.sabrPayloads[mediaIdHash] = sabrPayloadMap
+        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayloadMap for mediaIdHash: ${mediaIdHash} from ${filePath}`)
+    else
+        sabrPayloadMap = m.sabrPayloads[mediaIdHash]
+        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayloadMap for mediaIdHash: ${mediaIdHash}`)
+    end if
+    return m.sabrPayloads[mediaIdHash]
+end function
+
+function ytsabr_loadPeriodBoundaries(mediaIdHash as string, connectionId as dynamic) as dynamic
+    if m.periodBoundaries[mediaIdHash] = invalid
+        filePath = `${sabr_mediaDir(mediaIdHash)}/periodBoundaries.json`
+        fileContent = getFile(filePath)
+        if fileContent = invalid or fileContent = ""
+            return invalid
+        end if
+        boundaries = ParseJson(fileContent)
+        if not IsArray(boundaries)
+            sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] periodBoundaries.json is not valid JSON array: ${filePath} on ${connectionId}`, false)
+            return invalid
+        end if
+        m.periodBoundaries[mediaIdHash] = boundaries
+        sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded period boundaries for mediaIdHash: ${mediaIdHash} from ${filePath}`)
+    else
+        boundaries = m.periodBoundaries[mediaIdHash]
+    end if
+    return boundaries
+end function
+
+sub ytsabr_flagBoundaryRequest(periods as object, requestByteRange as object, requestLogTag as string)
+    if not IsArray(periods) or periods.count() = 0 then return
+    reqStart = sabr_toInt(requestByteRange?.startRange)
+    if reqStart = invalid then return
+    ' We lack direct time/range mapping here; log that a boundary-aware list exists.
+    sabr_log(m.logs, log_level_Type.DEBUG, `${requestLogTag} Period info loaded count=${periods.count()} reqStart=${reqStart}`)
+end sub
 
 function ytsabr_nextLocalRequestId() as string
     m.localRequestSeq = sabr_toInt(m.localRequestSeq) + 1
@@ -534,27 +586,9 @@ function process_request(request as object, connection as object, port as object
         end if
         scopeKey = parsedKey.scope
 
-        ' check if we already have this mediaIdHash scoped sabrPayload map loaded
-        if m.sabrPayloads[mediaIdHash] = invalid
-            filePath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
-            fileContent = getFile(filePath)
-            if fileContent = invalid or fileContent = ""
-                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] Could not load sabrPayloadMap.json file: ${filePath} on ${connection.getID()}`, false)
-                status = send_http_reply(connection, "503", "text/plain", "Service Unavailable - SABR metadata not ready")
-                return true
-            end if
-            sabrPayloadMap = ParseJson(fileContent)
-            if not IsAssociativeArray(sabrPayloadMap)
-                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server] sabrPayloadMap.json file is not valid JSON: ${filePath} on ${connection.getID()}`, false)
-                status = send_http_reply(connection, "500", "text/plain", "Internal Server Error - sabrPayload map is not valid JSON")
-                return true
-            end if
-            m.sabrPayloads[mediaIdHash] = sabrPayloadMap
-            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Loaded sabrPayloadMap for mediaIdHash: ${mediaIdHash} from ${filePath}`)
-        else
-            sabrPayloadMap = m.sabrPayloads[mediaIdHash]
-            sabr_log(m.logs, log_level_Type.INFO, `[YTSABR-Server-${m.contentType}] Using cached sabrPayloadMap for mediaIdHash: ${mediaIdHash}`)
-        end if
+        ' load SABR payload map (scoped) and period boundaries for this media
+        sabrPayloadMap = ytsabr_loadSabrPayloadMap(mediaIdHash, connection.getID())
+        periodInfo = ytsabr_loadPeriodBoundaries(mediaIdHash, connection.getID())
 
         sabrPayload = invalid
         if IsAssociativeArray(sabrPayloadMap)
@@ -581,6 +615,9 @@ function process_request(request as object, connection as object, port as object
         cacheInfo = ytsabr_buildSegmentCacheKey(mediaIdHash, scopeKey, m.contentType, keyParam, requestByteRange)
         if IsAssociativeArray(cacheInfo)
             request["cachePath"] = cacheInfo.path
+        end if
+        if IsArray(periodInfo) and periodInfo.Count() > 0
+            request["periodBoundaries"] = periodInfo
         end if
         cachedResponse = ytsabr_segmentCacheLookup(cacheInfo, requestLogTag)
         if IsAssociativeArray(cachedResponse)

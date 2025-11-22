@@ -62,6 +62,8 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
 
     activeFormats = sabr_getActiveFormats(currentFormat, sabr, playbackContext)
 
+    sabr_flagBoundaryRequest(request?.periodBoundaries, playbackContext, contentType, currentFormat, requestByteRange, logTag)
+
     isInitRequest = sabr_isInit(contentType, currentFormat, requestByteRange, logTag)
 
     streamResult = invalid
@@ -76,6 +78,9 @@ function sabr_handleRequest(request as object, contentType as string, mediaIdHas
     end if
 
     if not IsAssociativeArray(streamResult)
+        serverUrl = sabr_toSafeString(playbackContext?.serverAbrStreamingUrl)
+        if serverUrl = "" then serverUrl = sabr_toSafeString(sabr?.serverAbrStreamingUrl)
+        sabr_log(m.logs, log_level_Type.INFO, `${logTag} Using SABR server URL (scope=${scopeKey}): ${serverUrl}`)
         sabrRequest = sabr_prepareProtoRequest(request, contentType, sabr, currentFormat, activeFormats, requestByteRange, playbackContext, videoNode, isInitRequest, logTag, requestNumber)
         if not isValid(sabrRequest)
             return sabr_buildErrorResponseForPlayer(500, "proto build failed")
@@ -1242,6 +1247,38 @@ function sabr_lookupSidxEntries(playbackContext as object, contentType as string
     if IsAssociativeArray(reloaded) then return reloaded
     return invalid
 end function
+
+'------------------------------------------------------------------------------
+' Function : sabr_flagBoundaryRequest
+' Purpose  : Log when a byte-range request targets the first or last known SIDX
+'            entry (period boundary) to help correlate premature finishes.
+'------------------------------------------------------------------------------
+sub sabr_flagBoundaryRequest(periodBoundaries as dynamic, playbackContext as object, contentType as string, format as object, requestByteRange as object, logTag as string)
+    if not IsArray(periodBoundaries) or periodBoundaries.count() = 0 then return
+    info = sabr_resolvePlayerTimeFromRequest(playbackContext, contentType, format, requestByteRange)
+    playerTimeMs = sabr_toInt(info?.playerTimeMs)
+    if playerTimeMs = invalid then return
+
+    scopeKey = sabr_toSafeString(playbackContext?.scope)
+    if scopeKey = "" then scopeKey = "root"
+    mediaIdHash = sabr_toSafeString(playbackContext?.mediaIdHash)
+    formatKey = sabr_formatKey(format)
+
+    epsilonMs = 1500
+    for each period in periodBoundaries
+        startMs = sabr_toInt(period?.startMs)
+        durMs = sabr_toInt(period?.durationMs)
+        if startMs = invalid or durMs = invalid then continue for
+        endMs = startMs + durMs
+        nearStart = Abs(playerTimeMs - startMs) <= epsilonMs
+        nearEnd = Abs(playerTimeMs - endMs) <= epsilonMs
+        if nearStart or nearEnd
+            edge = nearStart ? "start" : "end"
+            sabr_log(m.logs, log_level_Type.WARN, `[SIDX] boundary-request scope=${scopeKey} media=${mediaIdHash} type=${contentType} format=${formatKey} period=${sabr_toSafeString(period?.id)} edge=${edge} playerTimeMs=${playerTimeMs} startMs=${startMs} endMs=${endMs}`)
+            exit for
+        end if
+    end for
+end sub
 
 '------------------------------------------------------------------------------
 ' Function : sabr_buildBufferedRangeFromSidx
