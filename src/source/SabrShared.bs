@@ -3,9 +3,9 @@ import "pkg:/source/SabrUtils.bs"
 '------------------------------------------------------------------------------
 ' Shared SABR state helpers (per mediaIdHash + scope) stored in GlobalAA.
 '------------------------------------------------------------------------------
-function sabr_sharedGet(mediaIdHash as string, scopeKey as string, utilsTask = invalid as dynamic) as object
-    if isValid(utilsTask)
-        return utilsTask.callFunc("sabrSharedGet", {
+function sabr_sharedGet(mediaIdHash as string, scopeKey as string, sabrUtilsTask = invalid as dynamic) as object
+    if isValid(sabrUtilsTask)
+        return sabrUtilsTask.callFunc("sabrSharedGet", {
             "mediaIdHash": mediaIdHash
             "scopeKey": scopeKey
         })
@@ -13,10 +13,10 @@ function sabr_sharedGet(mediaIdHash as string, scopeKey as string, utilsTask = i
     return {}
 end function
 
-function sabr_sharedUpdate(mediaIdHash as string, scopeKey as string, updates as object, utilsTask = invalid as dynamic) as object
-    if not IsAssociativeArray(updates) or updates.Count() = 0 then return sabr_sharedGet(mediaIdHash, scopeKey, utilsTask)
-    if isValid(utilsTask)
-        return utilsTask.callFunc("sabrSharedUpdate", {
+function sabr_sharedUpdate(mediaIdHash as string, scopeKey as string, updates as object, sabrUtilsTask = invalid as dynamic) as object
+    if not IsAssociativeArray(updates) or updates.Count() = 0 then return sabr_sharedGet(mediaIdHash, scopeKey, sabrUtilsTask)
+    if isValid(sabrUtilsTask)
+        return sabrUtilsTask.callFunc("sabrSharedUpdate", {
             "mediaIdHash": mediaIdHash
             "scopeKey": scopeKey
             "updates": updates
@@ -25,13 +25,13 @@ function sabr_sharedUpdate(mediaIdHash as string, scopeKey as string, updates as
     return {}
 end function
 
-function sabr_sharedSeedFromPayload(mediaIdHash as string, scopeKey as string, payload as object, utilsTask = invalid as dynamic) as object
-    if isValid(utilsTask)
-        return utilsTask.callFunc("sabrSharedSeedFromPayload", {
+function sabr_sharedSeedFromPayload(mediaIdHash as string, scopeKey as string, payload as object, sabrUtilsTask = invalid as dynamic) as object
+    if isValid(sabrUtilsTask)
+        return sabrUtilsTask.callFunc("sabrSharedSeedFromPayload", {
             "mediaIdHash": mediaIdHash
             "scopeKey": scopeKey
             "payload": payload
         })
     end if
-    return sabr_sharedGet(mediaIdHash, scopeKey, utilsTask)
+    return sabr_sharedGet(mediaIdHash, scopeKey, sabrUtilsTask)
 end function

@@ -27,7 +27,7 @@ sub messageHandlers()
     end while
 end sub
 
-' Returns a monotonically increasing counter per group at the utilsTask level.
+' Returns a monotonically increasing counter per group at the sabrUtilsTask level.
 ' Use this when you need IDs shared across both audio/video server tasks,
 ' instead of the task-local globalAA-based counters. It may add some latency
 ' due to cross-task messaging, so I decided to use a globalAA-based approach until

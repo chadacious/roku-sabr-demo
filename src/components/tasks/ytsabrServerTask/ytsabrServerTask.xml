@@ -2,7 +2,7 @@
 <component name="ytsabrServerTask" extends="Task">
     <interface>
         <field id="videoNode" type="node" />
-        <field id="utilsTask" type="node" />
+        <field id="sabrUtilsTask" type="node" />
         <field id="contentType" type="string" value="" />
         <field id="debugUploadUrl" type="string" value="http://192.168.119.94:9000/" /> <!-- http://192.168.119.94:9000/ -->
         <!-- Segment spool cache: count of recent segments to keep; 0 disables -->

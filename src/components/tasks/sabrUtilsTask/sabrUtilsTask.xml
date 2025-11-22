@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<component name="utilsTask" extends="Task">
+<component name="sabrUtilsTask" extends="Task">
     <interface>
         <field id="LOAD_FILE_TO_STRING" type="string" access="writeonly" />
         <!-- <field id="CACHE_STRING_TO_FILE" type="assocarray" access="writeonly" /> -->

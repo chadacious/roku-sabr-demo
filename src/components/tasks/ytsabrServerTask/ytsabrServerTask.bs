@@ -442,7 +442,7 @@ sub ytsabr_dispatchWorker(requestId as string, request as object, connection as 
     worker.videoNode = m.top.videoNode
     worker.debugUploadUrl = m.top.debugUploadUrl
     worker.requestSeq = sabr_toInt(requestId)
-    worker.utilsTask = m.top.utilsTask
+    worker.sabrUtilsTask = m.top.sabrUtilsTask
     worker.sharedState = sharedState
     worker.control = "run"
 
@@ -611,7 +611,7 @@ function process_request(request as object, connection as object, port as object
             return true
         end if
 
-        sharedState = sabr_sharedSeedFromPayload(mediaIdHash, scopeKey, sabrPayload, m.top.utilsTask)
+        sharedState = sabr_sharedSeedFromPayload(mediaIdHash, scopeKey, sabrPayload, m.top.sabrUtilsTask)
         seedUrl = sabr_toSafeString(sharedState.Lookup("serverAbrStreamingUrl"))
         ' if seedUrl <> ""
         '     sabr_log(m.logs, log_level_Type.DEBUG, `[YTSABR-Server-${m.contentType}] Shared SABR seed scope=${scopeKey} url=${seedUrl}`)

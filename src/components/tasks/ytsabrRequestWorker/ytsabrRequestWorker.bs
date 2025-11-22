@@ -20,7 +20,7 @@ sub runWorker()
             globalAA = GetGlobalAA()
             globalAA["sabrGlobalRequestSequence"] = seq - 1
         end if
-        response = sabr_handleRequest(m.top.request, m.top.contentType, m.top.mediaIdHash, m.top.sabrPayload, m.top.videoNode, invalid, 0, m.top.scopeKey, m.top.utilsTask, m.top.sharedState)
+        response = sabr_handleRequest(m.top.request, m.top.contentType, m.top.mediaIdHash, m.top.sabrPayload, m.top.videoNode, invalid, 0, m.top.scopeKey, m.top.sabrUtilsTask, m.top.sharedState)
         response = ytsabr_normalizeInitResponse(response, m.top.mediaIdHash, m.top.contentType, m.top.request)
         result["response"] = response
     catch e

@@ -10,10 +10,10 @@ sub init()
     m.videoPlayer = m.top.findNode("videoPlayer")
     m.logs.printl(log_level_Type.INFO, `[${TAG}] MainScene:init ready`)
 
-    m.utilsTask = CreateObject("roSGNode", "utilsTask")
-    m.utilsTask.id = "utilsTask"
-    m.utilsTask.control = "RUN"
-    m.utilsTask.observeField("uiMessage", "onUtilsTaskMessage")
+    m.sabrUtilsTask = CreateObject("roSGNode", "sabrUtilsTask")
+    m.sabrUtilsTask.id = "sabrUtilsTask"
+    m.sabrUtilsTask.control = "RUN"
+    m.sabrUtilsTask.observeField("uiMessage", "onSabrUtilsTaskMessage")
 
     m.videoConfig = { "title": "Sample YouTube SABR Video", "playbackPositionMs": 0 }
     ' loadManifest("pkg:/assets/mpds/angel-multiperiod-segbase.mpd")
@@ -22,7 +22,8 @@ sub init()
     loadManifest("pkg:/assets/mpds/yt-sabr-dash.mpd")
     ' loadManifest("pkg:/assets/mpds/yt-sabr-dash2.mpd")
     ' loadManifest("pkg:/assets/mpds/yt-sabr-dash3.mpd")
- 
+     loadManifest("pkg:/assets/mpds/yt-sabr-dash4.mpd")
+
     ' loadManifest("pkg:/assets/hls/angel-multiperiod.m3u8")
     ' loadManifest("pkg:/assets/hls/angel-singleperiod.m3u8")
     ' loadManifest("pkg:/assets/hls/sintel-master.m3u8")
@@ -31,8 +32,8 @@ sub init()
 end sub
 
 sub loadManifest(manifestPath as string)
-    ' send to utilsTask to load the manifest content
-    m.utilsTask.LOAD_FILE_TO_STRING = manifestPath
+    ' send to sabrUtilsTask to load the manifest content
+    m.sabrUtilsTask.LOAD_FILE_TO_STRING = manifestPath
 end sub
 
 function onKeyEvent(key as string, press as boolean, ctrl as boolean, shift as boolean) as boolean
@@ -42,8 +43,8 @@ function onKeyEvent(key as string, press as boolean, ctrl as boolean, shift as b
     return false
 end function
 
-sub onUtilsTaskMessage(msg)
-    m.logs.printl(log_level_Type.VERBOSE, `[${TAG}] onUtilsTaskMessage: ${msg.GetField()}`)
+sub onSabrUtilsTaskMessage(msg)
+    m.logs.printl(log_level_Type.VERBOSE, `[${TAG}] onSabrUtilsTaskMessage: ${msg.GetField()}`)
     message = msg.getData()
     if message.type = "FILE_LOADED_TO_STRING"
         fileData = message.fileData
@@ -77,7 +78,7 @@ sub prepareManifest(manifest as string)
     m.videoConfig["manifestType"] = manifestType
 
     ' store the manifest
-    ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": manifest, "path": m.videoConfig.manifestPath }
+    ' m.sabrUtilsTask.CACHE_STRING_TO_FILE = { "content": manifest, "path": m.videoConfig.manifestPath }
     cacheStringToFile(m.videoConfig.manifestPath, manifest)
     ' if manifestType = "HLS"
     '     ' we need to also store the media playlists referenced in the master playlist
@@ -137,7 +138,7 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
 
                     ' Store the scoped SABR payload map to disk for the server task to load.
                     payloadMapPath = `${sabr_mediaDir(mediaIdHash)}/sabrPayloadMap.json`
-                    ' m.utilsTask.CACHE_STRING_TO_FILE = { "content": FormatJson(sabrPayloadsByScope), "path": payloadMapPath }
+                    ' m.sabrUtilsTask.CACHE_STRING_TO_FILE = { "content": FormatJson(sabrPayloadsByScope), "path": payloadMapPath }
                     cacheStringToFile(payloadMapPath, FormatJson(sabrPayloadsByScope))
                     if IsArray(periodBoundaries) and periodBoundaries.Count() > 0
                         periodsPath = `${sabr_mediaDir(mediaIdHash)}/periodBoundaries.json`
@@ -150,7 +151,7 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                         scene.ytsabrServerTaskVideo.control = "RUN"
                         scene.ytsabrServerTaskVideo.contentType = "VIDEO"
                         scene.ytsabrServerTaskVideo.videoNode = video
-                        scene.ytsabrServerTaskVideo.utilsTask = m.utilsTask
+                        scene.ytsabrServerTaskVideo.sabrUtilsTask = m.sabrUtilsTask
                         if isValid(scene.debugUploadUrl) and scene.debugUploadUrl <> ""
                             scene.ytsabrServerTaskVideo.debugUploadUrl = scene.debugUploadUrl
                         end if
@@ -160,7 +161,7 @@ function extractPlaybackContext(scene as object, video as object, mediaSource as
                         scene.ytsabrServerTaskAudio.control = "RUN"
                         scene.ytsabrServerTaskAudio.contentType = "AUDIO"
                         scene.ytsabrServerTaskAudio.videoNode = video
-                        scene.ytsabrServerTaskAudio.utilsTask = m.utilsTask
+                        scene.ytsabrServerTaskAudio.sabrUtilsTask = m.sabrUtilsTask
                         if isValid(scene.debugUploadUrl) and scene.debugUploadUrl <> ""
                             scene.ytsabrServerTaskAudio.debugUploadUrl = scene.debugUploadUrl
                         end if
