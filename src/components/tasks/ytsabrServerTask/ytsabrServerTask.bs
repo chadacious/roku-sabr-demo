@@ -30,6 +30,7 @@ sub init()
     end if
     m.localRequestSeq = 0
     m.pendingRequests = {}
+    m.recentRanges = {}
 end sub
 
 ' Task entry point for the SABR HTTP server (video or audio). Accepts
@@ -423,6 +424,70 @@ function ytsabr_segmentCacheStore(cacheInfo as object, sabrResponse as object, m
     return cachedResponse
 end function
 
+function ytsabr_rangeKey(mediaIdHash as string, scopeKey as string, keyParam as string, requestByteRange as object) as string
+    mediaLabel = sabr_toSafeString(mediaIdHash)
+    scopeLabel = sabr_toSafeString(scopeKey)
+    keyLabel = sabr_toSafeString(keyParam)
+    parsedKey = sabr_parseScopedKey(keyParam)
+    if IsAssociativeArray(parsedKey)
+        if sabr_toSafeString(parsedKey?.scope) <> ""
+            scopeLabel = parsedKey.scope
+        end if
+        if sabr_toSafeString(parsedKey?.itag) <> ""
+            keyLabel = sabr_toSafeString(parsedKey.itag)
+        end if
+    end if
+    if scopeLabel = "" then scopeLabel = "root"
+    rangeLabel = sabr_formatRequestedRangeForPath(requestByteRange)
+    if mediaLabel = "" or keyLabel = "" or rangeLabel = "" then return ""
+    return `${mediaLabel}|${scopeLabel}|${keyLabel}|${rangeLabel}`
+end function
+
+sub ytsabr_pruneRangeHits(key as string, nowSeconds as integer)
+    if not IsAssociativeArray(m.recentRanges) then return
+    bucket = m.recentRanges.Lookup(key)
+    if not IsArray(bucket) then return
+    cutoff = nowSeconds - 10
+    kept = []
+    for each t in bucket
+        ts = sabr_toInt(t)
+        if ts <> invalid and ts >= cutoff
+            kept.Push(ts)
+        end if
+    end for
+    if kept.Count() = 0
+        m.recentRanges.Delete(key)
+    else
+        m.recentRanges[key] = kept
+    end if
+end sub
+
+function ytsabr_recordRangeHit(key as string, nowSeconds as integer) as integer
+    if not IsAssociativeArray(m.recentRanges) then m.recentRanges = {}
+    ytsabr_pruneRangeHits(key, nowSeconds)
+    bucket = m.recentRanges.Lookup(key)
+    if not IsArray(bucket) then bucket = []
+    bucket.Push(nowSeconds)
+    m.recentRanges[key] = bucket
+    ' Keep the map from growing unbounded.
+    if m.recentRanges.Count() > 200
+        oldestKey = ""
+        oldestTs = nowSeconds
+        for each k in m.recentRanges
+            b = m.recentRanges[k]
+            if IsArray(b) and b.Count() > 0
+                ts = sabr_toInt(b[0])
+                if oldestKey = "" or (ts <> invalid and ts < oldestTs)
+                    oldestKey = k
+                    oldestTs = ts
+                end if
+            end if
+        end for
+        if oldestKey <> "" then m.recentRanges.Delete(oldestKey)
+    end if
+    return bucket.Count()
+end function
+
 sub ytsabr_dispatchWorker(requestId as string, request as object, connection as object, cacheInfo as object, requestLogTag as string, requestByteRange as object, mediaIdHash as string, scopeKey as string, sabrPayload as object, sharedState as object)
     ' if m.serverPort = invalid
     '     m.serverPort = CreateObject("roMessagePort")
@@ -642,6 +707,17 @@ function process_request(request as object, connection as object, port as object
             m.sockets[Stri(connection.getID())] = invalid
             m.connections[Stri(connection.getID())] = invalid
             return true
+        end if
+        rangeKey = ytsabr_rangeKey(mediaIdHash, scopeKey, keyParam, requestByteRange)
+        if rangeKey <> ""
+            now = CreateObject("roDateTime")
+            nowSeconds = now.asSeconds()
+            hitCount = ytsabr_recordRangeHit(rangeKey, nowSeconds)
+            if hitCount >= 3
+                sabr_log(m.logs, log_level_Type.WARN, `[YTSABR-Server-${m.contentType}] Repeated SABR range request (${hitCount}) key=${rangeKey}`, false)
+                status = send_http_reply(connection, "500", "text/plain", "Repeated SABR range request")
+                return true
+            end if
         end if
         ytsabr_dispatchWorker(requestId, request, connection, cacheInfo, requestLogTag, requestByteRange, mediaIdHash, scopeKey, sabrPayload, sharedState)
         return false
